@@ -376,8 +376,10 @@ void mDelaymS(uint16_t t)
 }
 
 #ifdef DEBUG
+extern void SendUSBData(UINT8 *p_send_dat,UINT16 send_len);
 int _write(int fd, char *buf, int size)
 {
+    // SendUSBData((UINT8 *)buf, size);
     int i;
     for(i = 0; i < size; i++)
     {
@@ -394,7 +396,10 @@ int _write(int fd, char *buf, int size)
         while(R8_UART3_TFC == UART_FIFO_SIZE);                  /* 等待数据发送 */
         R8_UART3_THR = *buf++; /* 发送数据 */
 #endif
+
     }
+
+
     return size;
 }
 

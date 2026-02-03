@@ -86,38 +86,9 @@ static uint8_t Peripheral_TaskID = INVALID_TASK_ID; // Task ID for internal task
 
 // GAP - SCAN RSP data (max size = 31 bytes)
 static uint8_t scanRspData[] = {
-    // complete name
-    0x12, // length of this data
-    GAP_ADTYPE_LOCAL_NAME_COMPLETE,
-    'S',
-    'i',
-    'm',
-    'p',
-    'l',
-    'e',
-    ' ',
-    'P',
-    'e',
-    'r',
-    'i',
-    'p',
-    'h',
-    'e',
-    'r',
-    'a',
-    'l',
-    // connection interval range
-    0x05, // length of this data
-    GAP_ADTYPE_SLAVE_CONN_INTERVAL_RANGE,
-    LO_UINT16(DEFAULT_DESIRED_MIN_CONN_INTERVAL), // 100ms
-    HI_UINT16(DEFAULT_DESIRED_MIN_CONN_INTERVAL),
-    LO_UINT16(DEFAULT_DESIRED_MAX_CONN_INTERVAL), // 1s
-    HI_UINT16(DEFAULT_DESIRED_MAX_CONN_INTERVAL),
-
-    // Tx power level
-    0x02, // length of this data
+    0x02,
     GAP_ADTYPE_POWER_LEVEL,
-    0 // 0dBm
+    0
 };
 
 // GAP - Advertisement data (max size = 31 bytes, though this is
@@ -135,11 +106,22 @@ static uint8_t advertData[] = {
     0x03,                  // length of this data
     GAP_ADTYPE_16BIT_MORE, // some of the UUID's, but not all
     LO_UINT16(SIMPLEPROFILE_SERV_UUID),
-    HI_UINT16(SIMPLEPROFILE_SERV_UUID)
+    HI_UINT16(SIMPLEPROFILE_SERV_UUID),
+
+    0x09, // length of this data
+    GAP_ADTYPE_LOCAL_NAME_COMPLETE,
+    'W',
+    'c',
+    'h',
+    ' ',
+    'T',
+    'e',
+    's',
+    't'
 };
 
 // GAP GATT Attributes
-static uint8_t attDeviceName[GAP_DEVICE_NAME_LEN] = "Simple Peripheral";
+static uint8_t attDeviceName[GAP_DEVICE_NAME_LEN] = "Wch Test";
 
 // Connection item list
 static peripheralConnItem_t peripheralConnList;
@@ -210,16 +192,16 @@ void Peripheral_Init()
 
     // Setup the GAP Peripheral Role Profile
     {
-        uint8_t  initial_advertising_enable = TRUE;
+        uint8_t  initial_advertising_enable = FALSE;
         uint16_t desired_min_interval = DEFAULT_DESIRED_MIN_CONN_INTERVAL;
         uint16_t desired_max_interval = DEFAULT_DESIRED_MAX_CONN_INTERVAL;
 
-        // Set the GAP Role Parameters
-        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
         GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);
         GAPRole_SetParameter(GAPROLE_ADVERT_DATA, sizeof(advertData), advertData);
         GAPRole_SetParameter(GAPROLE_MIN_CONN_INTERVAL, sizeof(uint16_t), &desired_min_interval);
         GAPRole_SetParameter(GAPROLE_MAX_CONN_INTERVAL, sizeof(uint16_t), &desired_max_interval);
+        initial_advertising_enable = TRUE;
+        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
     }
 
     {
@@ -253,8 +235,8 @@ void Peripheral_Init()
     DevInfo_AddService();                        // Device Information Service
     SimpleProfile_AddService(GATT_ALL_SERVICES); // Simple GATT Profile
 
-    // Set the GAP Characteristics
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, sizeof(attDeviceName), attDeviceName);
+    PRINT("Device Name: %s\n", attDeviceName);
 
     // Setup the SimpleProfile Characteristic Values
     {
