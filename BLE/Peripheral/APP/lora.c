@@ -41,90 +41,66 @@ void Lora_Spi_Init(void)
 {
     /* SPI 0 */
     GPIOA_SetBits(GPIO_Pin_12); 
-    GPIOA_ModeCfg(GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_14, GPIO_ModeOut_PP_5mA); // 12:CS, 13:SCK, 14:MOSI  15:MISO
+    GPIOA_ModeCfg(GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_14, GPIO_ModeOut_PP_5mA); // 12:CS, 13:SCK, 14:MOSI
+    // GPIOA_ModeCfg(GPIO_Pin_15, GPIO_ModeIN_PU); // 15:MISO - Removed to match official example
     SPI0_MasterDefInit();
-    //PA11 BUSY PA10 RESET PA7
-    GPIOA_ModeCfg(GPIO_Pin_11,GPIO_ModeIN_Floating);
-    GPIOA_ModeCfg(GPIO_Pin_10,GPIO_ModeOut_PP_5mA);
+    R8_SPI0_CLOCK_DIV = 8; // Reduce SPI speed to safe margin (60MHz/8 = 7.5MHz)
+    //PA11 BUSY PA10 RESET PA7 TXEN
+    GPIOA_ModeCfg(GPIO_Pin_11,GPIO_ModeIN_PU);
+    GPIOA_ModeCfg(GPIO_Pin_10 | GPIO_Pin_7,GPIO_ModeOut_PP_5mA);
     GPIOA_SetBits(GPIO_Pin_10);
+    GPIOA_SetBits(GPIO_Pin_7);
 }
 
-void Lora_Spi_Transmit(uint8_t *data, uint16_t len)
-{
-    int16_t timeout = 100;
-    while((GPIOA_ReadPortPin(GPIO_Pin_11) != 0) && (timeout-- > 0));
-    if(timeout <= 0)
-    {
-        PRINT("Lora_Spi_Transmit busy\n");
-        return;
-    }
-    GPIOA_ResetBits(GPIO_Pin_12);
-    SPI0_MasterTrans(data, len);
-    GPIOA_SetBits(GPIO_Pin_12);
-}
 
-void Lora_Spi_Receive(uint8_t *data, uint16_t len)
-{
-    int16_t timeout = 100;
-    while((GPIOA_ReadPortPin(GPIO_Pin_11) != 0) && (timeout-- > 0));
-    if(timeout <= 0)
-    {
-        PRINT("Lora_Spi_Receive busy\n");
-        return;
-    }
-    GPIOA_ResetBits(GPIO_Pin_12);
-    SPI0_MasterRecv(data, len);
-    GPIOA_SetBits(GPIO_Pin_12);
-}
 
-#define NSS_LOW() HAL_GPIO_WritePin(Lora_Nss_GPIO_Port, Lora_Nss_Pin, GPIO_PIN_RESET)
-#define NSS_HIGH() HAL_GPIO_WritePin(Lora_Nss_GPIO_Port, Lora_Nss_Pin, GPIO_PIN_SET)
+
+#define LORA_TX_EN() GPIOA_SetBits(GPIO_Pin_7)
+#define LORA_RX_EN() GPIOA_ResetBits(GPIO_Pin_7)
+#define Rtc_GetTimestamp() 0
 
 static int8_t Rssi = 0;
 static SX126x_t SX126x;
 static RadioOperatingModes_t OperatingMode;
 static RadioPacketTypes_t PacketType;
 
-
 //通过LoraBysy引脚，判断状态是否正常(可用): 0-非Ready状态(即Busy)， 1-Ready
 void Lora_WaitOnBusy( void ) //高电平表示忙
 {
-	uint32_t timeout = LORA_READY_TIMEOUT;
-    while( (HAL_GPIO_ReadPin(Lora_Busy_GPIO_Port, Lora_Busy_Pin) != 0) &&(timeout--)){
-    	DelayMs(1);
+    uint32_t timeout = LORA_READY_TIMEOUT;
+    while( (GPIOA_ReadPortPin(GPIO_Pin_11) != 0) && (timeout > 0) ){
+        timeout--;
+        mDelaymS(1);
     }
     if(timeout == 0){
-    	PRINTF("Lora Busy Timeout.\n");
-        DelayMs(50);
+        PRINT("Lora Busy Timeout. Pin11=%d\n", GPIOA_ReadPortPin(GPIO_Pin_11));
+        // mDelaymS(50); // Removed delay to speed up
     }
+    // mDelaymS(50); // Removed unconditional delay
 }
 
 //Reset Lora: 官方资料要求复位引脚拉低并维持100us，安全起见，这里使用20ms
 void Lora_Reset( ) {
-	//断电
-	HAL_GPIO_WritePin(Lora_Enable_GPIO_Port, Lora_Enable_Pin, RESET);
-	DelayMs(100);
-	HAL_GPIO_WritePin(Lora_Enable_GPIO_Port, Lora_Enable_Pin, SET);
-	DelayMs(50);
-	//通过引脚复位Lora
-	LORA_RESET_LOW();
-	DelayMs(20); //Delay_Ms(20);
-	LORA_RESET_HIGH();
-	Lora_WaitOnBusy();
+    //断电
+    // GPIOA_ResetBits(Lora_Enable_Pin);
+    // mDelaymS(100);
+    // GPIOA_SetBits(Lora_Enable_Pin);
+    // mDelaymS(50);
+    //通过引脚复位Lora
+    GPIOA_ResetBits(GPIO_Pin_10);
+    mDelaymS(20); //Delay_Ms(20);
+    GPIOA_SetBits(GPIO_Pin_10);
+    Lora_WaitOnBusy();
 }
 /**
  * @brief 唤醒Lora设备
  */
 void Lora_Wakeup()
 {
-    uint8_t tx, rx;
-    NSS_LOW();
-
-    tx = RADIO_GET_STATUS;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100);
-    tx = 0x00;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100);
-    NSS_HIGH();
+    GPIOA_ResetBits(GPIO_Pin_12);
+    SPI0_MasterSendByte(RADIO_GET_STATUS);
+    SPI0_MasterSendByte(0x00);
+    GPIOA_SetBits(GPIO_Pin_12);
 
     Lora_WaitOnBusy();
 }
@@ -137,17 +113,15 @@ void Lora_CheckDeviceReady( void )
 //SPI写指令
 void Lora_WriteCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
 {
-	uint8_t tx,rx;
     Lora_CheckDeviceReady( );
-    NSS_LOW();
-    tx = (uint8_t)command;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100);
+    GPIOA_ResetBits(GPIO_Pin_12);
+    SPI0_MasterSendByte((uint8_t)command);
 
     for( uint16_t i = 0; i < size; i++ )
     {
-    	HAL_SPI_TransmitReceive(&hspi4, buffer+i, &rx, 1, 100);
+        SPI0_MasterSendByte(buffer[i]);
     }
-    NSS_HIGH();
+    GPIOA_SetBits(GPIO_Pin_12);
     if( command != RADIO_SET_SLEEP )
     {
         Lora_WaitOnBusy( );
@@ -157,20 +131,17 @@ void Lora_WriteCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
 //SPI读指令
 void Lora_ReadCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
 {
-	uint8_t tx,rx;
     Lora_CheckDeviceReady( );
 
-    NSS_LOW();
-    tx = command;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100);
-    tx = 0;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100);
+    GPIOA_ResetBits(GPIO_Pin_12);
+    SPI0_MasterSendByte(command);
+    SPI0_MasterSendByte(0);
     for( uint16_t i = 0; i < size; i++ )
     {
-    	HAL_SPI_TransmitReceive(&hspi4, &tx, buffer+i, 1, 100);
+        buffer[i] = SPI0_MasterRecvByte();
     }
 
-    NSS_HIGH();
+    GPIOA_SetBits(GPIO_Pin_12);
 
     Lora_WaitOnBusy( );
 }
@@ -178,24 +149,20 @@ void Lora_ReadCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
 //写寄存器
 void Lora_WriteRegisters( uint16_t address, uint8_t *buffer, uint16_t size )
 {
-	uint8_t tx,rx;
     Lora_CheckDeviceReady( );
 
-    NSS_LOW();
+    GPIOA_ResetBits(GPIO_Pin_12);
 
-    tx = RADIO_WRITE_REGISTER;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100); //spiWriteByte(RADIO_WRITE_REGISTER); //SPI_InOut((uint8_t)RADIO_WRITE_REGISTER);
-    tx = (uint8_t)((address & 0xff00u) >> 8u);
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100); //spiWriteByte((uint8_t)((addr & 0xff00u) >> 8u)); //SPI_InOut((uint8_t)((addr & 0xff00u) >> 8u));
-    tx = (uint8_t)(address & 0x00ffu);
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100);
+    SPI0_MasterSendByte(RADIO_WRITE_REGISTER);
+    SPI0_MasterSendByte((uint8_t)((address & 0xff00u) >> 8u));
+    SPI0_MasterSendByte((uint8_t)(address & 0x00ffu));
 
     for( uint16_t i = 0; i < size; i++ )
     {
-    	HAL_SPI_TransmitReceive(&hspi4, buffer+i, &rx, 1, 100);
+        SPI0_MasterSendByte(buffer[i]);
     }
 
-    NSS_HIGH();
+    GPIOA_SetBits(GPIO_Pin_12);
 
     Lora_WaitOnBusy( );
 }
@@ -207,22 +174,17 @@ void Lora_WriteRegister( uint16_t address, uint8_t value )
 
 void Lora_ReadRegisters( uint16_t address, uint8_t *buffer, uint16_t size )
 {
-	uint8_t tx,rx;
     Lora_CheckDeviceReady( );
 
-    NSS_LOW();
-    tx = RADIO_READ_REGISTER;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100); //spiWriteByte((uint8_t)RADIO_READ_REGISTER); //SPI_InOut((uint8_t)RADIO_READ_REGISTER);
-    tx = (uint8_t)((address & 0xff00u) >> 8u);
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100); //spiWriteByte((uint8_t)((addr & 0xff00u) >> 8u)); //SPI_InOut((uint8_t)((addr & 0xff00u) >> 8u));
-    tx = (uint8_t)(address & 0x00ffu);
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100); //spiWriteByte((uint8_t)(addr & 0x00ffu)); //SPI_InOut((uint8_t)(addr & 0x00ffu));
-    tx = 0;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100); //spiWriteByte(0x00); //SPI_InOut(0); //status
+    GPIOA_ResetBits(GPIO_Pin_12);
+    SPI0_MasterSendByte(RADIO_READ_REGISTER);
+    SPI0_MasterSendByte((uint8_t)((address & 0xff00u) >> 8u));
+    SPI0_MasterSendByte((uint8_t)(address & 0x00ffu));
+    SPI0_MasterSendByte(0x00);
     for (uint16_t i=0; i<size; i++) {
-    	HAL_SPI_TransmitReceive(&hspi4, &tx, buffer+i, 1, 100); //data[i] = spiReadByte();
+        buffer[i] = SPI0_MasterRecvByte();
     }
-    NSS_HIGH();
+    GPIOA_SetBits(GPIO_Pin_12);
 
     Lora_WaitOnBusy( );
 }
@@ -236,19 +198,16 @@ uint8_t Lora_ReadRegister( uint16_t address )
 
 void Lora_WriteBuffer( uint8_t offset, uint8_t *buffer, uint8_t size )
 {
-	uint8_t tx,rx;
     Lora_CheckDeviceReady( );
 
-    NSS_LOW();
+    GPIOA_ResetBits(GPIO_Pin_12);
 
-    tx = RADIO_WRITE_BUFFER;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100); //spiWriteByte((uint8_t)RADIO_WRITE_BUFFER); //SPI_InOut((uint8_t)RADIO_WRITE_BUFFER);
-    tx = offset;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100); //spiWriteByte(offset); //SPI_InOut(offset); //相对于 TxBufferBaseAddress 的偏移量
+    SPI0_MasterSendByte(RADIO_WRITE_BUFFER);
+    SPI0_MasterSendByte(offset);
     for (uint16_t i=0; i<size; i++) {
-    	HAL_SPI_TransmitReceive(&hspi4, buffer+i, &rx, 1, 100); //spiWriteByte(data[i]); //SPI_InOut(data[i]);
+        SPI0_MasterSendByte(buffer[i]);
     }
-    NSS_HIGH();
+    GPIOA_SetBits(GPIO_Pin_12);
 
     Lora_WaitOnBusy( );
 }
@@ -256,21 +215,17 @@ void Lora_WriteBuffer( uint8_t offset, uint8_t *buffer, uint8_t size )
 //从数据缓冲区中读取数据
 void Lora_ReadBuffer( uint8_t offset, uint8_t *buffer, uint8_t size )
 {
-	uint8_t tx,rx;
     Lora_CheckDeviceReady( );
 
-    NSS_LOW();
+    GPIOA_ResetBits(GPIO_Pin_12);
 
-    tx = RADIO_READ_BUFFER;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100); //spiWriteByte((uint8_t)RADIO_WRITE_BUFFER); //SPI_InOut((uint8_t)RADIO_WRITE_BUFFER);
-    tx = offset;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100);
-    tx = 0;
-    HAL_SPI_TransmitReceive(&hspi4, &tx, &rx, 1, 100);
+    SPI0_MasterSendByte(RADIO_READ_BUFFER);
+    SPI0_MasterSendByte(offset);
+    SPI0_MasterSendByte(0x00);
     for (uint16_t i=0; i<size; i++) {
-       	HAL_SPI_TransmitReceive(&hspi4, &tx, buffer+i, 1, 100); //data[i] = spiReadByte();
+        buffer[i] = SPI0_MasterRecvByte();
     }
-    NSS_HIGH();
+    GPIOA_SetBits(GPIO_Pin_12);
 
     Lora_WaitOnBusy( );
 }
@@ -668,9 +623,9 @@ void Lora_ClearIrqStatus( uint16_t irq )
  * @param sf 扩频因子。
  * @param bw 带宽。
  */
-void Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
+uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
     uint8_t buf[8] = {0};
-	
+	Lora_Spi_Init();
 	Lora_Reset( );
     // 唤醒LoRa模块,wait for busy 
     Lora_Wakeup( );
@@ -729,16 +684,15 @@ void Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
     // 设置射频频率
     Lora_SetRfFrequency( freq *1000000.0f );
 
-	//tcxo enable
-	#if USING_TCXO
-	//tcxo enable
-	buf[0] = 0x07;
-	buf[1] = 0;
-	buf[2] = 0;
-	buf[3] = 0xaa;
-	Lora_WriteCommand(RADIO_SET_TCXOMODE, buf, 4);
-	Lora_WaitOnBusy();
-#endif
+    // Verify SPI communication by reading status
+    RadioStatus_t status = Lora_GetStatus();
+    if (status.Value == 0x00 || status.Value == 0xFF) {
+        PRINT("Error: LoRa module not responding (Status=0x%02x). Check wiring.\n", status.Value);
+        return 1;
+    } else {
+        PRINT("LoRa Init Verified. Status=0x%02x\n", status.Value);
+        return 0;
+    }
 }
 
 /**
@@ -760,24 +714,28 @@ bool Lora_Tx(uint8_t *data, uint8_t len, uint32_t ms){
 	SX126x.PacketParams.Params.LoRa.PayloadLength = len;
 	Lora_SetPacketParams( &SX126x.PacketParams );
 	Lora_SendPayload( data, len, 0 );
-
+    PRINT("irq = %d\r\n",Lora_GetIrqStatus());
 	while(timeoutMs > 0){
 		irqRegs = Lora_GetIrqStatus();
+        if( irqRegs == 0xFFFF ){
+            PRINT("Error: SPI Read Failure (0xFFFF). Check wiring/power.\n");
+            return 0;
+        }
 		if( ( irqRegs & IRQ_TX_DONE ) == IRQ_TX_DONE ){
-//			PRINTF("Tx Success \n");
+			PRINT("Tx Success \n");
 			break;
 		}else if((irqRegs & IRQ_RX_TX_TIMEOUT) == IRQ_RX_TX_TIMEOUT){
-			PRINTF("Tx Irq Timeout .\n");
+			PRINT("Tx Irq Timeout .\n");
 			break;
 		}
 		timeoutMs -= 20;
-		DelayMs(20);
+		mDelaymS(20);
 	}
 	if(timeoutMs <= 0){
-		PRINTF("\t#Tx timeout(%ld ms) for %d bytes @ %ld.\n", ms, len, Rtc_GetTimestamp());
+		PRINT("\t#Tx timeout(%ld ms) for %d bytes @ %ld.\n", ms, len, Rtc_GetTimestamp());
 		return 0;
 	}else{
-		//PRINTF("\tTx(in %ld ms) for %d bytes @ %ld.\n",(ms-timeoutMs), len, Rtc_GetTimestamp());
+		PRINT("\tTx(in %ld ms) for %d bytes @ %ld.\n",(ms-timeoutMs), len, Rtc_GetTimestamp());
 		return 1;
 	}
 }
@@ -805,22 +763,26 @@ bool Lora_TxRequest(uint8_t *data, uint8_t len, uint32_t ms){
 	Lora_SendPayload( data, len, 0 );
 	while(timeoutMs > 0){
 		irqRegs = Lora_GetIrqStatus();
+        if( irqRegs == 0xFFFF ){
+            PRINT("Error: SPI Read Failure (0xFFFF). Check wiring/power.\n");
+            return false;
+        }
 		if( ( irqRegs & IRQ_TX_DONE ) == IRQ_TX_DONE ){
-	//		PRINTF("Tx Success \n");
+	//		PRINT("Tx Success \n");
 			break;
 		}else if((irqRegs & IRQ_RX_TX_TIMEOUT) == IRQ_RX_TX_TIMEOUT){
-			PRINTF("Tx Irq Timeout .\n");
+			PRINT("Tx Irq Timeout .\n");
 			break;
 		}
 		timeoutMs -= 20;
-		DelayMs(20);
+		mDelaymS(20);
 	}
 	if(timeoutMs <= 0){
-		PRINTF("\t#Tx timeout(%ld ms) for %d bytes @ %ld.\n", ms, len, Rtc_GetTimestamp());
+		PRINT("\t#Tx timeout(%ld ms) for %d bytes @ %ld.\n", ms, len, Rtc_GetTimestamp());
 		Lora_Listening();
 		return false;
 	}else{
-		//PRINTF("\tTx(in %ld ms) for %d bytes @ %ld.\n",(ms-timeoutMs), len, Rtc_GetTimestamp());
+		//PRINT("\tTx(in %ld ms) for %d bytes @ %ld.\n",(ms-timeoutMs), len, Rtc_GetTimestamp());
 		Lora_Listening();
 		return true;
 	}
@@ -836,24 +798,28 @@ void Lora_Rx(uint8_t *data, uint8_t *len, uint32_t ms){
 	*len = 0;
 	while(timeoutMs > 0){
 		irqRegs = Lora_GetIrqStatus();
-//		PRINTF("irqRegs = %d\n",irqRegs);
+//		PRINT("irqRegs = %d\n",irqRegs);
+        if( irqRegs == 0xFFFF ){
+             PRINT("Error: SPI Read Failure (0xFFFF).\n");
+             break;
+        }
 		if((irqRegs & IRQ_RX_DONE) == IRQ_RX_DONE){
 			Lora_GetPayload(data,len,0xFF);
 			Lora_GetPacketStatus( &pktStatus );
 			Rssi = pktStatus.Params.LoRa.RssiPkt+20;
 			break;
 		}else if((irqRegs & IRQ_RX_TX_TIMEOUT) == IRQ_RX_TX_TIMEOUT){
-			PRINTF("rx Irq timeout .\n");
+			PRINT("rx Irq timeout .\n");
 			break;
 		}
 		timeoutMs -= 20;
-		DelayMs(20);
+		mDelaymS(20);
 	}
 	if (*len == 0) {
-		PRINTF("\tRx timeout(%ld ms) @ %ld.\n", ms, Rtc_GetTimestamp());
+		PRINT("\tRx timeout(%ld ms) @ %ld.\n", ms, Rtc_GetTimestamp());
 		Lora_Listening();
 	} else {
-		//PRINTF("\tRx(%d bytes in %ld ms) @ %ld.\n", *len, (ms-timeoutMs), Rtc_GetTimestamp());
+		//PRINT("\tRx(%d bytes in %ld ms) @ %ld.\n", *len, (ms-timeoutMs), Rtc_GetTimestamp());
 		Lora_Listening();
 	}
 }
@@ -869,23 +835,27 @@ void Lora_RxRequest(uint8_t *data, uint8_t *len, uint32_t ms){
 	*len = 0;
 	while(timeoutMs > 0){
 		irqRegs = Lora_GetIrqStatus();
-//		PRINTF("irqRegs = %d\n",irqRegs);
+//		PRINT("irqRegs = %d\n",irqRegs);
+        if( irqRegs == 0xFFFF ){
+             PRINT("Error: SPI Read Failure (0xFFFF).\n");
+             break;
+        }
 		if((irqRegs & IRQ_RX_DONE) == IRQ_RX_DONE){
 			Lora_GetPayload(data,len,0xFF);
 			Lora_GetPacketStatus( &pktStatus );
 			Rssi = pktStatus.Params.LoRa.RssiPkt+20;
 			break;
 		}else if((irqRegs & IRQ_RX_TX_TIMEOUT) == IRQ_RX_TX_TIMEOUT){
-			PRINTF("rx Irq timeout .\n");
+			PRINT("rx Irq timeout .\n");
 			break;
 		}
 		timeoutMs -= 20;
-		DelayMs(20);
+		mDelaymS(20);
 	}
 	if (*len == 0) {
-		PRINTF("\tRx timeout(%ld ms) @ %ld.\n", ms, Rtc_GetTimestamp());
+		PRINT("\tRx timeout(%ld ms) @ %ld.\n", ms, Rtc_GetTimestamp());
 	} else {
-		//PRINTF("\tRx(%d bytes in %ld ms) @ %ld.\n", *len, (ms-timeoutMs), Rtc_GetTimestamp());
+		//PRINT("\tRx(%d bytes in %ld ms) @ %ld.\n", *len, (ms-timeoutMs), Rtc_GetTimestamp());
 	}
 	Lora_Listening();
 }
@@ -895,13 +865,14 @@ void Lora_CheckData(uint8_t *data, uint8_t *len){
 	uint16_t irqRegs = 0;
 	PacketStatus_t pktStatus;
 	irqRegs = Lora_GetIrqStatus();
+    if( irqRegs == 0xFFFF ) return;
 	if((irqRegs & IRQ_RX_DONE) == IRQ_RX_DONE){
 		Lora_GetPayload(data,len,0xFF);
 		Lora_GetPacketStatus( &pktStatus );
 		Rssi = pktStatus.Params.LoRa.RssiPkt+20;
 		Lora_Listening();
 	}else if(irqRegs != 0){
-		PRINTF("\t#Irq(%d).\n", irqRegs);
+		PRINT("\t#Irq(%d).\n", irqRegs);
 		Lora_Listening();
 	}
 }
@@ -922,17 +893,3 @@ void Lora_Listening(){
 }
 
 
-void restartNode(uint16_t nodeId, uint8_t cmdTag){
-	//仅单线发送
-	uint8_t txBuf[LORA_BUFFER_LENGTH];
-
-	*txBuf = eCmdRestart;
-	*(txBuf + 1) = cmdTag;
-	*((uint16_t *)(txBuf + 2)) = Gateway.gwId;
-	*((uint16_t *)(txBuf + 4)) = nodeId; //nodeId;
-	AddCrc(txBuf, 6);
-	Lora_TxRequest(txBuf, 7, LORA_TX_TIMEOUT);
-	PRINTF("NodeID/cmdTag(%04x/%04x) restart[%d] @ %lu.\n", nodeId, cmdTag,Rtc_GetTimestamp());
- 	return;
-
-}

@@ -21,15 +21,8 @@
 	#define MAX_LORA_POWER 22				//Lora发射功率最大值(Sx1278的最大值是20，Sx1262的最大值为22)
 	#define MIN_LORA_POWER 14				//Lora发射功率最小值
 	#define RSSI_OFFSET 20
-	#define USING_TCXO  1 					//针对易佰特lora模组,需开启tcxo
-	#define LORA_SF_LISTEN 10				//监听LORA的扩频因子:10 //Sf10+Bw7:  128b-1210ms, 112b-1050ms, 104b-1000ms(6只热量计上报数据:16*6+7),88b-880ms(5只热量计上报数据:16*5+7),72b-760ms(4只热量计上报数据),56b-600ms,27b-400ms(配置下发)
-	#define LORA_BW_LISTEN 0x04				//监听LORA的带宽:125K sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
-	///#define LORA_BW_LISTEN 7				//监听LORA的带宽:7 //带宽: BW 4-31.25, 5-41.7k, 6-62.5k，7-125k (适用于SX127X)
-	#define LORA_SF_SCAN 8					//扫描LORA的扩频因子:8 //Sf8+Bw5: 71b-660ms(4台冷机上报数据) 43b-450ms(4台变频器上报数据) 15b-235ms(4路电流上报)
-	#define LORA_BW_SCAN 0x0a				//扫描LORA的带宽:41.7 sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
-	///#define LORA_BW_SCAN 5				//扫描LORA的带宽:7 //带宽: BW 4-31.25, 5-41.7k, 6-62.5k，7-125k (适用于SX127X)
 
-	#define LORA_READY_TIMEOUT 50			//检查Lora是否Ready(Busy引脚为低电平表示Readu)的超时为50ms
+	#define LORA_READY_TIMEOUT 100			//检查Lora是否Ready(Busy引脚为低电平表示Readu)的超时为50ms
 	#define LORA_SPI_TIMEOUT 100			//SPI通信超时为100个tick
 
 	//#define LORA_LISTEN_TX_TIMEOUT 800	//LISTEN通道TX超时
@@ -362,7 +355,7 @@
 	    ModulationParams_t ModulationParams;
 	}SX126x_t;
 
-    void Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw);
+    uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw);
 	void Lora_Reset();
 	void Lora_Sleep();
 	void Lora_Standby(uint8_t xosc);

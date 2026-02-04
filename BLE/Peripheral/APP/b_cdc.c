@@ -1904,11 +1904,11 @@ void InitUSBDevPara(void)
 *******************************************************************************/
 void InitUSBDevice(void)
 {
-  usb_cdc_task_id = TMOS_ProcessEventRegister(USB_IRQProcessHandler);
   InitUSBDevPara();
   if(usb_work_mode == USB_VENDOR_MODE) InitVendorDevice();
   else                                 InitCDCDevice();
   PFIC_EnableIRQ( USB_IRQn );
+  usb_cdc_task_id = TMOS_ProcessEventRegister(USB_IRQProcessHandler);
   tmos_set_event(usb_cdc_task_id,0x1);
 }
 
@@ -1954,22 +1954,5 @@ void SendUSBData(UINT8 *p_send_dat,UINT16 send_len)
     PFIC_DisableIRQ(USB_IRQn);
     R8_UEP1_CTRL = (R8_UEP1_CTRL & ~MASK_UEP_T_RES) | UEP_T_RES_ACK; //IN_ACK
     PFIC_EnableIRQ(USB_IRQn);
-}
-
-/*******************************************************************************
-* Function Name  : USB_Printf
-* Description    : USB Printf function
-* Input          : fmt - format string
-* Output         : None
-* Return         : None
-*******************************************************************************/
-void USB_Printf(const char *fmt, ...)
-{
-    char buffer[MAX_PACKET_SIZE];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, MAX_PACKET_SIZE, fmt, args);
-    va_end(args);
-    SendUSBData((UINT8*)buffer, strlen(buffer));
 }
 

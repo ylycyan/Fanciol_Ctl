@@ -5,14 +5,23 @@
 
 # Add inputs and outputs from these tool invocations to the build variables 
 C_SRCS += \
+../APP/b_cdc.c \
+../APP/board.c \
+../APP/lora.c \
 ../APP/peripheral.c \
 ../APP/peripheral_main.c 
 
 C_DEPS += \
+./APP/b_cdc.d \
+./APP/board.d \
+./APP/lora.d \
 ./APP/peripheral.d \
 ./APP/peripheral_main.d 
 
 OBJS += \
+./APP/b_cdc.o \
+./APP/board.o \
+./APP/lora.o \
 ./APP/peripheral.o \
 ./APP/peripheral_main.o 
 

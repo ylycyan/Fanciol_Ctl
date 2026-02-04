@@ -3,7 +3,7 @@
  * Author             : WCH
  * Version            : V1.1
  * Date               : 2020/08/06
- * Description        : 外设从机应用主函数及任务系统初始化
+ * Description        : ????????????????????????????
  *********************************************************************************
  * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
  * Attention: This software (modified or not) and binary are used for 
@@ -11,14 +11,16 @@
  *******************************************************************************/
 
 /******************************************************************************/
-/* 头文件包含 */
+/* ???????? */
 #include "CONFIG.h"
 #include "HAL.h"
 #include "gattprofile.h"
 #include "peripheral.h"
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include "b_cdc.h"
+#include "lora.h"
 /*********************************************************************
  * GLOBAL TYPEDEFS
  */
@@ -31,7 +33,7 @@ uint8_t TxBuff[100] = "This is uart3 test .\r\n";
 /*********************************************************************
  * @fn      Main_Circulation
  *
- * @brief   主循环
+ * @brief   ?????
  *
  * @return  none
  */
@@ -42,11 +44,11 @@ void Main_Circulation()
     static uint32_t count = 0;
     while(1)
     {   
-        if(count++ % 10000 == 0){
-            // snprintf((char *)TxBuff, sizeof(TxBuff), "This is uart3 test %d.\r\n", count++);
-            // UART3_SendString(TxBuff, strlen((char *)TxBuff));
-            // USB_Printf("USB CDC Debug Test %d\r\n", count);
-        }
+        // if(count++ % 100000 == 0){
+        //     snprintf((char*)TxBuff,sizeof(TxBuff),"this is lora %d\r\n",count++);
+        //     Lora_Tx(TxBuff,20,1000);
+            
+        // }
         TMOS_SystemProcess();
     }
 }
@@ -54,7 +56,7 @@ uint8_t TestBuf[1024];
 /*********************************************************************
  * @fn      main
  *
- * @brief   主函数
+ * @brief   ??????
  *
  * @return  none
  */
@@ -62,17 +64,23 @@ int main(void)
 {
     uint16_t i;
     uint8_t  s;
-    GPIOA_SetBits(bTXD1);
-    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA);
+    SetSysClock(CLK_SOURCE_PLL_60MHz);
+
+    GPIOA_SetBits(GPIO_Pin_9);
+    GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);
+    GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
     UART1_DefInit();
 
-    GPIOA_SetBits(GPIO_Pin_5);
-    GPIOA_ModeCfg(GPIO_Pin_4, GPIO_ModeIN_PU);      // RXD-配置上拉输入
-    GPIOA_ModeCfg(GPIO_Pin_5, GPIO_ModeOut_PP_5mA); // TXD-配置推挽输出，注意先让IO口输出高电平
-    UART3_DefInit();
-    UART3_SendString("UART3 Test Start.\r\n", strlen("UART3 Test Start.\r\n"));
+    #if 1
+    PRINT("Lora Initing ...\n");
+    if(Lora_Init(420.1f,20,7,4) != 0){
+        PRINT("Lora Init Failed! Halting.\n");
+    }else{
+        PRINT("Lora Init OK.\n");
+    }
+#endif 
 
-    #if 0 // 读写Data-Flash
+    #if 0 // ??дData-Flash
 
     PRINT("EEPROM_READ...\n");
     EEPROM_READ(0, TestBuf, 500);
@@ -106,13 +114,19 @@ int main(void)
 
 #endif
 
+
     // InitUSBDevice();
 
     PRINT("%s\n", VER_LIB);
     CH58X_BLEInit();
     HAL_Init();
+
     GAPRole_PeripheralInit();
     Peripheral_Init();
+
+    //lora test
+
+
     Main_Circulation();
 }
 

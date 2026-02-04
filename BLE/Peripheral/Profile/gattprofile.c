@@ -543,6 +543,7 @@ static bStatus_t simpleProfile_ReadAttrCB(uint16_t connHandle, gattAttribute_t *
                     *pLen = maxLen;
                 }
                 tmos_memcpy(pValue, pAttr->pValue, *pLen);
+                PRINT("Read FFE1 len=%d\n", *pLen);
                 break;
 
             case SIMPLEPROFILE_CHAR2_UUID:
@@ -555,6 +556,7 @@ static bStatus_t simpleProfile_ReadAttrCB(uint16_t connHandle, gattAttribute_t *
                     *pLen = maxLen;
                 }
                 tmos_memcpy(pValue, pAttr->pValue, *pLen);
+                PRINT("Read FFE2 len=%d\n", *pLen);
                 break;
 
             case SIMPLEPROFILE_CHAR4_UUID:
@@ -567,6 +569,7 @@ static bStatus_t simpleProfile_ReadAttrCB(uint16_t connHandle, gattAttribute_t *
                     *pLen = maxLen;
                 }
                 tmos_memcpy(pValue, pAttr->pValue, *pLen);
+                PRINT("Read FFE4 len=%d\n", *pLen);
                 break;
 
             case SIMPLEPROFILE_CHAR5_UUID:
@@ -579,6 +582,7 @@ static bStatus_t simpleProfile_ReadAttrCB(uint16_t connHandle, gattAttribute_t *
                     *pLen = maxLen;
                 }
                 tmos_memcpy(pValue, pAttr->pValue, *pLen);
+                PRINT("Read FFE5 len=%d\n", *pLen);
                 break;
 
             default:
@@ -650,6 +654,7 @@ static bStatus_t simpleProfile_WriteAttrCB(uint16_t connHandle, gattAttribute_t 
                 {
                     tmos_memcpy(pAttr->pValue, pValue, SIMPLEPROFILE_CHAR1_LEN);
                     notifyApp = SIMPLEPROFILE_CHAR1;
+                    PRINT("Write FFE1 len=%d\n", len);
                 }
                 break;
 
@@ -673,12 +678,18 @@ static bStatus_t simpleProfile_WriteAttrCB(uint16_t connHandle, gattAttribute_t 
                 {
                     tmos_memcpy(pAttr->pValue, pValue, SIMPLEPROFILE_CHAR3_LEN);
                     notifyApp = SIMPLEPROFILE_CHAR3;
+                    PRINT("Write FFE3 len=%d\n", len);
                 }
                 break;
 
             case GATT_CLIENT_CHAR_CFG_UUID:
                 status = GATTServApp_ProcessCCCWriteReq(connHandle, pAttr, pValue, len,
                                                         offset, GATT_CLIENT_CFG_NOTIFY);
+                if(status == SUCCESS && len >= 2)
+                {
+                    uint16_t cfg = BUILD_UINT16(pValue[0], pValue[1]);
+                    PRINT("CCCD write: 0x%04x\n", cfg);
+                }
                 break;
 
             default:
