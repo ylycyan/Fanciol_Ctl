@@ -68,12 +68,12 @@ typedef enum{
     IR_TYPE_LEARNing  = 2
 }IR_CMD_TYPE_t;
 typedef struct{
-    uint8_t rxlen; 
-    uint8_t isFinish;
+    uint8_t rxlen:7; 
+    uint8_t isFinish:1;
     IR_CMD_TYPE_t type;
     uint8_t rxbuf[IRBUFSIZE];
     uint8_t txbuf[IRBUFSIZE];
-}IRBUF_t;
+}IRBUF_t; //uart3 红外通讯数据包
 
 /* Debug */
 #define _BT_INFO_ 1 // 打印蓝牙调试信息
@@ -110,7 +110,7 @@ typedef enum{
     PowerOff = 1, // 关
 }OnOff_t;
 
-#define MAGIC_CODE 0x55AA
+#define MAGIC_CODE 0x55AA //首次上电判断
 
 #define MAX_IR_LEARNNUM 10
 typedef struct{
@@ -127,10 +127,10 @@ typedef struct{
     uint8_t channel; //lora频点(0~9)
     LoraStatus_t loraStatus; // lora状态
     uint32_t lastReportTime; // 上次上报时间戳
-    uint32_t lastOnTime; // 上次空调开机时间,用于计算运行时间
+    uint32_t lastOnTime; // 上次空调开机时间,用于计算运行时间(由负载进行计算)
     uint8_t irIdx; // 空调号索引(83),对应g_arc_info中的空调品牌
     uint8_t irType; // 空调类型(<200),对应g_arc_info中各品牌的指令下标
-    uint8_t learnNum; //学习指令个数
+    uint8_t learnNum; //学习指令个数(0~MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
     //上报数据
     OnOff_t onOff; // 空调开关状态,0:关 1:开
@@ -141,11 +141,11 @@ typedef struct{
     uint16_t runTime; // 空调运行时间,单位:分钟
     uint16_t loadPower; // 负载功率,单位:W*10
     uint16_t isLock; // 本地操作禁用? 暂不考虑,应只有远程控制,本地由遥控器控制
-    union{
-        uint16_t u16Val; // 故障码(0:正常 \\ 异常>> bit 1:lora离线 2:红外模块异常(uart通讯错误) 3：红外匹配异常(未匹配设备或找不到索引或索引错误) 4:ad转换异常 5:功率转换异常)
+    union{  // 故障码(0:正常 \\ 异常>> bit 0:lora离线 1:红外学习异常 2：红外匹配异常(未匹配设备或找不到索引或索引错误[或无反馈?]) 3:ad转换异常 4:功率转换异常 5:flash操作异常)
+        uint16_t u16Val; 
         struct{
             uint16_t lora:1; // lora离线
-            uint16_t ir:1; // 红外模块异常(uart通讯错误)
+            uint16_t irLearn:1; // 红外学习异常(红外自匹配或学习错误)
             uint16_t irMatch:1; // 红外匹配异常(未匹配设备或找不到索引或索引错误)
             uint16_t ad:1; // ad转换异常
             uint16_t power:1; // 功率转换异常
@@ -154,7 +154,7 @@ typedef struct{
     }errorCode;
 }t_dev;
 
-static t_dev Dev;
+extern t_dev Dev;
 
 //led 
 #define LED0_PIN GPIO_Pin_19

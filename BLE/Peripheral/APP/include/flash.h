@@ -8,4 +8,5 @@ int Flash_Read(uint8_t *data, uint32_t len);
 void CheckFirstPower(void);
 void SaveDevInfo(uint16_t delay);
 void LoadDevInfo(void);
+void Flash_Poll(void);
 #endif

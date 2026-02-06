@@ -1,7 +1,6 @@
 #include "board.h"
 #include "time.h"
 IRBUF_t IrBuf = {0};
-
 void Check_IrBuf(void){ //
     static uint16_t lastRxLen = 0;
     if(!IrBuf.isFinish){ //未接收完成
@@ -29,6 +28,7 @@ void Check_IrBuf(void){ //
                 #if _IR_INFO_
                     PRINT("ir Matched Fialed.\r\n");
                 #endif
+                Dev.errorCode.bit.irLearn = 1;
             }else{ //匹配成功
                 //查询 g_arc_info 表中是否存在对应编号
                 uint16_t temp = (((uint16_t)IrBuf.rxbuf[0])<<8)|(IrBuf.rxbuf[1]);
@@ -40,6 +40,7 @@ void Check_IrBuf(void){ //
                         if(g_arc_info[i].cmd[j] == temp){ //flash表中找到对应设备
                             Dev.irIdx = i;
                             Dev.irType = j;
+                            Dev.errorCode.bit.irLearn = 0;
                             #if _IR_INFO_
                                 PRINT("\n\t### ir Match Success ###\r\n");
                                 PRINT("\t### match device:%s,index:%d\r\n",g_arc_info[i].name,g_arc_info[i].cmd[j]);
@@ -48,14 +49,17 @@ void Check_IrBuf(void){ //
                         }
                     }
                 }
+                Dev.errorCode.bit.irLearn = 1; //未匹配到对应品牌空调
             }
         }else if(IrBuf.rxlen == 3){  //20s自动超时返回
             if((IrBuf.rxbuf[0] == 0x88) && (IrBuf.rxbuf[1] == 0x99) && (IrBuf.rxbuf[2] == 0xAA)){
                 #if _IR_INFO_
                 PRINT("ir Matched timeout\r\n");
                 #endif
+                Dev.errorCode.bit.irLearn = 1;
             }
         }else{
+            Dev.errorCode.bit.irLearn = 1;
             #if _IR_INFO_
             PrintHex("ir Unexpected rx",IrBuf.rxbuf,IrBuf.rxlen);
             #endif
@@ -70,6 +74,7 @@ void Check_IrBuf(void){ //
                 #if _IR_INFO_
                 PRINT("ir Matched timeout\r\n");
                 #endif
+                Dev.errorCode.bit.irLearn = 1;
             }
         }else{
 
@@ -88,6 +93,7 @@ void Check_IrBuf(void){ //
                 PRINT("dev learnNum=%d\r\n",Dev.learnNum);
                 // PrintHex("ir Learning rx",IrBuf.rxbuf,IrBuf.rxlen);
             #endif
+            Dev.errorCode.bit.irLearn = 0;
         }
     }
     #elif (IR_MODULE == xx)

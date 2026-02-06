@@ -467,5 +467,6 @@ static const t_arc g_arc_info[] =
 #error undefined ir module
 #endif
 
-
+void Check_IrBuf(void);
+void Ir_cmd(IR_CMD_t cmd);
 #endif

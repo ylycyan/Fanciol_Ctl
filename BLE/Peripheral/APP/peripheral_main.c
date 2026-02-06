@@ -27,6 +27,7 @@
  * GLOBAL TYPEDEFS
  */
 __attribute__((aligned(4))) uint32_t MEM_BUF[BLE_MEMHEAP_SIZE / 4];
+t_dev Dev;
 
 #if(defined(BLE_MAC)) && (BLE_MAC == TRUE)
 const uint8_t MacAddr[6] = {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02};
@@ -70,13 +71,12 @@ int main(void)
     uint8_t  s;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
     //timer0 init
-    TMR0_TimerInit(FREQ_SYS / 100);         // 设置定时时间 10ms
+    TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 每10ms触发中断
     TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);        //enable peripheral interrupt
     PFIC_EnableIRQ(TMR0_IRQn);                    //enable timer0 core interrupt
     //wwdg init
     WWDG_Init();
     Led_Init();
-    RTC_SetTimestamp(1767240000);
     //debug init
     GPIOA_SetBits(GPIO_Pin_9);
     GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);
@@ -96,7 +96,7 @@ int main(void)
     }
 #endif 
 
-    #if 0 // ??дData-Flash
+    #if 0 // Data-Flash 测试
 
     PRINT("EEPROM_READ...\n");
     EEPROM_READ(0, TestBuf, 500);
@@ -136,13 +136,14 @@ int main(void)
     PRINT("%s\n", VER_LIB);
     CH58X_BLEInit();
     HAL_Init();
-
+    RTC_SetTimestamp(1767240000);
+    LoadDevInfo();
     GAPRole_PeripheralInit();
     Peripheral_Init();
 
     //lora test
 
-
+    
     Main_Circulation();
 }
 
