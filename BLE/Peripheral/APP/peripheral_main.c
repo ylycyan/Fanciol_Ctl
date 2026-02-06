@@ -29,9 +29,7 @@
 __attribute__((aligned(4))) uint32_t MEM_BUF[BLE_MEMHEAP_SIZE / 4];
 t_dev Dev;
 
-#if(defined(BLE_MAC)) && (BLE_MAC == TRUE)
-const uint8_t MacAddr[6] = {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02};
-#endif
+
 uint8_t TxBuff[100] = "This is uart3 test .\r\n";
 /*********************************************************************
  * @fn      Main_Circulation
@@ -71,7 +69,7 @@ int main(void)
     uint8_t  s;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
     //timer0 init
-    TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 √ø10ms¥•∑¢÷–∂œ
+    TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 ˇ10msùùùùù?ù
     TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);        //enable peripheral interrupt
     PFIC_EnableIRQ(TMR0_IRQn);                    //enable timer0 core interrupt
     //wwdg init
@@ -96,7 +94,7 @@ int main(void)
     }
 #endif 
 
-    #if 0 // Data-Flash ≤‚ ‘
+    #if 0 // Data-Flash ùùùù
 
     PRINT("EEPROM_READ...\n");
     EEPROM_READ(0, TestBuf, 500);

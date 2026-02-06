@@ -168,6 +168,17 @@ static inline void Led_Init(void){
 #define LED0_TOGGLE() (GPIOB_ReadPortPin(LED0_PIN)?GPIOB_ResetBits(LED0_PIN):GPIOB_SetBits(LED0_PIN))
 #define LED1_TOGGLE() (GPIOB_ReadPortPin(LED1_PIN)?GPIOB_ResetBits(LED1_PIN):GPIOB_SetBits(LED1_PIN))
 
+//blueTooth 蓝牙相关配置
+#define BT_DEFAULT_ADVERTISING_INTERVAL         80 //广播间隔，单位 0.625ms，80=50ms。
+#define BT_DEFAULT_DISCOVERABLE_MODE            GAP_ADTYPE_FLAGS_GENERAL  //可发现模式(一般可发现)
+#define BT_DEFAULT_DESIRED_MIN_CONN_INTERVAL    6  //最小连接间隔(单位1.25ms)
+#define BT_DEFAULT_DESIRED_MAX_CONN_INTERVAL    100 //最大连接间隔(单位1.25ms)
+#define BT_DEFAULT_DESIRED_SLAVE_LATENCY        0   //从机延时
+#define BT_DEFAULT_DESIRED_CONN_TIMEOUT         100 //连接监督超时时间(单位:10ms)1s
+#define BT_COMPANY_ID                           0x07D7  //蓝牙厂商 ID
+#define BT_DEVICE_NAME                          "Wch Bt 123" //设备名
+// #define BT_DEFAULT_MAC_ADDR                     {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02} //BLE MAC 地址 默认由芯片地址随机生成
+
 //uilt functions
 static inline void PrintHex(char *msg, uint8_t *buffer, uint16_t size){
     uint16_t i;

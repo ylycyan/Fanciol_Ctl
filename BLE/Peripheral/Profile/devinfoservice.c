@@ -15,6 +15,7 @@
  */
 #include "CONFIG.h"
 #include "devinfoservice.h"
+#include "board.h"
 
 /*********************************************************************
  * MACROS
@@ -129,10 +130,10 @@ static const uint8_t devInfo11073Cert[] = {
 // System ID characteristic
 static uint8_t devInfoPnpIdProps = GATT_PROP_READ;
 static uint8_t devInfoPnpId[DEVINFO_PNP_ID_LEN] = {
-    1,                                    // Vendor ID source (1=Bluetooth SIG)
-    LO_UINT16(0x07D7), HI_UINT16(0x07D7), // Vendor ID (WCH)
-    LO_UINT16(0x0000), HI_UINT16(0x0000), // Product ID (vendor-specific)
-    LO_UINT16(0x0110), HI_UINT16(0x0110)  // Product version (JJ.M.N)
+    1,
+    LO_UINT16(BT_COMPANY_ID), HI_UINT16(BT_COMPANY_ID),
+    LO_UINT16(0x0000), HI_UINT16(0x0000),
+    LO_UINT16(0x0110), HI_UINT16(0x0110)
 };
 
 /*********************************************************************

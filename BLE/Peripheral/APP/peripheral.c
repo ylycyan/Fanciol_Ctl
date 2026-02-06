@@ -20,6 +20,8 @@
 #include "devinfoservice.h"
 #include "gattprofile.h"
 #include "peripheral.h"
+#include "board.h"
+#include <string.h>
 
 /*********************************************************************
  * MACROS
@@ -40,28 +42,6 @@
 
 // PHY update delay
 #define SBP_PHY_UPDATE_DELAY                 2400
-
-// What is the advertising interval when device is discoverable (units of 625us, 80=50ms)
-#define DEFAULT_ADVERTISING_INTERVAL         80
-
-// Limited discoverable mode advertises for 30.72s, and then stops
-// General discoverable mode advertises indefinitely
-#define DEFAULT_DISCOVERABLE_MODE            GAP_ADTYPE_FLAGS_GENERAL
-
-// Minimum connection interval (units of 1.25ms, 6=7.5ms)
-#define DEFAULT_DESIRED_MIN_CONN_INTERVAL    6
-
-// Maximum connection interval (units of 1.25ms, 100=125ms)
-#define DEFAULT_DESIRED_MAX_CONN_INTERVAL    100
-
-// Slave latency to use parameter update
-#define DEFAULT_DESIRED_SLAVE_LATENCY        0
-
-// Supervision timeout value (units of 10ms, 100=1s)
-#define DEFAULT_DESIRED_CONN_TIMEOUT         100
-
-// Company Identifier: WCH
-#define WCH_COMPANY_ID                       0x07D7
 
 /*********************************************************************
  * TYPEDEFS
@@ -84,44 +64,16 @@
  */
 static uint8_t Peripheral_TaskID = INVALID_TASK_ID; // Task ID for internal task/event processing
 
-// GAP - SCAN RSP data (max size = 31 bytes)
 static uint8_t scanRspData[] = {
     0x02,
     GAP_ADTYPE_POWER_LEVEL,
     0
 };
 
-// GAP - Advertisement data (max size = 31 bytes, though this is
-// best kept short to conserve power while advertising)
-static uint8_t advertData[] = {
-    // Flags; this sets the device to use limited discoverable
-    // mode (advertises for 30 seconds at a time) instead of general
-    // discoverable mode (advertises indefinitely)
-    0x02, // length of this data
-    GAP_ADTYPE_FLAGS,
-    DEFAULT_DISCOVERABLE_MODE | GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED,
-
-    // service UUID, to notify central devices what services are included
-    // in this peripheral
-    0x03,                  // length of this data
-    GAP_ADTYPE_16BIT_MORE, // some of the UUID's, but not all
-    LO_UINT16(SIMPLEPROFILE_SERV_UUID),
-    HI_UINT16(SIMPLEPROFILE_SERV_UUID),
-
-    0x09, // length of this data
-    GAP_ADTYPE_LOCAL_NAME_COMPLETE,
-    'W',
-    'c',
-    'h',
-    ' ',
-    'T',
-    'e',
-    's',
-    't'
-};
+static uint8_t advertData[31];
 
 // GAP GATT Attributes
-static uint8_t attDeviceName[GAP_DEVICE_NAME_LEN] = "Wch Test";
+static uint8_t attDeviceName[GAP_DEVICE_NAME_LEN] = BT_DEVICE_NAME;
 
 // Connection item list
 static peripheralConnItem_t peripheralConnList;
@@ -139,6 +91,7 @@ static void peripheralParamUpdateCB(uint16_t connHandle, uint16_t connInterval,
 static void peripheralInitConnItem(peripheralConnItem_t *peripheralConnList);
 static void peripheralRssiCB(uint16_t connHandle, int8_t rssi);
 static void peripheralChar4Notify(uint8_t *pValue, uint16_t len);
+static uint8_t peripheralBuildAdvData(void);
 
 /*********************************************************************
  * PROFILE CALLBACKS
@@ -190,14 +143,14 @@ void Peripheral_Init()
 {
     Peripheral_TaskID = TMOS_ProcessEventRegister(Peripheral_ProcessEvent);
 
-    // Setup the GAP Peripheral Role Profile
     {
-        uint8_t  initial_advertising_enable = FALSE;
-        uint16_t desired_min_interval = DEFAULT_DESIRED_MIN_CONN_INTERVAL;
-        uint16_t desired_max_interval = DEFAULT_DESIRED_MAX_CONN_INTERVAL;
+        uint8_t advLen = peripheralBuildAdvData();
+        uint8_t initial_advertising_enable = FALSE;
+        uint16_t desired_min_interval = BT_DEFAULT_DESIRED_MIN_CONN_INTERVAL;
+        uint16_t desired_max_interval = BT_DEFAULT_DESIRED_MAX_CONN_INTERVAL;
 
         GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);
-        GAPRole_SetParameter(GAPROLE_ADVERT_DATA, sizeof(advertData), advertData);
+        GAPRole_SetParameter(GAPROLE_ADVERT_DATA, advLen, advertData);
         GAPRole_SetParameter(GAPROLE_MIN_CONN_INTERVAL, sizeof(uint16_t), &desired_min_interval);
         GAPRole_SetParameter(GAPROLE_MAX_CONN_INTERVAL, sizeof(uint16_t), &desired_max_interval);
         initial_advertising_enable = TRUE;
@@ -205,7 +158,7 @@ void Peripheral_Init()
     }
 
     {
-        uint16_t advInt = DEFAULT_ADVERTISING_INTERVAL;
+        uint16_t advInt = BT_DEFAULT_ADVERTISING_INTERVAL;
 
         // Set advertising interval
         GAP_SetParamValue(TGAP_DISC_ADV_INT_MIN, advInt);
@@ -335,12 +288,11 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
 
     if(events & SBP_PARAM_UPDATE_EVT)
     {
-        // Send connect param update request
         GAPRole_PeripheralConnParamUpdateReq(peripheralConnList.connHandle,
-                                             DEFAULT_DESIRED_MIN_CONN_INTERVAL,
-                                             DEFAULT_DESIRED_MAX_CONN_INTERVAL,
-                                             DEFAULT_DESIRED_SLAVE_LATENCY,
-                                             DEFAULT_DESIRED_CONN_TIMEOUT,
+                                             BT_DEFAULT_DESIRED_MIN_CONN_INTERVAL,
+                                             BT_DEFAULT_DESIRED_MAX_CONN_INTERVAL,
+                                             BT_DEFAULT_DESIRED_SLAVE_LATENCY,
+                                             BT_DEFAULT_DESIRED_CONN_TIMEOUT,
                                              Peripheral_TaskID);
 
         return (events ^ SBP_PARAM_UPDATE_EVT);
@@ -681,6 +633,32 @@ static void peripheralChar4Notify(uint8_t *pValue, uint16_t len)
             GATT_bm_free((gattMsg_t *)&noti, ATT_HANDLE_VALUE_NOTI);
         }
     }
+}
+
+static uint8_t peripheralBuildAdvData(void)
+{
+    uint8_t p = 0;
+    uint8_t nameLen = (uint8_t)strlen(BT_DEVICE_NAME);
+    if(nameLen > 22)
+    {
+        nameLen = 22;
+    }
+
+    advertData[p++] = 2;
+    advertData[p++] = GAP_ADTYPE_FLAGS;
+    advertData[p++] = BT_DEFAULT_DISCOVERABLE_MODE | GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED;
+
+    advertData[p++] = 3;
+    advertData[p++] = GAP_ADTYPE_16BIT_MORE;
+    advertData[p++] = LO_UINT16(SIMPLEPROFILE_SERV_UUID);
+    advertData[p++] = HI_UINT16(SIMPLEPROFILE_SERV_UUID);
+
+    advertData[p++] = (uint8_t)(nameLen + 1);
+    advertData[p++] = GAP_ADTYPE_LOCAL_NAME_COMPLETE;
+    memcpy(&advertData[p], BT_DEVICE_NAME, nameLen);
+    p = (uint8_t)(p + nameLen);
+
+    return p;
 }
 
 /*********************************************************************

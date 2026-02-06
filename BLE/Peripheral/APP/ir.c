@@ -100,24 +100,24 @@ void Check_IrBuf(void){ //
     #endif
 }
 
-void IR_Init(void){ //uart1
+void IR_Init(void){ //uart3
     GPIOA_SetBits(GPIO_Pin_9);
     GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);      // RXD-配置上拉输入
     GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA); // TXD-配置推挽输出，注意先让IO口输出高电平
-    UART1_DefInit();
-    UART1_INTCfg(ENABLE, RB_IER_RECV_RDY | RB_IER_LINE_STAT);
-    PFIC_EnableIRQ(UART1_IRQn);
+    UART3_DefInit();
+    UART3_INTCfg(ENABLE, RB_IER_RECV_RDY | RB_IER_LINE_STAT);
+    PFIC_EnableIRQ(UART3_IRQn);
 }
 
-void UART1_IRQHandler(void){
-    switch( UART1_GetITFlag() ){
+void UART3_IRQHandler(void){
+    switch( UART3_GetITFlag() ){
         case UART_II_LINE_STAT:        // 线路状态错误
-            UART1_GetLinSTA();
+            UART3_GetLinSTA();
             break;
         case UART_II_RECV_RDY:
         case UART_II_RECV_TOUT:
-            while(R8_UART1_RFC) {
-                IrBuf.rxbuf[IrBuf.rxlen & (IRBUFSIZE-1)] = R8_UART1_RBR; //环形接收数据，避免溢出
+            while(R8_UART3_RFC) {
+                IrBuf.rxbuf[IrBuf.rxlen & (IRBUFSIZE-1)] = R8_UART3_RBR; //环形接收数据，避免溢出
                 IrBuf.rxlen += 1;
             }
             IrBuf.rxlen = (IrBuf.rxlen & (IRBUFSIZE-1)) + 1 ;
