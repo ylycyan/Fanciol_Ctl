@@ -191,19 +191,14 @@ void Peripheral_Init()
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, sizeof(attDeviceName), attDeviceName);
     PRINT("Device Name: %s\n", attDeviceName);
 
-    // Setup the SimpleProfile Characteristic Values
     {
         uint8_t charValue1[SIMPLEPROFILE_CHAR1_LEN] = {1};
         uint8_t charValue2[SIMPLEPROFILE_CHAR2_LEN] = {2};
         uint8_t charValue3[SIMPLEPROFILE_CHAR3_LEN] = {3};
-        uint8_t charValue4[SIMPLEPROFILE_CHAR4_LEN] = {4};
-        uint8_t charValue5[SIMPLEPROFILE_CHAR5_LEN] = {1, 2, 3, 4, 5};
 
         SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN, charValue1);
         SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, SIMPLEPROFILE_CHAR2_LEN, charValue2);
         SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN, charValue3);
-        SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, SIMPLEPROFILE_CHAR4_LEN, charValue4);
-        SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR5, SIMPLEPROFILE_CHAR5_LEN, charValue5);
     }
 
     // Init Connection Item
@@ -601,8 +596,8 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
  */
 static void performPeriodicTask(void)
 {
-    uint8_t notiData[SIMPLEPROFILE_CHAR4_LEN] = {0x88};
-    peripheralChar4Notify(notiData, SIMPLEPROFILE_CHAR4_LEN);
+    uint8_t notiData[SIMPLEPROFILE_CHAR3_LEN] = {0x88};
+    peripheralChar4Notify(notiData, SIMPLEPROFILE_CHAR3_LEN);
 }
 
 /*********************************************************************
