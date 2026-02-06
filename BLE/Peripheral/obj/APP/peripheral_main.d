@@ -27,7 +27,11 @@ APP/peripheral_main.o: ../APP/peripheral_main.c \
  f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/Profile/include/gattprofile.h \
  f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/peripheral.h \
  f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/b_cdc.h \
- f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/lora.h
+ f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/lora.h \
+ f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/board.h \
+ f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/flash.h \
+ f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/ir_tab.h \
+ f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/timer.h
 
 f:/下载工具包/CH583EVT/EVT/EXAM/BLE/HAL/include/CONFIG.h:
 
@@ -86,3 +90,11 @@ f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/peripheral.h:
 f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/b_cdc.h:
 
 f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/lora.h:
+
+f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/board.h:
+
+f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/flash.h:
+
+f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/ir_tab.h:
+
+f:/下载工具包/CH583EVT/EVT/EXAM/BLE/Peripheral/APP/include/timer.h:

@@ -21,6 +21,8 @@
 #include <string.h>
 #include "b_cdc.h"
 #include "lora.h"
+#include "board.h"
+#include "timer.h"
 /*********************************************************************
  * GLOBAL TYPEDEFS
  */
@@ -49,6 +51,8 @@ void Main_Circulation()
         //     Lora_Tx(TxBuff,20,1000);
             
         // }
+        Period_100ms();
+        Period_1s();
         TMOS_SystemProcess();
     }
 }
@@ -65,13 +69,25 @@ int main(void)
     uint16_t i;
     uint8_t  s;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
-
+    //timer0 init
+    TMR0_TimerInit(FREQ_SYS / 100);         // 设置定时时间 10ms
+    TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);        //enable peripheral interrupt
+    PFIC_EnableIRQ(TMR0_IRQn);                    //enable timer0 core interrupt
+    //wwdg init
+    WWDG_Init();
+    Led_Init();
+    RTC_SetTimestamp(1767240000);
+    //debug init
     GPIOA_SetBits(GPIO_Pin_9);
     GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);
     GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
     UART1_DefInit();
-
-    #if 1
+    int arc_num = sizeof(g_arc_info)/sizeof(t_arc);
+    const t_arc *i_ptr = g_arc_info;
+    for(i = 0;i<arc_num;i++){
+        PRINT("name[%s],ir_num = %d\r\n",i_ptr[i].name,i_ptr[i].num);
+    }
+    #if 0
     PRINT("Lora Initing ...\n");
     if(Lora_Init(420.1f,20,7,4) != 0){
         PRINT("Lora Init Failed! Halting.\n");

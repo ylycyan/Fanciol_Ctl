@@ -6,7 +6,11 @@
  */
 #ifndef __BOARD_H__
 #define __BOARD_H__
-
+#include <stdint.h>
+#include <stdbool.h>
+#include "CH58x_common.h"
+#include "flash.h"
+#include "ir_tab.h"
 #define Default_DevId 0x1122 //默认的网关编号
 
 /* Lora */
@@ -55,64 +59,128 @@ typedef enum { //LORA频点定义: 单位MHz 注册/监听频率 - 扫描频率
 #define DevTag   50
 // ：开关状态(u8:0-关,1-开)、运行模式(u8:0-自动 1-制冷 2-除湿 3-送风 4-制热)、运行时间(u16-0~1440分钟)、设定温度(sf)、环境温度(sf)、用电量(U16)、故障码(u16-D0~15:通信模块故障，红外模块，状态检测，时间参数，温度参数，人感参数，人数参数，待机功率 异常，实时时钟，温度检测，脱机运行，存储参数，预存电量用完，C相参数，B相参数，A相参�??)、查询�??(U16)
 											//value0(tinyint),value1(tinyint),value2(smallint),value3(float),value4(float),value5(smallint),value6(smallint),value7(smallint)
+
+
+#define IRBUFSIZE 128
 typedef enum{
-    80 ,//关闭空调
-    81 ,//开启空调
-    a1 ,//模式自动
-    a2 ,//模式制冷
-    a3 ,//模式抽湿
-    a4 ,//模式送风
-    a5 ,//模式制热
-    40 ,//16°
-    41 ,//17°
-    42 ,//18°
-    43 ,//19°
-    44,//20°
-    45,//21°
-    46,//22°
-    47,//23°
-    48,//24°
-    49,//25°
-    4a,//26°
-    4b,//27°
-    4c,//28°
-    4d,//29°
-    4e,//30°
-    4f,//31°
-    51,//自动风速
-    52,//风速低
-    53,//风速中
-    54,//风速高
-    61,//风向向上(上下摆风)
-    62,//风向中
-    63,//风向向下(上下停摆)
-    70,//自动风向关闭
-    71,//自动风向打开
-    B0,//睡眠关
-    b1,//睡眠开
-    c0,//辅热关
-    c1,//辅热开
-    d0,//灯光关
-    d1,//灯光开
-    e0,//节能关
-    e1,//节能开
-    96,//温度减
-    97,//温度加
-    9c,//快速制冷
-    9d,//快速制热
-    9e,//静音
-    9f,//强经
-    Ir_Illegal
-}IR_CMD;
-
-
+    IR_TYPE_NORMAL = 0,
+    IR_TYPE_MATCH  = 1,
+    IR_TYPE_LEARNing  = 2
+}IR_CMD_TYPE_t;
+typedef struct{
+    uint8_t rxlen; 
+    uint8_t isFinish;
+    IR_CMD_TYPE_t type;
+    uint8_t rxbuf[IRBUFSIZE];
+    uint8_t txbuf[IRBUFSIZE];
+}IRBUF_t;
 
 /* Debug */
 #define _BT_INFO_ 1 // 打印蓝牙调试信息
 #define _LORA_INFO_ 1 // 打印LORA调试信息
 #define _Sensor_INFO_ 1 // 打印传感器调试信息
+#define _IR_INFO_ 1 //打印红外调试信息
+
+typedef enum{
+    Status_Uninit = 0, // 未初始化
+    Status_Logining = 1, // lora初始化,发送注册请求
+    Status_CheckSend = 2, // 检查是否发送完成
+    Status_RecvLogin = 3, // 接收注册响应
+    Status_Connected = 4, // 已连接
+    Status_CheckData = 5, // 检查数据是否发送完成
+}LoraStatus_t;
+
+typedef enum{
+    Mode_Auto = 0, // 自动
+    Mode_Cool = 1, // 制冷
+    Mode_Dry = 2, // 抽湿
+    Mode_Fan = 3, // 送风
+    Mode_Heat = 4, // 制热
+}Mode_t;
+
+typedef enum{
+    Wind_Auto = 0, // 自动风向
+    Wind_Low = 1, // 风向低
+    Wind_Mid = 2, // 风向中
+    Wind_High = 3, // 风向高
+}Wind_t;
+
+typedef enum{
+    PowerOn = 0, // 开
+    PowerOff = 1, // 关
+}OnOff_t;
+
+#define MAGIC_CODE 0x55AA
+
+#define MAX_IR_LEARNNUM 10
+typedef struct{
+    uint8_t type; //红外组合命令,暂不做定义，仅作为区分
+    uint8_t cmd[256];
+}IR_LEARNING_t;
 
 
+//设备结构体,存储设备信息,同时保存进DataFlash,上电时读取
+typedef struct{
+    uint16_t magicCode; //用于检测是否首次上电 0x55AA
+    uint16_t nodeId; // 节点ID
+    uint16_t radio;  //lora通道(0~4)
+    uint8_t channel; //lora频点(0~9)
+    LoraStatus_t loraStatus; // lora状态
+    uint32_t lastReportTime; // 上次上报时间戳
+    uint32_t lastOnTime; // 上次空调开机时间,用于计算运行时间
+    uint8_t irIdx; // 空调号索引(83),对应g_arc_info中的空调品牌
+    uint8_t irType; // 空调类型(<200),对应g_arc_info中各品牌的指令下标
+    uint8_t learnNum; //学习指令个数
+    IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
+    //上报数据
+    OnOff_t onOff; // 空调开关状态,0:关 1:开
+    uint16_t temp; // 环境温度
+    Mode_t mode; // 空调运行模式
+    uint16_t setTemp; // 设定温度
+    Wind_t wind; // 风速
+    uint16_t runTime; // 空调运行时间,单位:分钟
+    uint16_t loadPower; // 负载功率,单位:W*10
+    uint16_t isLock; // 本地操作禁用? 暂不考虑,应只有远程控制,本地由遥控器控制
+    union{
+        uint16_t u16Val; // 故障码(0:正常 \\ 异常>> bit 1:lora离线 2:红外模块异常(uart通讯错误) 3：红外匹配异常(未匹配设备或找不到索引或索引错误) 4:ad转换异常 5:功率转换异常)
+        struct{
+            uint16_t lora:1; // lora离线
+            uint16_t ir:1; // 红外模块异常(uart通讯错误)
+            uint16_t irMatch:1; // 红外匹配异常(未匹配设备或找不到索引或索引错误)
+            uint16_t ad:1; // ad转换异常
+            uint16_t power:1; // 功率转换异常
+            uint16_t flash:1; //flash操作异常
+        }bit;
+    }errorCode;
+}t_dev;
 
+static t_dev Dev;
+
+//led 
+#define LED0_PIN GPIO_Pin_19
+#define LED1_PIN GPIO_Pin_18
+static inline void Led_Init(void){
+    GPIOB_SetBits(LED0_PIN | LED1_PIN);
+    GPIOB_ModeCfg(LED0_PIN | LED1_PIN,GPIO_ModeOut_PP_5mA);
+}
+#define LED0(x) (x?GPIOB_ResetBits(LED0_PIN):GPIOB_SetBits(LED0_PIN))
+#define LED1(x) (x?GPIOB_ResetBits(LED1_PIN):GPIOB_SetBits(LED1_PIN))
+#define LED0_TOGGLE() (GPIOB_ReadPortPin(LED0_PIN)?GPIOB_ResetBits(LED0_PIN):GPIOB_SetBits(LED0_PIN))
+#define LED1_TOGGLE() (GPIOB_ReadPortPin(LED1_PIN)?GPIOB_ResetBits(LED1_PIN):GPIOB_SetBits(LED1_PIN))
+
+//uilt functions
+static inline void PrintHex(char *msg, uint8_t *buffer, uint16_t size){
+    uint16_t i;
+	if (buffer == NULL) {
+		return;
+	}
+    if (msg != NULL) {
+		PRINT("%s(%d bytes): ", msg, size);
+	}
+    for (i = 0; i < size; i++) {
+		PRINT("%02x ", buffer[i]);
+	}
+	PRINT("\n");
+}
 
 #endif

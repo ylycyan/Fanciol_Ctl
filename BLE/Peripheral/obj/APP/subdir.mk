@@ -7,23 +7,32 @@
 C_SRCS += \
 ../APP/b_cdc.c \
 ../APP/board.c \
+../APP/flash.c \
+../APP/ir.c \
 ../APP/lora.c \
 ../APP/peripheral.c \
-../APP/peripheral_main.c 
+../APP/peripheral_main.c \
+../APP/timer.c 
 
 C_DEPS += \
 ./APP/b_cdc.d \
 ./APP/board.d \
+./APP/flash.d \
+./APP/ir.d \
 ./APP/lora.d \
 ./APP/peripheral.d \
-./APP/peripheral_main.d 
+./APP/peripheral_main.d \
+./APP/timer.d 
 
 OBJS += \
 ./APP/b_cdc.o \
 ./APP/board.o \
+./APP/flash.o \
+./APP/ir.o \
 ./APP/lora.o \
 ./APP/peripheral.o \
-./APP/peripheral_main.o 
+./APP/peripheral_main.o \
+./APP/timer.o 
 
 DIR_OBJS += \
 ./APP/*.o \
