@@ -41,10 +41,10 @@ extern "C" {
 // Simple Keys Profile Services bit fields
 #define SIMPLEPROFILE_SERVICE       0x00000001
 
-// Length of characteristic in bytes ( Default MTU is 23 )
-#define SIMPLEPROFILE_CHAR1_LEN     1
-#define SIMPLEPROFILE_CHAR2_LEN     1
-#define SIMPLEPROFILE_CHAR3_LEN     1
+// Length of characteristic in bytes
+#define SIMPLEPROFILE_CHAR1_LEN     120
+#define SIMPLEPROFILE_CHAR2_LEN     120
+#define SIMPLEPROFILE_CHAR3_LEN     120
 
 /*********************************************************************
  * TYPEDEFS
@@ -119,6 +119,8 @@ extern bStatus_t SimpleProfile_GetParameter(uint8_t param, void *value);
  */
 extern bStatus_t simpleProfile_Notify(uint16_t connHandle, attHandleValueNoti_t *pNoti);
 
+
+extern uint16_t ReadCharCB();
 /*********************************************************************
 *********************************************************************/
 

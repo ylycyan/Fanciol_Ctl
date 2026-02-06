@@ -291,14 +291,9 @@ bStatus_t SimpleProfile_SetParameter(uint8_t param, uint16_t len, void *value)
     switch(param)
     {
         case SIMPLEPROFILE_CHAR1:
-            if(len == SIMPLEPROFILE_CHAR1_LEN)
-            {
-                tmos_memcpy(simpleProfileChar1, value, SIMPLEPROFILE_CHAR1_LEN);
-            }
-            else
-            {
-                ret = bleInvalidRange;
-            }
+
+                tmos_memcpy(simpleProfileChar1, value, len);
+
             break;
 
         case SIMPLEPROFILE_CHAR2:
@@ -432,13 +427,17 @@ static bStatus_t simpleProfile_ReadAttrCB(uint16_t connHandle, gattAttribute_t *
 
             // Only characteristic 1 has read permissions
             case SIMPLEPROFILE_CHAR1_UUID:
-                if(maxLen > SIMPLEPROFILE_CHAR1_LEN)
-                {
+                *pLen = ReadCharCB();
+                // if(maxLen > SIMPLEPROFILE_CHAR1_LEN)
+                // {
+                //     *pLen = SIMPLEPROFILE_CHAR1_LEN;
+                // }
+                // else
+                // {
+                //     *pLen = maxLen;
+                // }
+                if(*pLen > SIMPLEPROFILE_CHAR1_LEN){
                     *pLen = SIMPLEPROFILE_CHAR1_LEN;
-                }
-                else
-                {
-                    *pLen = maxLen;
                 }
                 tmos_memcpy(pValue, pAttr->pValue, *pLen);
                 PRINT("Read FFE1 len=%d\n", *pLen);

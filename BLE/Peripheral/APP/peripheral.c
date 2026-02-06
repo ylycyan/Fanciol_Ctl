@@ -78,7 +78,7 @@ static uint8_t attDeviceName[GAP_DEVICE_NAME_LEN] = BT_DEVICE_NAME;
 // Connection item list
 static peripheralConnItem_t peripheralConnList;
 
-static uint16_t peripheralMTU = ATT_MTU_SIZE;
+static uint16_t peripheralMTU = SIMPLEPROFILE_CHAR3_LEN;
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
@@ -191,15 +191,6 @@ void Peripheral_Init()
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, sizeof(attDeviceName), attDeviceName);
     PRINT("Device Name: %s\n", attDeviceName);
 
-    {
-        uint8_t charValue1[SIMPLEPROFILE_CHAR1_LEN] = {1};
-        uint8_t charValue2[SIMPLEPROFILE_CHAR2_LEN] = {2};
-        uint8_t charValue3[SIMPLEPROFILE_CHAR3_LEN] = {3};
-
-        SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN, charValue1);
-        SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, SIMPLEPROFILE_CHAR2_LEN, charValue2);
-        SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN, charValue3);
-    }
 
     // Init Connection Item
     peripheralInitConnItem(&peripheralConnList);
@@ -596,8 +587,9 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
  */
 static void performPeriodicTask(void)
 {
-    uint8_t notiData[SIMPLEPROFILE_CHAR3_LEN] = {0x88};
-    peripheralChar4Notify(notiData, SIMPLEPROFILE_CHAR3_LEN);
+    static uint8_t notiData[SIMPLEPROFILE_CHAR3_LEN] = {0x88,0x99,0x11,0x11,0x23};
+    notiData[0]++;
+    peripheralChar4Notify(notiData, 5);
 }
 
 /*********************************************************************
@@ -675,17 +667,28 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
         {
             uint8_t newValue[SIMPLEPROFILE_CHAR1_LEN];
             tmos_memcpy(newValue, pValue, len);
-            PRINT("profile ChangeCB CHAR1.. \n");
+            PRINT("profile ChangeCB CHAR1 len=%d\n", len);
+            for(uint16_t i = 0; i < len; i++)
+            {
+                PRINT("%02x ", newValue[i]);
+            }
+            PRINT("\n");
             break;
         }
 
-        case SIMPLEPROFILE_CHAR3:
+        case SIMPLEPROFILE_CHAR2:
         {
-            uint8_t newValue[SIMPLEPROFILE_CHAR3_LEN];
+            uint8_t newValue[SIMPLEPROFILE_CHAR2_LEN];
             tmos_memcpy(newValue, pValue, len);
-            PRINT("profile ChangeCB CHAR3..\n");
+            PRINT("profile ChangeCB CHAR2 len=%d\n", len);
+            for(uint16_t i = 0; i < len; i++)
+            {
+                PRINT("%02x ", newValue[i]);
+            }
+            PRINT("\n");
             break;
         }
+
 
         default:
             // should not reach here!
@@ -693,5 +696,12 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
     }
 }
 
+uint16_t ReadCharCB(){
+    static uint8_t charValue1[SIMPLEPROFILE_CHAR1_LEN] = {1,2,3,4,5};
+    uint8_t len = 5;
+    charValue1[0]++;
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, len, charValue1);
+    return len;
+}
 /*********************************************************************
 *********************************************************************/
