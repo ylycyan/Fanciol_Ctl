@@ -76,7 +76,7 @@ typedef struct{
 }IRBUF_t; //uart3 红外通讯数据包
 
 /* Debug */
-#define _BT_INFO_ 1 // 打印蓝牙调试信息
+#define _BT_INFO_ 0 // 打印蓝牙调试信息
 #define _LORA_INFO_ 1 // 打印LORA调试信息
 #define _Sensor_INFO_ 1 // 打印传感器调试信息
 #define _IR_INFO_ 1 //打印红外调试信息
@@ -117,7 +117,7 @@ typedef struct{
     uint8_t type; //红外组合命令,暂不做定义，仅作为区分
     uint8_t cmd[256];
 }IR_LEARNING_t;
-
+extern IRBUF_t IrBuf;
 
 //设备结构体,存储设备信息,同时保存进DataFlash,上电时读取
 typedef struct{
@@ -178,6 +178,22 @@ static inline void Led_Init(void){
 #define BT_COMPANY_ID                           0x07D7  //蓝牙厂商 ID
 #define BT_DEVICE_NAME                          "Wch Bt 123" //设备名
 // #define BT_DEFAULT_MAC_ADDR                     {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02} //BLE MAC 地址 默认由芯片地址随机生成
+
+//蓝牙协议
+typedef enum {
+    BT_CMD_NULL     = 0, //空指令
+    BT_CMD_OK       = 1,
+    BT_CMD_FAIL     = 2,
+    BT_CMD_DATA     = 3,
+    BT_CMD_OPERATE  = 4,
+    BT_CMD_IRTRANS  = 5,
+    BT_CMD_IRMATCH  = 6,
+    BT_CMD_IRLEARN  = 7,
+    BT_CMD_SYSPARAMS= 8,
+    BT_CMD_UPDATE   = 9,
+    BT_CMD_RESET    = 10,
+    BT_CMD_ILLEGAL  = 11,
+}BT_CMD_t;
 
 //uilt functions
 static inline void PrintHex(char *msg, uint8_t *buffer, uint16_t size){

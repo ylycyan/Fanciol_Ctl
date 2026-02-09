@@ -319,9 +319,11 @@ static void Peripheral_ProcessGAPMsg(gapRoleEvent_t *pEvent)
     {
         case GAP_SCAN_REQUEST_EVENT:
         {
-            // PRINT("Receive scan req from %x %x %x %x %x %x  ..\n", pEvent->scanReqEvt.scannerAddr[0],
-            //       pEvent->scanReqEvt.scannerAddr[1], pEvent->scanReqEvt.scannerAddr[2], pEvent->scanReqEvt.scannerAddr[3],
-            //       pEvent->scanReqEvt.scannerAddr[4], pEvent->scanReqEvt.scannerAddr[5]);
+            #if _BT_INFO_
+            PRINT("Receive scan req from %x %x %x %x %x %x  ..\n", pEvent->scanReqEvt.scannerAddr[0],
+                  pEvent->scanReqEvt.scannerAddr[1], pEvent->scanReqEvt.scannerAddr[2], pEvent->scanReqEvt.scannerAddr[3],
+                  pEvent->scanReqEvt.scannerAddr[4], pEvent->scanReqEvt.scannerAddr[5]);
+            #endif
             break;
         }
 
@@ -458,7 +460,9 @@ static void Peripheral_LinkTerminated(gapRoleEvent_t *pEvent)
  */
 static void peripheralRssiCB(uint16_t connHandle, int8_t rssi)
 {
+    #if _BT_INFO_
     PRINT("RSSI -%d dB Conn  %x \n", -rssi, connHandle);
+    #endif
 }
 
 /*********************************************************************
@@ -648,44 +652,134 @@ static uint8_t peripheralBuildAdvData(void)
     return p;
 }
 
-/*********************************************************************
- * @fn      simpleProfileChangeCB
- *
- * @brief   Callback from SimpleBLEProfile indicating a value change
- *
- * @param   paramID - parameter ID of the value that was changed.
- *          pValue - pointer to data that was changed
- *          len - length of data
- *
- * @return  none
- */
+//M:len(1)cmd(1)DATA(N)Crc(1)
+//S:Len(1)cmd(1)Crc(1)
 static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len)
 {
     switch(paramID)
     {
         case SIMPLEPROFILE_CHAR1:
         {
-            uint8_t newValue[SIMPLEPROFILE_CHAR1_LEN];
-            tmos_memcpy(newValue, pValue, len);
-            PRINT("profile ChangeCB CHAR1 len=%d\n", len);
-            for(uint16_t i = 0; i < len; i++)
+            uint8_t rxbuf[SIMPLEPROFILE_CHAR1_LEN];
+            tmos_memcpy(rxbuf, pValue, len);
+            PrintHex("char1 rx",rxbuf,len);
+            //处理指令
+            if(len < 3)
             {
-                PRINT("%02x ", newValue[i]);
+                //指令长度不足
+                PRINT("char1 rx len error\n");
+                break;
             }
-            PRINT("\n");
+            BT_CMD_t cmd = rxbuf[1];
+            switch(cmd)
+            {
+                case BT_CMD_NULL:
+                {
+                    //空指令
+                    break;
+                }
+                case BT_CMD_OK:
+                {
+                    //成功指令
+                    break;
+                }
+                case BT_CMD_FAIL:
+                {
+                    //失败指令
+                    break;
+                }
+                case BT_CMD_DATA:
+                {
+                    //数据指令
+                    break;
+                }
+                case BT_CMD_OPERATE:
+                {
+                    Dev.errorCode.bit.irMatch = 0;
+                    Ir_cmd(rxbuf[2]);
+                    //操作指令
+                    break;
+                }
+                case BT_CMD_IRTRANS:
+                {
+                    //红外指令透传
+                    Dev.errorCode.bit.irMatch = 0;
+                    tmos_memcpy(IrBuf.txbuf,rxbuf+2,len-2);
+                    IrBuf.rxlen = 0;
+                    IrBuf.isFinish = 0;
+                    PrintHex("send ",IrBuf.txbuf,len-2);
+                    UART3_SendString(IrBuf.txbuf,len-2);
+                    break;
+                }
+                case BT_CMD_IRMATCH:
+                {
+                    Dev.errorCode.bit.irMatch = 0;
+                    tmos_memcpy(IrBuf.txbuf,rxbuf+2,len-2);
+                    IrBuf.rxlen = 0;
+                    IrBuf.isFinish = 0;
+                    IrBuf.type = IR_TYPE_MATCH;
+                    IrBuf.txbuf[0] = 0x30;
+                    IrBuf.txbuf[1] = 0x70;
+                    IrBuf.txbuf[2] = 0xa0;
+                    PrintHex("send ",IrBuf.txbuf,3);
+                    UART3_SendString(IrBuf.txbuf,3);
+                    break;
+                }
+                case BT_CMD_IRLEARN:
+                {
+                    Dev.errorCode.bit.irMatch = 0;
+                    tmos_memcpy(IrBuf.txbuf,rxbuf+2,len-2);
+                    IrBuf.rxlen = 0;
+                    IrBuf.isFinish = 0;
+                    IrBuf.type = IR_TYPE_LEARNing;
+                    IrBuf.txbuf[0] = 0x30;
+                    IrBuf.txbuf[1] = 0x20;
+                    IrBuf.txbuf[2] = 0x50;
+                    PrintHex("send ",IrBuf.txbuf,3);
+                    UART3_SendString(IrBuf.txbuf,3);
+                    break;
+                }
+                case BT_CMD_SYSPARAMS:
+                {
+                    //系统参数指令
+                    break;
+                }
+                case BT_CMD_UPDATE:
+                {
+                    //更新指令
+                    break;
+                }
+                case BT_CMD_RESET:
+                {
+                    //重置指令
+                    break;
+                }
+                case BT_CMD_ILLEGAL:
+                {
+                    //非法指令
+                    break;
+                }
+                default:
+                {
+                    //未知指令
+                    break;
+                }
+            }
+
+
+
+
+
+
+
             break;
         }
 
         case SIMPLEPROFILE_CHAR2:
         {
-            uint8_t newValue[SIMPLEPROFILE_CHAR2_LEN];
-            tmos_memcpy(newValue, pValue, len);
-            PRINT("profile ChangeCB CHAR2 len=%d\n", len);
-            for(uint16_t i = 0; i < len; i++)
-            {
-                PRINT("%02x ", newValue[i]);
-            }
-            PRINT("\n");
+            uint8_t rxbuf[SIMPLEPROFILE_CHAR2_LEN];
+            tmos_memcpy(rxbuf, pValue, len);
+            PrintHex("char2 rx",rxbuf,len);
             break;
         }
 
@@ -696,6 +790,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
     }
 }
 
+//仅支持Characteristic1 (0xFFE1)读功能
 uint16_t ReadCharCB(){
     static uint8_t charValue1[SIMPLEPROFILE_CHAR1_LEN] = {1,2,3,4,5};
     uint8_t len = 5;

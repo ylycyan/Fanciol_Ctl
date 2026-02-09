@@ -69,12 +69,13 @@ int main(void)
     uint8_t  s;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
     //timer0 init
-    TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 ˇ10msùùùùù?ù
+    TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 ?10msùùùù???
     TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);        //enable peripheral interrupt
     PFIC_EnableIRQ(TMR0_IRQn);                    //enable timer0 core interrupt
     //wwdg init
     WWDG_Init();
     Led_Init();
+    IR_Init();
     //debug init
     GPIOA_SetBits(GPIO_Pin_9);
     GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);

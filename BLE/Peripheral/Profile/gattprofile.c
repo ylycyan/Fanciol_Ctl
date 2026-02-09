@@ -17,7 +17,7 @@
  */
 #include "CONFIG.h"
 #include "gattprofile.h"
-
+#include "board.h"
 /*********************************************************************
  * MACROS
  */
@@ -440,7 +440,9 @@ static bStatus_t simpleProfile_ReadAttrCB(uint16_t connHandle, gattAttribute_t *
                     *pLen = SIMPLEPROFILE_CHAR1_LEN;
                 }
                 tmos_memcpy(pValue, pAttr->pValue, *pLen);
+                #if _BT_INFO_
                 PRINT("Read FFE1 len=%d\n", *pLen);
+                #endif
                 break;
 
             default:
@@ -511,7 +513,9 @@ static bStatus_t simpleProfile_WriteAttrCB(uint16_t connHandle, gattAttribute_t 
                 {
                     tmos_memcpy(pAttr->pValue, pValue, SIMPLEPROFILE_CHAR1_LEN);
                     notifyApp = SIMPLEPROFILE_CHAR1;
+                    #if _BT_INFO_
                     PRINT("Write FFE1 len=%d\n", len);
+                    #endif
                 }
                 break;
 
@@ -535,7 +539,9 @@ static bStatus_t simpleProfile_WriteAttrCB(uint16_t connHandle, gattAttribute_t 
                 {
                     tmos_memcpy(pAttr->pValue, pValue, SIMPLEPROFILE_CHAR2_LEN);
                     notifyApp = SIMPLEPROFILE_CHAR2;
+                    #if _BT_INFO_
                     PRINT("Write FFE2 len=%d\n", len);
+                    #endif
                 }
                 break;
 

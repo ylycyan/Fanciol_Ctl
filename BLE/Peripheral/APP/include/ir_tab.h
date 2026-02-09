@@ -469,4 +469,5 @@ static const t_arc g_arc_info[] =
 
 void Check_IrBuf(void);
 void Ir_cmd(IR_CMD_t cmd);
+void IR_Init(void);
 #endif

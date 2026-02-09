@@ -10,14 +10,15 @@ void Check_IrBuf(void){ //
                 lastRxLen = 0;
             }else{
                 lastRxLen = IrBuf.rxlen; //未接收完毕
+                return;   
             }
+        }else{
+            return; 
         }
     }else{ //接收完成
         return;
     }
-    if(!IrBuf.isFinish){ //未接收完成
-        return;        
-    }
+    PrintHex("uart3 rx",IrBuf.rxbuf,IrBuf.rxlen);
     #if(IR_MODULE == HXD039B)
     if(IrBuf.type == IR_TYPE_MATCH){ //查表匹配
         //匹配失败 RX 返回：FF FF（匹配失败）；
@@ -37,7 +38,7 @@ void Check_IrBuf(void){ //
                 #endif
                 for(int i,j = 0;i<(sizeof(g_arc_info)/sizeof(t_arc));i++){
                     for(j = 0;j<g_arc_info[i].num;j++){
-                        if(g_arc_info[i].cmd[j] == temp){ //flash表中找到对应设备
+                        if(g_arc_info[i].cmd[j] == temp){ //flash表中找到对应设备,//存在多个设备同一编号匹配多个设备情况,对模块只关心编号.调试时打印所有匹配到的型号信息
                             Dev.irIdx = i;
                             Dev.irType = j;
                             Dev.errorCode.bit.irLearn = 0;
@@ -101,14 +102,16 @@ void Check_IrBuf(void){ //
 }
 
 void IR_Init(void){ //uart3
-    GPIOA_SetBits(GPIO_Pin_9);
-    GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);      // RXD-配置上拉输入
-    GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA); // TXD-配置推挽输出，注意先让IO口输出高电平
+    GPIOA_SetBits(GPIO_Pin_5);
+    GPIOA_ModeCfg(GPIO_Pin_4, GPIO_ModeIN_PU);      // RXD-配置上拉输入
+    GPIOA_ModeCfg(GPIO_Pin_5, GPIO_ModeOut_PP_5mA); // TXD-配置推挽输出，注意先让IO口输出高电平
     UART3_DefInit();
     UART3_INTCfg(ENABLE, RB_IER_RECV_RDY | RB_IER_LINE_STAT);
     PFIC_EnableIRQ(UART3_IRQn);
 }
 
+__INTERRUPT
+__HIGH_CODE
 void UART3_IRQHandler(void){
     switch( UART3_GetITFlag() ){
         case UART_II_LINE_STAT:        // 线路状态错误
@@ -120,7 +123,7 @@ void UART3_IRQHandler(void){
                 IrBuf.rxbuf[IrBuf.rxlen & (IRBUFSIZE-1)] = R8_UART3_RBR; //环形接收数据，避免溢出
                 IrBuf.rxlen += 1;
             }
-            IrBuf.rxlen = (IrBuf.rxlen & (IRBUFSIZE-1)) + 1 ;
+            // IrBuf.rxlen = (IrBuf.rxlen & (IRBUFSIZE-1)) + 1 ;
             break;
         case UART_II_THR_EMPTY: // 发送缓存区空，可继续发送
             break;
@@ -148,7 +151,7 @@ void Ir_cmd(IR_CMD_t cmd){
         IrBuf.txbuf[3] = g_arc_info[Dev.irIdx].cmd[Dev.irType]&0xff;
         IrBuf.txbuf[4] = cmd;
         IrBuf.rxlen = temp = 0;
-        UART1_SendString(IrBuf.txbuf,5);
+        UART3_SendString(IrBuf.txbuf,5);
         #if _IR_INFO_
             PrintHex("ir tx",IrBuf.txbuf,5);
         #endif
