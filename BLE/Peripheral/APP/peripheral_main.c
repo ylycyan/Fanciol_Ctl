@@ -129,20 +129,20 @@ int main(void)
 
 #endif
 
-
-    // InitUSBDevice();
-
+    // InitUSBDevice(); //usb-cdc´®¿Úµ÷ÊÔ 
     PRINT("%s\n", VER_LIB);
     CH58X_BLEInit();
     HAL_Init();
+    //lse test
+    sys_safe_access_enable();
+    R8_CK32K_CONFIG |= RB_CLK_OSC32K_XT | RB_CLK_INT32K_PON | RB_CLK_XT32K_PON;
+    sys_safe_access_disable();
     RTC_SetTimestamp(1767240000);
     LoadDevInfo();
     GAPRole_PeripheralInit();
     Peripheral_Init();
 
-    //lora test
-
-    
+    //lora test    
     Main_Circulation();
 }
 

@@ -3,6 +3,10 @@
 		{
 			"file": "APP/include/board.h",
 			"encoding": "utf8"
+		},
+		{
+			"file": "HAL/include/CONFIG.h",
+			"encoding": "utf8"
 		}
 	]
 }

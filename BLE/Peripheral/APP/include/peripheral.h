@@ -59,7 +59,7 @@ extern uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events);
 
 /*********************************************************************
 *********************************************************************/
-
+extern void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len);
 #ifdef __cplusplus
 }
 #endif

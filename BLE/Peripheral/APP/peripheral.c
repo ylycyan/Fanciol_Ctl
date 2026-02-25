@@ -90,7 +90,7 @@ static void peripheralParamUpdateCB(uint16_t connHandle, uint16_t connInterval,
                                     uint16_t connSlaveLatency, uint16_t connTimeout);
 static void peripheralInitConnItem(peripheralConnItem_t *peripheralConnList);
 static void peripheralRssiCB(uint16_t connHandle, int8_t rssi);
-static void peripheralChar4Notify(uint8_t *pValue, uint16_t len);
+void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len);
 static uint8_t peripheralBuildAdvData(void);
 
 /*********************************************************************
@@ -593,20 +593,21 @@ static void performPeriodicTask(void)
 {
     static uint8_t notiData[SIMPLEPROFILE_CHAR3_LEN] = {0x88,0x99,0x11,0x11,0x23};
     notiData[0]++;
-    peripheralChar4Notify(notiData, 5);
+    peripheralCharNotify(SIMPLEPROFILE_CHAR3, notiData, 5);
 }
 
 /*********************************************************************
- * @fn      peripheralChar4Notify
+ * @fn      peripheralCharNotify
  *
- * @brief   Prepare and send simpleProfileChar4 notification
+ * @brief   Prepare and send SimpleProfile characteristic notification
  *
- * @param   pValue - data to notify
+ * @param   charIndex - SIMPLEPROFILE_CHAR1/2/3
+ *          pValue - data to notify
  *          len - length of data
  *
  * @return  none
  */
-static void peripheralChar4Notify(uint8_t *pValue, uint16_t len)
+void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len)
 {
     attHandleValueNoti_t noti;
     if(len > (peripheralMTU - 3))
@@ -619,7 +620,7 @@ static void peripheralChar4Notify(uint8_t *pValue, uint16_t len)
     if(noti.pValue)
     {
         tmos_memcpy(noti.pValue, pValue, noti.len);
-        if(simpleProfile_Notify(peripheralConnList.connHandle, &noti) != SUCCESS)
+        if(simpleProfile_Notify(peripheralConnList.connHandle, charIndex, &noti) != SUCCESS)
         {
             GATT_bm_free((gattMsg_t *)&noti, ATT_HANDLE_VALUE_NOTI);
         }
@@ -663,6 +664,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
             uint8_t rxbuf[SIMPLEPROFILE_CHAR1_LEN];
             tmos_memcpy(rxbuf, pValue, len);
             PrintHex("char1 rx",rxbuf,len);
+            peripheralCharNotify(SIMPLEPROFILE_CHAR1, rxbuf, len-1);
             //¥¶¿Ì÷∏¡Ó
             if(len < 3)
             {
@@ -780,6 +782,10 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
             uint8_t rxbuf[SIMPLEPROFILE_CHAR2_LEN];
             tmos_memcpy(rxbuf, pValue, len);
             PrintHex("char2 rx",rxbuf,len);
+            IrBuf.rxlen = 0;
+            IrBuf.isFinish = 0;
+            UART3_SendString(rxbuf,len);
+            // peripheralCharNotify(SIMPLEPROFILE_CHAR2, rxbuf, len);
             break;
         }
 

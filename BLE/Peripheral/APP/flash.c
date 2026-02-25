@@ -2,7 +2,6 @@
 #include "CH58x_common.h"
 //EEPROM_BLOCK_SIZE 4096
 //@return 0:success !0:fail
-
 static volatile uint16_t Flash_Delay = 0;
 
 int Flash_Erase(void){
@@ -33,7 +32,7 @@ void LoadDevInfo(void){
     Flash_Read((uint8_t*)&Dev,sizeof(Dev));
     //打印Dev数据
     PRINT("Dev.magicCode:0x%04x,Dev.errorCode:0x%04x,Dev.onOff:%d,Dev.mode:%d,Dev.wind:%d,Dev.irIdx:%d,Dev.irType:%d,Dev.setTemp:%d.\r\n",
-        Dev.magicCode,Dev.errorCode.u16Val,Dev.onOff,Dev.mode,Dev.wind,Dev.irIdx,Dev.irType,Dev.setTemp);
+        Dev.magicCode,Dev.errorCode.u16Val,Dev.onOff,Dev.mode,Dev.wind,Dev.irIdx,Dev.irType,Dev.temSet);
     if(Dev.magicCode != MAGIC_CODE){ //首次上电，清空所有设备数据
         memset(&Dev,0,sizeof(Dev));
         Dev.magicCode = MAGIC_CODE;
@@ -56,4 +55,3 @@ void LoadDevInfo(void){
         Dev.errorCode.bit.irMatch = 1;
     }
 }
-

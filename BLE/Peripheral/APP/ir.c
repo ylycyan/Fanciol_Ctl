@@ -1,8 +1,15 @@
 #include "board.h"
 #include "time.h"
+#include "CONFIG.h"
+#include "peripheral.h"
+#include "gattprofile.h"
 IRBUF_t IrBuf = {0};
+
+//检测红外模块接收缓冲区数据
+//蓝牙连接状态下，可通过FFE2直接透传测试
 void Check_IrBuf(void){ //
     static uint16_t lastRxLen = 0;
+    uint8_t state;
     if(!IrBuf.isFinish){ //未接收完成
         if(IrBuf.rxlen > 0){
             if(IrBuf.rxlen == lastRxLen){ //100ms没收到新数据,接收完毕
@@ -19,6 +26,10 @@ void Check_IrBuf(void){ //
         return;
     }
     PrintHex("uart3 rx",IrBuf.rxbuf,IrBuf.rxlen);
+    GAPRole_GetParameter(GAPROLE_STATE,&state);
+    if(state == GAPROLE_CONNECTED){ //蓝牙已连接
+        peripheralCharNotify(SIMPLEPROFILE_CHAR2, IrBuf.rxbuf, IrBuf.rxlen);
+    }
     #if(IR_MODULE == HXD039B)
     if(IrBuf.type == IR_TYPE_MATCH){ //查表匹配
         //匹配失败 RX 返回：FF FF（匹配失败）；

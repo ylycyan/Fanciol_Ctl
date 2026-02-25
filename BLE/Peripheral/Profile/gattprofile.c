@@ -26,8 +26,10 @@
  * CONSTANTS
  */
 
-// Position of simpleProfilechar3 value in attribute array
-#define SIMPLEPROFILE_CHAR3_VALUE_POS    8
+// Position of simpleProfilecharX value in attribute array
+#define SIMPLEPROFILE_CHAR1_VALUE_POS    2
+#define SIMPLEPROFILE_CHAR2_VALUE_POS    6
+#define SIMPLEPROFILE_CHAR3_VALUE_POS    10
 
 /*********************************************************************
  * TYPEDEFS
@@ -74,7 +76,7 @@ static simpleProfileCBs_t *simpleProfile_AppCBs = NULL;
 static const gattAttrType_t simpleProfileService = {ATT_BT_UUID_SIZE, simpleProfileServUUID};
 
 // Simple Profile Characteristic 1 Properties
-static uint8_t simpleProfileChar1Props = GATT_PROP_READ | GATT_PROP_WRITE;
+static uint8_t simpleProfileChar1Props = GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_NOTIFY;
 
 // Characteristic 1 Value
 static uint8_t simpleProfileChar1[SIMPLEPROFILE_CHAR1_LEN] = {0};
@@ -83,7 +85,7 @@ static uint8_t simpleProfileChar1[SIMPLEPROFILE_CHAR1_LEN] = {0};
 static uint8_t simpleProfileChar1UserDesp[] = "Characteristic 1\0";
 
 // Simple Profile Characteristic 2 Properties
-static uint8_t simpleProfileChar2Props = GATT_PROP_WRITE;
+static uint8_t simpleProfileChar2Props = GATT_PROP_WRITE | GATT_PROP_NOTIFY;
 
 // Characteristic 2 Value
 static uint8_t simpleProfileChar2[SIMPLEPROFILE_CHAR2_LEN] = {0};
@@ -100,10 +102,12 @@ static uint8_t simpleProfileChar3[SIMPLEPROFILE_CHAR3_LEN] = {0};
 // Simple Profile Characteristic 3 User Description
 static uint8_t simpleProfileChar3UserDesp[] = "Characteristic 3\0";
 
-// Simple Profile Characteristic 3 Configuration Each client has its own
+// Simple Profile Characteristic 1/2/3 Configuration Each client has its own
 // instantiation of the Client Characteristic Configuration. Reads of the
 // Client Characteristic Configuration only shows the configuration for
 // that client and writes only affect the configuration of that client.
+static gattCharCfg_t simpleProfileChar1Config[PERIPHERAL_MAX_CONNECTION];
+static gattCharCfg_t simpleProfileChar2Config[PERIPHERAL_MAX_CONNECTION];
 static gattCharCfg_t simpleProfileChar3Config[PERIPHERAL_MAX_CONNECTION];
 
 /*********************************************************************
@@ -140,6 +144,13 @@ static gattAttribute_t simpleProfileAttrTbl[] = {
         0,
         simpleProfileChar1UserDesp},
 
+    // Characteristic 1 configuration
+    {
+        {ATT_BT_UUID_SIZE, clientCharCfgUUID},
+        GATT_PERMIT_READ | GATT_PERMIT_WRITE,
+        0,
+        (uint8_t *)simpleProfileChar1Config},
+
     // Characteristic 2 Declaration
     {
         {ATT_BT_UUID_SIZE, characterUUID},
@@ -160,6 +171,13 @@ static gattAttribute_t simpleProfileAttrTbl[] = {
         GATT_PERMIT_READ,
         0,
         simpleProfileChar2UserDesp},
+
+    // Characteristic 2 configuration
+    {
+        {ATT_BT_UUID_SIZE, clientCharCfgUUID},
+        GATT_PERMIT_READ | GATT_PERMIT_WRITE,
+        0,
+        (uint8_t *)simpleProfileChar2Config},
 
     // Characteristic 3 Declaration
     {
@@ -230,6 +248,8 @@ bStatus_t SimpleProfile_AddService(uint32_t services)
     uint8_t status = SUCCESS;
 
     // Initialize Client Characteristic Configuration attributes
+    GATTServApp_InitCharCfg(INVALID_CONNHANDLE, simpleProfileChar1Config);
+    GATTServApp_InitCharCfg(INVALID_CONNHANDLE, simpleProfileChar2Config);
     GATTServApp_InitCharCfg(INVALID_CONNHANDLE, simpleProfileChar3Config);
 
     // Register with Link DB to receive link status change callback
@@ -367,28 +387,47 @@ bStatus_t SimpleProfile_GetParameter(uint8_t param, void *value)
 /*********************************************************************
  * @fn          simpleProfile_Notify
  *
- * @brief       Send a notification containing a heart rate
- *              measurement.
+ * @brief       Send a notification for specified characteristic.
  *
  * @param       connHandle - connection handle
- * @param       pNoti - pointer to notification structure
+ * @param       param      - SIMPLEPROFILE_CHAR1/2/3
+ * @param       pNoti      - pointer to notification structure
  *
  * @return      Success or Failure
  */
-bStatus_t simpleProfile_Notify(uint16_t connHandle, attHandleValueNoti_t *pNoti)
+bStatus_t simpleProfile_Notify(uint16_t connHandle, uint8_t param, attHandleValueNoti_t *pNoti)
 {
-    uint16_t value = GATTServApp_ReadCharCfg(connHandle, simpleProfileChar3Config);
+    uint16_t value = 0;
+    uint8_t attrPos = 0;
 
-    // If notifications enabled
-    if(value & GATT_CLIENT_CFG_NOTIFY)
+    switch(param)
     {
-        // Set the handle
-        pNoti->handle = simpleProfileAttrTbl[SIMPLEPROFILE_CHAR3_VALUE_POS].handle;
+        case SIMPLEPROFILE_CHAR1:
+            value = GATTServApp_ReadCharCfg(connHandle, simpleProfileChar1Config);
+            attrPos = SIMPLEPROFILE_CHAR1_VALUE_POS;
+            break;
 
-        // Send the notification
-        return GATT_Notification(connHandle, pNoti, FALSE);
+        case SIMPLEPROFILE_CHAR2:
+            value = GATTServApp_ReadCharCfg(connHandle, simpleProfileChar2Config);
+            attrPos = SIMPLEPROFILE_CHAR2_VALUE_POS;
+            break;
+
+        case SIMPLEPROFILE_CHAR3:
+            value = GATTServApp_ReadCharCfg(connHandle, simpleProfileChar3Config);
+            attrPos = SIMPLEPROFILE_CHAR3_VALUE_POS;
+            break;
+
+        default:
+            return bleIncorrectMode;
     }
-    return bleIncorrectMode;
+
+    if(!(value & GATT_CLIENT_CFG_NOTIFY))
+    {
+        return bleIncorrectMode;
+    }
+
+    pNoti->handle = simpleProfileAttrTbl[attrPos].handle;
+    return GATT_Notification(connHandle, pNoti, FALSE);
 }
 
 /*********************************************************************
@@ -595,9 +634,12 @@ static void simpleProfile_HandleConnStatusCB(uint16_t connHandle, uint8_t change
            ((changeType == LINKDB_STATUS_UPDATE_STATEFLAGS) &&
             (!linkDB_Up(connHandle))))
         {
+            GATTServApp_InitCharCfg(connHandle, simpleProfileChar1Config);
+            GATTServApp_InitCharCfg(connHandle, simpleProfileChar2Config);
             GATTServApp_InitCharCfg(connHandle, simpleProfileChar3Config);
         }
     }
+    
 }
 
 /*********************************************************************

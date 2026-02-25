@@ -11,7 +11,7 @@
 #include "CH58x_common.h"
 #include "flash.h"
 #include "ir_tab.h"
-#define Default_DevId 0x1122 //默认的网关编号
+#define Default_DevId 0xFFFF //默认的设备编号
 
 /* Lora */
 #define LORA_POWER 22				//lora发送功率：22
@@ -57,8 +57,18 @@ typedef enum { //LORA频点定义: 单位MHz 注册/监听频率 - 扫描频率
 /* Dev Info */
 #define DevType  54	// eDeviceAirConditioner(分体空调)
 #define DevTag   50
-// ：开关状态(u8:0-关,1-开)、运行模式(u8:0-自动 1-制冷 2-除湿 3-送风 4-制热)、运行时间(u16-0~1440分钟)、设定温度(sf)、环境温度(sf)、用电量(U16)、故障码(u16-D0~15:通信模块故障，红外模块，状态检测，时间参数，温度参数，人感参数，人数参数，待机功率 异常，实时时钟，温度检测，脱机运行，存储参数，预存电量用完，C相参数，B相参数，A相参�??)、查询�??(U16)
-											//value0(tinyint),value1(tinyint),value2(smallint),value3(float),value4(float),value5(smallint),value6(smallint),value7(smallint)
+/*
+v0:开关状态(u8:0-关,1-开)
+v1:运行模式(u8:0-自动 1-制冷 2-除湿 3-送风 4-制热)
+v2:风速(sf:0-自动 1-低 2-中 3-高)
+v3:运行时间(u16-0~1440分钟)
+v4:设定温度(sf)
+v5:环境温度(sf)
+v6:用电量(U16)
+v7:故障码(u16-D0~15:通信模块故障,红外模块,状态检测,时间参数,温度参数,人感参数,人数参数,待机功率 异常,实时时钟,温度检测,脱机运行,存储参数,预存电量用完)
+value0(tinyint),value1(tinyint),value2(smallint),value3(float),value4(float),value5(smallint),value6(smallint),value7(smallint)
+
+*/ 
 
 
 #define IRBUFSIZE 128
@@ -113,13 +123,31 @@ typedef enum{
 #define MAGIC_CODE 0x55AA //首次上电判断
 
 #define MAX_IR_LEARNNUM 10
-typedef struct{
+#define MAX_ACTIONNUM 10
+
+//红外学习结构体,一般空调红外控制包不超过230byte
+typedef struct{  
     uint8_t type; //红外组合命令,暂不做定义，仅作为区分
     uint8_t cmd[256];
 }IR_LEARNING_t;
 extern IRBUF_t IrBuf;
 
-//设备结构体,存储设备信息,同时保存进DataFlash,上电时读取
+//本地指令组(只在本地执行,定时执行对应动作,不上云),lse自校准待确认，常规10ppm晶振月误差大概(30*24*3600 *10/1000000 = 26s)
+typedef struct{  
+    uint32_t actionTime; //操作执行时间
+    uint32_t stopTime; //指令组停止时间
+    uint8_t l_week; //按工作日启用 bit[1~7]对应周一~周日
+    uint16_t l_month; //按月启用 bit[0~11] -> 1~12MM
+    union{
+        uint32_t u16Val[2];
+        uint8_t onOff:1;
+        uint8_t mode:3;
+        uint8_t wind:2;
+        uint8_t temSet;
+    }Act; //具体操作
+}DEV_ACTION_T;
+
+//设备结构体,存入DataFlash,掉电保存
 typedef struct{
     uint16_t magicCode; //用于检测是否首次上电 0x55AA
     uint16_t nodeId; // 节点ID
@@ -130,13 +158,14 @@ typedef struct{
     uint32_t lastOnTime; // 上次空调开机时间,用于计算运行时间(由负载进行计算)
     uint8_t irIdx; // 空调号索引(83),对应g_arc_info中的空调品牌
     uint8_t irType; // 空调类型(<200),对应g_arc_info中各品牌的指令下标
-    uint8_t learnNum; //学习指令个数(0~MAX_IR_LEARNNUM)
+    uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
+    DEV_ACTION_T actions[MAX_ACTIONNUM];  //本地指令组(只在本地执行,定时执行对应动作,不上云)
     //上报数据
     OnOff_t onOff; // 空调开关状态,0:关 1:开
-    uint16_t temp; // 环境温度
+    uint16_t tem; // 环境温度
     Mode_t mode; // 空调运行模式
-    uint16_t setTemp; // 设定温度
+    uint16_t temSet; // 设定温度
     Wind_t wind; // 风速
     uint16_t runTime; // 空调运行时间,单位:分钟
     uint16_t loadPower; // 负载功率,单位:W*10
@@ -149,7 +178,7 @@ typedef struct{
             uint16_t irMatch:1; // 红外匹配异常(未匹配设备或找不到索引或索引错误)
             uint16_t ad:1; // ad转换异常
             uint16_t power:1; // 功率转换异常
-            uint16_t flash:1; //flash操作异常
+            uint16_t flash:1; //flash(内部eeprom)操作异常
         }bit;
     }errorCode;
 }t_dev;
@@ -176,22 +205,22 @@ static inline void Led_Init(void){
 #define BT_DEFAULT_DESIRED_SLAVE_LATENCY        0   //从机延时
 #define BT_DEFAULT_DESIRED_CONN_TIMEOUT         100 //连接监督超时时间(单位:10ms)1s
 #define BT_COMPANY_ID                           0x07D7  //蓝牙厂商 ID
-#define BT_DEVICE_NAME                          "Wch Bt 123" //设备名
+#define BT_DEVICE_NAME                          "Wch Bt test" //设备名
 // #define BT_DEFAULT_MAC_ADDR                     {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02} //BLE MAC 地址 默认由芯片地址随机生成
 
 //蓝牙协议
 typedef enum {
     BT_CMD_NULL     = 0, //空指令
-    BT_CMD_OK       = 1,
+    BT_CMD_OK       = 1, 
     BT_CMD_FAIL     = 2,
-    BT_CMD_DATA     = 3,
+    BT_CMD_DATA     = 3, 
     BT_CMD_OPERATE  = 4,
     BT_CMD_IRTRANS  = 5,
-    BT_CMD_IRMATCH  = 6,
-    BT_CMD_IRLEARN  = 7,
-    BT_CMD_SYSPARAMS= 8,
-    BT_CMD_UPDATE   = 9,
-    BT_CMD_RESET    = 10,
+    BT_CMD_IRMATCH  = 6,  
+    BT_CMD_IRLEARN  = 7,  //红外学习
+    BT_CMD_SYSPARAMS= 8,  //系统参数
+    BT_CMD_UPDATE   = 9,  //固件更新
+    BT_CMD_RESET    = 10, //设备软重启
     BT_CMD_ILLEGAL  = 11,
 }BT_CMD_t;
 

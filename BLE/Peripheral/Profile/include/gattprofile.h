@@ -115,9 +115,10 @@ extern bStatus_t SimpleProfile_GetParameter(uint8_t param, void *value);
  * simpleProfile_Notify - Send notification.
  *
  *    connHandle - connect handle
- *    pNoti - pointer to structure to notify.
+ *    param      - SIMPLEPROFILE_CHAR1/2/3
+ *    pNoti      - pointer to structure to notify.
  */
-extern bStatus_t simpleProfile_Notify(uint16_t connHandle, attHandleValueNoti_t *pNoti);
+extern bStatus_t simpleProfile_Notify(uint16_t connHandle, uint8_t param, attHandleValueNoti_t *pNoti);
 
 
 extern uint16_t ReadCharCB();
