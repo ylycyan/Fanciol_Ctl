@@ -21,6 +21,9 @@
 #include "gattprofile.h"
 #include "peripheral.h"
 #include "board.h"
+#include "include/board.h"
+#include "include/ir_tab.h"
+#include <stdint.h>
 #include <string.h>
 
 /*********************************************************************
@@ -664,27 +667,23 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
             uint8_t rxbuf[SIMPLEPROFILE_CHAR1_LEN];
             tmos_memcpy(rxbuf, pValue, len);
             PrintHex("char1 rx",rxbuf,len);
-            peripheralCharNotify(SIMPLEPROFILE_CHAR1, rxbuf, len-1);
+
             //处理指令
-            if(len < 3)
+            if(len != rxbuf[0])
             {
                 //指令长度不足
                 PRINT("char1 rx len error\n");
                 break;
             }
+            if(!ChkCrc(rxbuf,len))
+            {
+                //crc校验失败
+                PRINT("char1 rx crc error\n");
+                break;
+            }
             BT_CMD_t cmd = rxbuf[1];
             switch(cmd)
             {
-                case BT_CMD_NULL:
-                {
-                    //空指令
-                    break;
-                }
-                case BT_CMD_OK:
-                {
-                    //成功指令
-                    break;
-                }
                 case BT_CMD_FAIL:
                 {
                     //失败指令
@@ -744,6 +743,33 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                 case BT_CMD_SYSPARAMS:
                 {
                     //系统参数指令
+                    // tx:(len(1)cmd(1:8)option(1:1)Crc(1))
+                    // rx:(len(1)cmd(1:8)option(1:1)ver(1)nodeId(2)channel(1)irIdx(1)tem(1)LoadTime(1)errorCode(2)Crc(1))
+                    // PRINT("time:%s\n",__DATE__);
+                    if(rxbuf[2] == eBtSet){
+                        //设置指令
+                        Dev.nodeId = *(uint16_t*)(rxbuf + 4);
+                        Dev.channel = rxbuf[6];
+                        Dev.irIdx = rxbuf[7];
+                        Dev.tem = rxbuf[8];
+                        Dev.runTime = rxbuf[9];
+                        // SaveDevInfo(1); //1s后保存Dev数据
+                        PRINT("Set SysParams success.\r\n");
+                    }else if(rxbuf[2] == eBtGet){
+                        //查询指令
+                        BTFrame.dat[0] = 13; 
+                        BTFrame.dat[1] = BT_CMD_SYSPARAMS; 
+                        BTFrame.dat[2] = eBtGet; 
+                        BTFrame.dat[3] = 0xfe; 
+                        *(uint16_t*)(BTFrame.dat + 4) = Dev.nodeId; 
+                        BTFrame.dat[6] = Dev.channel; 
+                        BTFrame.dat[7] = g_arc_info[Dev.irIdx].irType; 
+                        BTFrame.dat[8] = Dev.tem;
+                        BTFrame.dat[9] = Dev.runTime;
+                        *(uint16_t*)(BTFrame.dat + 10) = Dev.errorCode.u16Val;
+                        AddCrc(BTFrame.dat, 12);
+                        peripheralCharNotify(SIMPLEPROFILE_CHAR1, BTFrame.dat, 13);
+                    }
                     break;
                 }
                 case BT_CMD_UPDATE:
@@ -751,9 +777,10 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                     //更新指令
                     break;
                 }
-                case BT_CMD_RESET:
+                case BT_CMD_RESET: //软件复位
                 {
-                    //重置指令
+                    PRINT("reset device.\r\n");
+                    SYS_ResetExecute();
                     break;
                 }
                 case BT_CMD_ILLEGAL:
@@ -768,9 +795,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                 }
             }
 
-
-
-
+            // peripheralCharNotify(SIMPLEPROFILE_CHAR1, rxbuf, len-1);  //发送通知
 
 
 

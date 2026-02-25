@@ -1,5 +1,6 @@
 #include "board.h"
 #include "CH58x_common.h"
+#include "include/board.h"
 //EEPROM_BLOCK_SIZE 4096
 //@return 0:success !0:fail
 static volatile uint16_t Flash_Delay = 0;
@@ -37,6 +38,8 @@ void LoadDevInfo(void){
         memset(&Dev,0,sizeof(Dev));
         Dev.magicCode = MAGIC_CODE;
         Dev.errorCode.bit.irMatch = 1;
+        Dev.irIdx = 0xff;
+        Dev.nodeId = Default_DevId;
         SaveDevInfo(1); //首次上电，1s后保存Dev数据
         PRINT("First Power,Init Dev Info.\r\n");
     }

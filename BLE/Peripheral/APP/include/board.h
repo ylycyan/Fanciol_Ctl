@@ -11,7 +11,7 @@
 #include "CH58x_common.h"
 #include "flash.h"
 #include "ir_tab.h"
-#define Default_DevId 0xFFFF //默认的设备编号
+#define Default_DevId 0xBB01 //默认的设备编号
 
 /* Lora */
 #define LORA_POWER 22				//lora发送功率：22
@@ -65,7 +65,7 @@ v3:运行时间(u16-0~1440分钟)
 v4:设定温度(sf)
 v5:环境温度(sf)
 v6:用电量(U16)
-v7:故障码(u16-D0~15:通信模块故障,红外模块,状态检测,时间参数,温度参数,人感参数,人数参数,待机功率 异常,实时时钟,温度检测,脱机运行,存储参数,预存电量用完)
+v7:故障码(u16-D0~15:通信模块故障,红外模块,状态检测,时间参数...)
 value0(tinyint),value1(tinyint),value2(smallint),value3(float),value4(float),value5(smallint),value6(smallint),value7(smallint)
 
 */ 
@@ -151,8 +151,7 @@ typedef struct{
 typedef struct{
     uint16_t magicCode; //用于检测是否首次上电 0x55AA
     uint16_t nodeId; // 节点ID
-    uint16_t radio;  //lora通道(0~4)
-    uint8_t channel; //lora频点(0~9)
+    uint16_t channel;  //lora通道(0~32)？
     LoraStatus_t loraStatus; // lora状态
     uint32_t lastReportTime; // 上次上报时间戳
     uint32_t lastOnTime; // 上次空调开机时间,用于计算运行时间(由负载进行计算)
@@ -169,7 +168,7 @@ typedef struct{
     Wind_t wind; // 风速
     uint16_t runTime; // 空调运行时间,单位:分钟
     uint16_t loadPower; // 负载功率,单位:W*10
-    uint16_t isLock; // 本地操作禁用? 暂不考虑,应只有远程控制,本地由遥控器控制
+    uint8_t ctlMode; // 控制模式()
     union{  // 故障码(0:正常 \\ 异常>> bit 0:lora离线 1:红外学习异常 2：红外匹配异常(未匹配设备或找不到索引或索引错误[或无反馈?]) 3:ad转换异常 4:功率转换异常 5:flash操作异常)
         uint16_t u16Val; 
         struct{
@@ -182,7 +181,8 @@ typedef struct{
         }bit;
     }errorCode;
 }t_dev;
-
+//cmd： len(1)cmd(1)Data(1)Crc(1)
+// len(1)cmd(1:)Version(1)NodeId(2)channel(1)irIdx(1)
 extern t_dev Dev;
 
 //led 
@@ -214,7 +214,7 @@ typedef enum {
     BT_CMD_OK       = 1, 
     BT_CMD_FAIL     = 2,
     BT_CMD_DATA     = 3, 
-    BT_CMD_OPERATE  = 4,
+    BT_CMD_OPERATE  = 4, //同云端Operate+OperateTag+OperateParameter配置,[len(1)cmd(1:4)operate(1)operateTag(1)operateParameter(f:4)Crc(1)]
     BT_CMD_IRTRANS  = 5,
     BT_CMD_IRMATCH  = 6,  
     BT_CMD_IRLEARN  = 7,  //红外学习
@@ -223,6 +223,20 @@ typedef enum {
     BT_CMD_RESET    = 10, //设备软重启
     BT_CMD_ILLEGAL  = 11,
 }BT_CMD_t;
+
+typedef enum{
+    eBtSet = 0, //设置指令
+    eBtGet = 1, //查询指令
+}BT_SET_GET_t;
+
+//ble帧结构
+typedef struct{
+    uint8_t len; //数据长度
+    uint8_t cmd; 
+    uint8_t dat[128];
+    uint8_t checksum; 
+}BT_FRAME_T;
+static BT_FRAME_T BTFrame;
 
 //uilt functions
 static inline void PrintHex(char *msg, uint8_t *buffer, uint16_t size){
@@ -237,6 +251,35 @@ static inline void PrintHex(char *msg, uint8_t *buffer, uint16_t size){
 		PRINT("%02x ", buffer[i]);
 	}
 	PRINT("\n");
+}
+
+//兼容普通节点板crc算法
+static inline void AddCrc(uint8_t *buf, uint16_t len) {
+	uint8_t crcValue =0;
+	uint16_t i;
+	for (i=0; i<len; i++) {
+		crcValue = crcValue + buf[i];
+	}
+	crcValue = crcValue + 0xec;
+	*(buf + len) = crcValue;
+	return;
+}
+
+static inline int ChkCrc(uint8_t *buf, uint16_t len) {
+	uint8_t crcValue =0;
+	uint16_t i;
+	if (len <= 1) {
+		return 0;
+	}
+	for (i=0; i<len-1; i++) {
+		crcValue = crcValue + buf[i];
+	}
+	crcValue = crcValue + 0xec;
+	if (crcValue == buf[len - 1]) {
+		return 1;
+	} else {
+		return 0;
+	}
 }
 
 #endif

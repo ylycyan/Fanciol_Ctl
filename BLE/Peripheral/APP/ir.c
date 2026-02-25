@@ -156,6 +156,11 @@ void Ir_cmd(IR_CMD_t cmd){
     IrBuf.type = IR_TYPE_NORMAL;
     #if(IR_MODULE == HXD039B)
         //¹¹Ôìcmd°ü 30 06+(2B)+(1B)
+        if(Dev.irIdx >= (sizeof(g_arc_info)/sizeof(t_arc))){
+            PRINT("Error: file:%s,line:%d,irIdx:%d out of range.\r\n",__FILE__,__LINE__,Dev.irIdx);
+            Dev.errorCode.bit.irMatch = 1;
+            return;
+        }
         IrBuf.txbuf[0] = 0x30;
         IrBuf.txbuf[1] = 0x06;
         IrBuf.txbuf[2] = g_arc_info[Dev.irIdx].cmd[Dev.irType]>>8;

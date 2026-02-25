@@ -81,11 +81,7 @@ int main(void)
     GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);
     GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
     UART1_DefInit();
-    int arc_num = sizeof(g_arc_info)/sizeof(t_arc);
-    const t_arc *i_ptr = g_arc_info;
-    for(i = 0;i<arc_num;i++){
-        PRINT("name[%s],ir_num = %d\r\n",i_ptr[i].name,i_ptr[i].num);
-    }
+
     #if 0
     PRINT("Lora Initing ...\n");
     if(Lora_Init(420.1f,20,7,4) != 0){
@@ -95,7 +91,7 @@ int main(void)
     }
 #endif 
 
-    #if 0 // Data-Flash 
+    #if 0 // Data-Flash ??
 
     PRINT("EEPROM_READ...\n");
     EEPROM_READ(0, TestBuf, 500);
@@ -142,6 +138,12 @@ int main(void)
     GAPRole_PeripheralInit();
     Peripheral_Init();
 
+
+        int arc_num = sizeof(g_arc_info)/sizeof(t_arc);
+    const t_arc *i_ptr = g_arc_info;
+    for(i = 0;i<arc_num;i++){
+        PRINT("name[%s],ir_num = %d\r\n",i_ptr[i].name,i_ptr[i].num);
+    }
     //lora test    
     Main_Circulation();
 }
