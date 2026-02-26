@@ -39,34 +39,34 @@ endif
 
 # Add inputs and outputs from these tool invocations to the build variables 
 SECONDARY_FLASH += \
-Peripheral.hex \
+BackupUpgrade_OTA.hex \
 
 SECONDARY_LIST += \
-Peripheral.lst \
+BackupUpgrade_OTA.lst \
 
 SECONDARY_SIZE += \
-Peripheral.siz \
+BackupUpgrade_OTA.siz \
 
 
 # All Target
 all: 
 	$(MAKE) --no-print-directory main-build 
 
-main-build: Peripheral.elf secondary-outputs
+main-build: BackupUpgrade_OTA.elf secondary-outputs
 
 # Tool invocations
-Peripheral.elf: $(OBJS) $(USER_OBJS_ESCAPE)
-	@	riscv-none-embed-gcc -march=rv32imac -mabi=ilp32 -mcmodel=medany -msmall-data-limit=8 -mno-save-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -g -T "f:/下载工具包/CH583EVT/EVT/EXAM/SRC/Ld/Link.ld" -nostartfiles -Xlinker --gc-sections -L"f:\下载工具包\CH583EVT\EVT\EXAM\BLE\Peripheral" -L"f:/下载工具包/CH583EVT/EVT/EXAM/BLE/LIB" -L"f:/下载工具包/CH583EVT/EVT/EXAM/SRC/StdPeriphDriver" -Xlinker --print-memory-usage -Wl,-Map,"Peripheral.map" --specs=nano.specs --specs=nosys.specs -o "Peripheral.elf" $(OBJS) $(LIBS)
-Peripheral.hex: Peripheral.elf
-	@	riscv-none-embed-objcopy -O ihex "Peripheral.elf" "Peripheral.hex"
-Peripheral.lst: Peripheral.elf
-	@	riscv-none-embed-objdump --source --all-headers --demangle --line-numbers --wide "Peripheral.elf" > "Peripheral.lst"
-Peripheral.siz: Peripheral.elf
-	riscv-none-embed-size --format=berkeley "Peripheral.elf"
+BackupUpgrade_OTA.elf: $(OBJS) $(USER_OBJS_ESCAPE)
+	@	riscv-none-embed-gcc -march=rv32imac -mabi=ilp32 -mcmodel=medany -msmall-data-limit=8 -mno-save-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -g -T "f:/code/Fanciol_Ctl/BLE/Peripheral/Ld/Link.ld" -nostartfiles -Xlinker --gc-sections -L"f:\code\Fanciol_Ctl\BLE\Peripheral" -L"f:/code/Fanciol_Ctl/BLE/LIB" -L"f:/code/Fanciol_Ctl/SRC/StdPeriphDriver" -Xlinker --print-memory-usage -Wl,-Map,"BackupUpgrade_OTA.map" --specs=nano.specs --specs=nosys.specs -o "BackupUpgrade_OTA.elf" $(OBJS) $(LIBS)
+BackupUpgrade_OTA.hex: BackupUpgrade_OTA.elf
+	@	riscv-none-embed-objcopy -O ihex "BackupUpgrade_OTA.elf" "BackupUpgrade_OTA.hex"
+BackupUpgrade_OTA.lst: BackupUpgrade_OTA.elf
+	@	riscv-none-embed-objdump --source --all-headers --demangle --line-numbers --wide "BackupUpgrade_OTA.elf" > "BackupUpgrade_OTA.lst"
+BackupUpgrade_OTA.siz: BackupUpgrade_OTA.elf
+	riscv-none-embed-size --format=berkeley "BackupUpgrade_OTA.elf"
 
 # Other Targets
 clean:
-	-$(RM) $(DIR_OBJS) $(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE) Peripheral.elf
+	-$(RM) $(DIR_OBJS) $(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE) BackupUpgrade_OTA.elf
 	-$(RM) $(DIR_EXPANDS) $(CALLGRAPH_DOT)
 	-$(RM) $(DIR_DEPS)
 secondary-outputs: $(SECONDARY_FLASH) $(SECONDARY_LIST) $(SECONDARY_SIZE)

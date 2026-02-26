@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <projectDescription>
-	<name>Peripheral</name>
+	<name>BackupUpgrade_OTA</name>
 	<comment/>
 	<projects>
 	</projects>
@@ -35,19 +35,9 @@
 			<locationURI>PARENT-1-PROJECT_LOC/LIB</locationURI>
 		</link>
 		<link>
-			<name>Ld</name>
-			<type>2</type>
-			<locationURI>PARENT-2-PROJECT_LOC/SRC/Ld</locationURI>
-		</link>
-		<link>
 			<name>RVMSIS</name>
 			<type>2</type>
 			<locationURI>PARENT-2-PROJECT_LOC/SRC/RVMSIS</locationURI>
-		</link>
-		<link>
-			<name>Startup</name>
-			<type>2</type>
-			<locationURI>PARENT-2-PROJECT_LOC/SRC/Startup</locationURI>
 		</link>
 		<link>
 			<name>StdPeriphDriver</name>
@@ -57,7 +47,7 @@
 	</linkedResources>
 	<filteredResources>
 		<filter>
-			<id>1602468250279</id>
+			<id>1617352987709</id>
 			<name/>
 			<type>22</type>
 			<matcher>

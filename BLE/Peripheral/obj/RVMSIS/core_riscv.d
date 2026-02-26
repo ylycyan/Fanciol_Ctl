@@ -1,2 +1,1 @@
-RVMSIS/core_riscv.o: \
- f:/下载工具包/CH583EVT/EVT/EXAM/SRC/RVMSIS/core_riscv.c
+RVMSIS/core_riscv.o: f:/code/Fanciol_Ctl/SRC/RVMSIS/core_riscv.c
