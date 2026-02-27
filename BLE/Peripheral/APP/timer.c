@@ -104,6 +104,7 @@ void Period_100ms(void){
         WWDG_Refresh(); //喂狗
         Check_IrBuf();
         LED1_TOGGLE();
+        Lora_Process();
     }
 }
 
@@ -113,10 +114,11 @@ void Period_1s(void){
         //1s事件处理
         Flag_1s = 0;
         LED0_TOGGLE();
+        WWDG_Refresh(); //喂狗
         Flash_Poll();
-        #if 1 //test
+        #if 1 //test only
         PRINT("timestamp:%d\r\n",Rtc_GetTimestamp());
-        Lora_Tx((uint8_t*)"123456789ABCD",10,1500);
+        // Lora_Tx((uint8_t*)"123456789ABCD",10,1500);
         #endif 
     }
 }

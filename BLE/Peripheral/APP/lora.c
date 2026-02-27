@@ -62,6 +62,7 @@ static RadioPacketTypes_t PacketType;
 //通过LoraBysy引脚，判断状态是否正常(可用): 0-非Ready状态(即Busy)， 1-Ready
 void Lora_WaitOnBusy( void ) //高电平表示忙
 {
+    WWDG_SetCounter(0);//喂狗
     uint32_t timeout = LORA_READY_TIMEOUT;
     while( (GPIOB_ReadPortPin(GPIO_Pin_17) != 0) && (timeout > 0) ){
         timeout--;
@@ -697,41 +698,13 @@ uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
   *  @param ms   发送超时检测
   *  @retval 1:发送失败 0：发送成功
   */
-bool Lora_Tx(uint8_t *data, uint8_t len, uint32_t ms){
-	int timeoutMs = ms;
+bool Lora_Tx(uint8_t *data, uint8_t len){
 	uint16_t irqRegs = 0;
-	if(ms < 200){
-		timeoutMs = 1500;
-	}
 	Lora_ClearIrqStatus(IRQ_RADIO_ALL);
 	Lora_SetDioIrqParams( IRQ_TX_DONE);
 	SX126x.PacketParams.Params.LoRa.PayloadLength = len;
 	Lora_SetPacketParams( &SX126x.PacketParams );
 	Lora_SendPayload( data, len, 0 );
-    PRINT("irq = %d\r\n",Lora_GetIrqStatus());
-	while(timeoutMs > 0){
-		irqRegs = Lora_GetIrqStatus();
-        if( irqRegs == 0xFFFF ){
-            PRINT("Error: SPI Read Failure (0xFFFF). Check wiring/power.\n");
-            return 0;
-        }
-		if( ( irqRegs & IRQ_TX_DONE ) == IRQ_TX_DONE ){
-			PRINT("Tx Success \n");
-			break;
-		}else if((irqRegs & IRQ_RX_TX_TIMEOUT) == IRQ_RX_TX_TIMEOUT){
-			PRINT("Tx Irq Timeout .\n");
-			break;
-		}
-		timeoutMs -= 20;
-		mDelaymS(20);
-	}
-	if(timeoutMs <= 0){
-		PRINT("\t#Tx timeout(%ld ms) for %d bytes @ %ld.\n", ms, len, Rtc_GetTimestamp());
-		return 0;
-	}else{
-		PRINT("\tTx(in %ld ms) for %d bytes @ %ld.\n",(ms-timeoutMs), len, Rtc_GetTimestamp());
-		return 1;
-	}
 }
 
 

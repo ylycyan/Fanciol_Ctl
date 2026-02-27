@@ -12,7 +12,8 @@ C_SRCS += \
 ../APP/lora.c \
 ../APP/peripheral.c \
 ../APP/peripheral_main.c \
-../APP/timer.c 
+../APP/timer.c \
+../APP/util.c 
 
 C_DEPS += \
 ./APP/b_cdc.d \
@@ -22,7 +23,8 @@ C_DEPS += \
 ./APP/lora.d \
 ./APP/peripheral.d \
 ./APP/peripheral_main.d \
-./APP/timer.d 
+./APP/timer.d \
+./APP/util.d 
 
 OBJS += \
 ./APP/b_cdc.o \
@@ -32,7 +34,8 @@ OBJS += \
 ./APP/lora.o \
 ./APP/peripheral.o \
 ./APP/peripheral_main.o \
-./APP/timer.o 
+./APP/timer.o \
+./APP/util.o 
 
 DIR_OBJS += \
 ./APP/*.o \

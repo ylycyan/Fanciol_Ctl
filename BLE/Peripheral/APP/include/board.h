@@ -120,7 +120,7 @@ typedef enum{
     PowerOff = 1, // 关
 }OnOff_t;
 
-#define MAGIC_CODE 0x55AA //首次上电判断
+#define MAGIC_CODE 0x55A1 //首次上电判断
 
 #define MAX_IR_LEARNNUM 10
 #define MAX_ACTIONNUM 10
@@ -155,6 +155,10 @@ typedef struct{
     LoraStatus_t loraStatus; // lora状态
     uint32_t lastReportTime; // 上次上报时间戳
     uint32_t lastOnTime; // 上次空调开机时间,用于计算运行时间(由负载进行计算)
+    float loraFrequency; //lora频率
+    uint16_t gatewayId; //网关Id
+    uint8_t scanCycle; //数据上报周期
+
     uint8_t irIdx; // 空调号索引(83),对应g_arc_info中的空调品牌
     uint8_t irType; // 空调类型(<200),对应g_arc_info中各品牌的指令下标
     uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
@@ -163,12 +167,12 @@ typedef struct{
     //上报数据
     OnOff_t onOff; // 空调开关状态,0:关 1:开
     uint16_t tem; // 环境温度
-    Mode_t mode; // 空调运行模式
+    Mode_t ctlMode; // 空调运行模式
     uint16_t temSet; // 设定温度
     Wind_t wind; // 风速
     uint16_t runTime; // 空调运行时间,单位:分钟
     uint16_t loadPower; // 负载功率,单位:W*10
-    uint8_t ctlMode; // 控制模式()
+    uint8_t mode; // 控制模式()
     union{  // 故障码(0:正常 \\ 异常>> bit 0:lora离线 1:红外学习异常 2：红外匹配异常(未匹配设备或找不到索引或索引错误[或无反馈?]) 3:ad转换异常 4:功率转换异常 5:flash操作异常)
         uint16_t u16Val; 
         struct{
@@ -281,5 +285,9 @@ static inline int ChkCrc(uint8_t *buf, uint16_t len) {
 		return 0;
 	}
 }
-
+#define BITGET(val, bit)      (((val) >> (bit)) & 1)              // 获取 val 的第 bit 位（0 或 1）
+#define BITSET(val, bit)      ((val) |= (1U << (bit)))            // 将 val 的第 bit 位置 1
+#define BITCLR(val, bit)      ((val) &= ~(1U << (bit)))           // 将 val 的第 bit 位清 0
+#define BITTOG(val, bit)   ((val) ^= (1U << (bit)))            // 将 val 的第 bit 位取反
+extern void Lora_Process(void);
 #endif

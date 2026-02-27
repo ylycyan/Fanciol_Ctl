@@ -45,11 +45,6 @@ void Main_Circulation()
     static uint32_t count = 0;
     while(1)
     {   
-        // if(count++ % 100000 == 0){
-        //     snprintf((char*)TxBuff,sizeof(TxBuff),"this is lora %d\r\n",count++);
-        //     Lora_Tx(TxBuff,20,1000);
-            
-        // }
         Period_100ms();
         Period_1s();
         TMOS_SystemProcess();
@@ -88,9 +83,6 @@ int main(void)
         PRINT("Lora Init Failed! Halting.\n");
     }else{
         PRINT("Lora Init OK.\n");
-    }
-    for(i = 0;i<3;i++){
-        Lora_Tx(TestBuf,20,1500);
     }
 #endif 
 

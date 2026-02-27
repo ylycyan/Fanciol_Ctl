@@ -40,12 +40,15 @@ void LoadDevInfo(void){
         Dev.errorCode.bit.irMatch = 1;
         Dev.irIdx = 0xff;
         Dev.nodeId = Default_DevId;
+        Dev.loraStatus = 1;
+        Dev.mode = BITSET(Dev.mode,1);
         SaveDevInfo(1); //首次上电，1s后保存Dev数据
+        PRINT("Dev mode = %d\n",Dev.mode);
         PRINT("First Power,Init Dev Info.\r\n");
     }
     //上电默认初始化
     Dev.onOff = PowerOff; //默认关
-    Dev.mode = Mode_Auto; //上电模式:自动
+    Dev.ctlMode = Mode_Auto; //上电模式:自动
     Dev.wind = Wind_Auto; //上电风速:自动
     Dev.lastOnTime = 0;
     Dev.lastReportTime = 0;

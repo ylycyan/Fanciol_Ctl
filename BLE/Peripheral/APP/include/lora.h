@@ -362,7 +362,8 @@
 	int8_t Lora_GetRssi();
 	void Lora_SetFrequency(float freq);
 	void Lora_Listening();
-	bool Lora_Tx(uint8_t *data, uint8_t len, uint32_t ms);
+	bool Lora_Tx(uint8_t *data, uint8_t len);
+	uint16_t Lora_GetIrqStatus( void );
 	bool Lora_TxRequest(uint8_t *data, uint8_t len, uint32_t ms);
 	void Lora_Rx(uint8_t *data, uint8_t *len, uint32_t ms);
 	void Lora_RxRequest(uint8_t *data, uint8_t *len, uint32_t ms);
