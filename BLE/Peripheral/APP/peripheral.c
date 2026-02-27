@@ -719,7 +719,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
     {
         case SIMPLEPROFILE_CHAR1:
         {
-            uint8_t rxbuf[SIMPLEPROFILE_CHAR1_LEN];
+            uint8_t rxbuf[50];
             tmos_memcpy(rxbuf, pValue, len);
             PrintHex("char1 rx",rxbuf,len);
 
@@ -1050,7 +1050,7 @@ void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char 
 
 //��֧��Characteristic1 (0xFFE1)������
 uint16_t ReadCharCB(){
-    static uint8_t charValue1[SIMPLEPROFILE_CHAR1_LEN] = {1,2,3,4,5};
+    static uint8_t charValue1[10] = {1,2,3,4,5};
     uint8_t len = 5;
     charValue1[0]++;
     SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, len, charValue1);

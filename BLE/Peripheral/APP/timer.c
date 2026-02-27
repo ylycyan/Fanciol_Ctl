@@ -1,6 +1,7 @@
 #include "HAL.h"
 #include <time.h>
 #include "board.h"
+#include "lora.h"
 #include "include/flash.h"
 static uint8_t Flag_100ms = 0;
 static uint8_t Flag_1s = 0;
@@ -115,6 +116,7 @@ void Period_1s(void){
         Flash_Poll();
         #if 1 //test
         PRINT("timestamp:%d\r\n",Rtc_GetTimestamp());
+        Lora_Tx((uint8_t*)"123456789ABCD",10,1500);
         #endif 
     }
 }

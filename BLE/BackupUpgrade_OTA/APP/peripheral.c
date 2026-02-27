@@ -637,7 +637,12 @@ void Rec_OTA_IAP_DataDeal(void)
             OpAdd += IMAGE_A_SIZE;
 
             PRINT("IAP_PROM: %08x len:%d \r\n", (int)OpAdd, (int)OpParaDataLen);
-
+            PRINT("dat:");
+            for(i = 0;i<OpParaDataLen;i++)
+            {
+                PRINT("%02x",iap_rec_data.program.buf[i]);
+            }
+            PRINT("\n");
             /* 当前是ImageA，直接编程 */
             status = FLASH_ROM_WRITE(OpAdd, iap_rec_data.program.buf, (uint16_t)OpParaDataLen);
             if(status)             PRINT("IAP_PROM err \r\n");

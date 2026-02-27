@@ -4,8 +4,8 @@
 		{
 			"type": "mrs-debugger",
 			"request": "launch",
-			"name": "Peripheral",
-			"cwd": "f:\\下载工具包\\CH583EVT\\EVT\\EXAM\\BLE\\Peripheral",
+			"name": "BackupUpgrade_OTA",
+			"cwd": "f:\\code\\Fanciol_Ctl\\BLE\\Peripheral",
 			"openOCDCfg": {
 				"useLocalOpenOCD": true,
 				"executable": "e:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/OpenOCD/OpenOCD/bin/openocd.exe",
@@ -38,8 +38,8 @@
 					"additionalCommands": []
 				},
 				"loadedFiles": {
-					"executableFile": "f:\\下载工具包\\CH583EVT\\EVT\\EXAM\\BLE\\Peripheral\\obj\\Peripheral.elf",
-					"symbolFile": "f:\\下载工具包\\CH583EVT\\EVT\\EXAM\\BLE\\Peripheral\\obj\\Peripheral.elf",
+					"executableFile": "f:\\code\\Fanciol_Ctl\\BLE\\Peripheral\\obj\\BackupUpgrade_OTA.elf",
+					"symbolFile": "f:\\code\\Fanciol_Ctl\\BLE\\Peripheral\\obj\\BackupUpgrade_OTA.elf",
 					"executableFileOffset": 0,
 					"symbolFileOffset": 0
 				},

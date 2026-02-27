@@ -82,12 +82,15 @@ int main(void)
     GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
     UART1_DefInit();
 
-    #if 0
+    #if 1
     PRINT("Lora Initing ...\n");
-    if(Lora_Init(420.1f,20,7,4) != 0){
+    if(Lora_Init(421.34f,20,8,0xa) != 0){
         PRINT("Lora Init Failed! Halting.\n");
     }else{
         PRINT("Lora Init OK.\n");
+    }
+    for(i = 0;i<3;i++){
+        Lora_Tx(TestBuf,20,1500);
     }
 #endif 
 
@@ -126,7 +129,7 @@ int main(void)
 #endif
 
     // InitUSBDevice(); //usb-cdc´®¿Úµ÷ÊÔ 
-    PRINT("%s\n", VER_LIB);
+    PRINT("%s ,build in(%s:%s)\n", VER_LIB,__DATE__,__TIME__);
     CH58X_BLEInit();
     HAL_Init();
     //lse test
@@ -138,8 +141,7 @@ int main(void)
     GAPRole_PeripheralInit();
     Peripheral_Init();
 
-
-        int arc_num = sizeof(g_arc_info)/sizeof(t_arc);
+    int arc_num = sizeof(g_arc_info)/sizeof(t_arc);
     const t_arc *i_ptr = g_arc_info;
     for(i = 0;i<arc_num;i++){
         PRINT("name[%s],ir_num = %d\r\n",i_ptr[i].name,i_ptr[i].num);

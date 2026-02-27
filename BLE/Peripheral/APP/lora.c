@@ -7,25 +7,25 @@ void Lora_Pio_Init(void)
 {
         GPIOA_SetBits(GPIO_Pin_12);
         GPIOA_ModeCfg(GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_14, GPIO_ModeOut_PP_5mA);
-        SPI0_MasterDefInit();   
+        SPI1_MasterDefInit();   
         // 单字节发送
         GPIOA_ResetBits(GPIO_Pin_12);
-        SPI0_MasterSendByte(0x55);
+        SPI1_MasterSendByte(0x55);
         GPIOA_SetBits(GPIO_Pin_12);
         DelayMs(1);
         GPIOA_ResetBits(GPIO_Pin_12);
-        i = SPI0_MasterRecvByte();
+        i = SPI1_MasterRecvByte();
         GPIOA_SetBits(GPIO_Pin_12);
         DelayMs(2);
         PRINT("receive %x\n",i);
     
         // FIFO 连续发送
         GPIOA_ResetBits(GPIO_Pin_12);
-        SPI0_MasterTrans(spiBuff, 8);
+        SPI1_MasterTrans(spiBuff, 8);
         GPIOA_SetBits(GPIO_Pin_12);
         DelayMs(2);
         GPIOA_ResetBits(GPIO_Pin_12);
-        SPI0_MasterRecv(spiBuffrev, 8);
+        SPI1_MasterRecv(spiBuffrev, 8);
         GPIOA_SetBits(GPIO_Pin_12);
         DelayMs(2);
         PRINT("FIFO recv ");
@@ -40,23 +40,18 @@ void Lora_Pio_Init(void)
 void Lora_Spi_Init(void)
 {
     /* SPI 0 */
-    GPIOA_SetBits(GPIO_Pin_12); 
-    GPIOA_ModeCfg(GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_14, GPIO_ModeOut_PP_5mA); // 12:CS, 13:SCK, 14:MOSI
-    // GPIOA_ModeCfg(GPIO_Pin_15, GPIO_ModeIN_PU); // 15:MISO - Removed to match official example
-    SPI0_MasterDefInit();
-    R8_SPI0_CLOCK_DIV = 8; // Reduce SPI speed to safe margin (60MHz/8 = 7.5MHz)
-    //PA11 BUSY PA10 RESET PA7 TXEN
-    GPIOA_ModeCfg(GPIO_Pin_11,GPIO_ModeIN_PU);
-    GPIOA_ModeCfg(GPIO_Pin_10 | GPIO_Pin_7,GPIO_ModeOut_PP_5mA);
-    GPIOA_SetBits(GPIO_Pin_10);
-    GPIOA_SetBits(GPIO_Pin_7);
+    GPIOA_SetBits(GPIO_Pin_1); 
+    GPIOA_ModeCfg(GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_3, GPIO_ModeOut_PP_5mA); // PA3:CS, PA0:SCK, PA1:MOSI
+    // GPIOA_ModeCfg(GPIO_Pin_15, GPIO_ModeIN_PU); // PA2:MISO - Removed to match official example
+    SPI1_MasterDefInit();
+    R8_SPI1_CLOCK_DIV = 8; // Reduce SPI speed to safe margin (60MHz/8 = 7.5MHz)
+    //PB17 BUSY PB8 RESET PB9 POWEN
+    GPIOB_ModeCfg(GPIO_Pin_17,GPIO_ModeIN_PU);
+    GPIOB_ModeCfg(GPIO_Pin_8 | GPIO_Pin_9 ,GPIO_ModeOut_PP_5mA);
+    GPIOB_SetBits(GPIO_Pin_8);
+    GPIOB_SetBits(GPIO_Pin_9);
 }
 
-
-
-
-#define LORA_TX_EN() GPIOA_SetBits(GPIO_Pin_7)
-#define LORA_RX_EN() GPIOA_ResetBits(GPIO_Pin_7)
 #define Rtc_GetTimestamp() 0
 
 static int8_t Rssi = 0;
@@ -68,12 +63,12 @@ static RadioPacketTypes_t PacketType;
 void Lora_WaitOnBusy( void ) //高电平表示忙
 {
     uint32_t timeout = LORA_READY_TIMEOUT;
-    while( (GPIOA_ReadPortPin(GPIO_Pin_11) != 0) && (timeout > 0) ){
+    while( (GPIOB_ReadPortPin(GPIO_Pin_17) != 0) && (timeout > 0) ){
         timeout--;
         mDelaymS(1);
     }
     if(timeout == 0){
-        PRINT("Lora Busy Timeout. Pin11=%d\n", GPIOA_ReadPortPin(GPIO_Pin_11));
+        PRINT("Lora Busy Timeout. Pin11=%ld\n", GPIOB_ReadPortPin(GPIO_Pin_17));
         // mDelaymS(50); // Removed delay to speed up
     }
     // mDelaymS(50); // Removed unconditional delay
@@ -87,9 +82,9 @@ void Lora_Reset( ) {
     // GPIOA_SetBits(Lora_Enable_Pin);
     // mDelaymS(50);
     //通过引脚复位Lora
-    GPIOA_ResetBits(GPIO_Pin_10);
+    GPIOB_ResetBits(GPIO_Pin_8);
     mDelaymS(20); //Delay_Ms(20);
-    GPIOA_SetBits(GPIO_Pin_10);
+    GPIOB_SetBits(GPIO_Pin_8);
     Lora_WaitOnBusy();
 }
 /**
@@ -97,10 +92,10 @@ void Lora_Reset( ) {
  */
 void Lora_Wakeup()
 {
-    GPIOA_ResetBits(GPIO_Pin_12);
-    SPI0_MasterSendByte(RADIO_GET_STATUS);
-    SPI0_MasterSendByte(0x00);
-    GPIOA_SetBits(GPIO_Pin_12);
+    GPIOB_ResetBits(GPIO_Pin_8);
+    SPI1_MasterSendByte(RADIO_GET_STATUS);
+    SPI1_MasterSendByte(0x00);
+    GPIOB_SetBits(GPIO_Pin_8);
 
     Lora_WaitOnBusy();
 }
@@ -114,14 +109,14 @@ void Lora_CheckDeviceReady( void )
 void Lora_WriteCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
 {
     Lora_CheckDeviceReady( );
-    GPIOA_ResetBits(GPIO_Pin_12);
-    SPI0_MasterSendByte((uint8_t)command);
+    GPIOA_ResetBits(GPIO_Pin_3);
+    SPI1_MasterSendByte((uint8_t)command);
 
     for( uint16_t i = 0; i < size; i++ )
     {
-        SPI0_MasterSendByte(buffer[i]);
+        SPI1_MasterSendByte(buffer[i]);
     }
-    GPIOA_SetBits(GPIO_Pin_12);
+    GPIOA_SetBits(GPIO_Pin_3);
     if( command != RADIO_SET_SLEEP )
     {
         Lora_WaitOnBusy( );
@@ -133,15 +128,15 @@ void Lora_ReadCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
 {
     Lora_CheckDeviceReady( );
 
-    GPIOA_ResetBits(GPIO_Pin_12);
-    SPI0_MasterSendByte(command);
-    SPI0_MasterSendByte(0);
+    GPIOA_ResetBits(GPIO_Pin_3);
+    SPI1_MasterSendByte(command);
+    SPI1_MasterSendByte(0);
     for( uint16_t i = 0; i < size; i++ )
     {
-        buffer[i] = SPI0_MasterRecvByte();
+        buffer[i] = SPI1_MasterRecvByte();
     }
 
-    GPIOA_SetBits(GPIO_Pin_12);
+    GPIOA_SetBits(GPIO_Pin_3);
 
     Lora_WaitOnBusy( );
 }
@@ -151,18 +146,18 @@ void Lora_WriteRegisters( uint16_t address, uint8_t *buffer, uint16_t size )
 {
     Lora_CheckDeviceReady( );
 
-    GPIOA_ResetBits(GPIO_Pin_12);
+    GPIOA_ResetBits(GPIO_Pin_3);
 
-    SPI0_MasterSendByte(RADIO_WRITE_REGISTER);
-    SPI0_MasterSendByte((uint8_t)((address & 0xff00u) >> 8u));
-    SPI0_MasterSendByte((uint8_t)(address & 0x00ffu));
+    SPI1_MasterSendByte(RADIO_WRITE_REGISTER);
+    SPI1_MasterSendByte((uint8_t)((address & 0xff00u) >> 8u));
+    SPI1_MasterSendByte((uint8_t)(address & 0x00ffu));
 
     for( uint16_t i = 0; i < size; i++ )
     {
-        SPI0_MasterSendByte(buffer[i]);
+        SPI1_MasterSendByte(buffer[i]);
     }
 
-    GPIOA_SetBits(GPIO_Pin_12);
+    GPIOA_SetBits(GPIO_Pin_3);
 
     Lora_WaitOnBusy( );
 }
@@ -176,15 +171,15 @@ void Lora_ReadRegisters( uint16_t address, uint8_t *buffer, uint16_t size )
 {
     Lora_CheckDeviceReady( );
 
-    GPIOA_ResetBits(GPIO_Pin_12);
-    SPI0_MasterSendByte(RADIO_READ_REGISTER);
-    SPI0_MasterSendByte((uint8_t)((address & 0xff00u) >> 8u));
-    SPI0_MasterSendByte((uint8_t)(address & 0x00ffu));
-    SPI0_MasterSendByte(0x00);
+    GPIOA_ResetBits(GPIO_Pin_3);
+    SPI1_MasterSendByte(RADIO_READ_REGISTER);
+    SPI1_MasterSendByte((uint8_t)((address & 0xff00u) >> 8u));
+    SPI1_MasterSendByte((uint8_t)(address & 0x00ffu));
+    SPI1_MasterSendByte(0x00);
     for (uint16_t i=0; i<size; i++) {
-        buffer[i] = SPI0_MasterRecvByte();
+        buffer[i] = SPI1_MasterRecvByte();
     }
-    GPIOA_SetBits(GPIO_Pin_12);
+    GPIOA_SetBits(GPIO_Pin_3);
 
     Lora_WaitOnBusy( );
 }
@@ -200,14 +195,14 @@ void Lora_WriteBuffer( uint8_t offset, uint8_t *buffer, uint8_t size )
 {
     Lora_CheckDeviceReady( );
 
-    GPIOA_ResetBits(GPIO_Pin_12);
+    GPIOA_ResetBits(GPIO_Pin_3);
 
-    SPI0_MasterSendByte(RADIO_WRITE_BUFFER);
-    SPI0_MasterSendByte(offset);
+    SPI1_MasterSendByte(RADIO_WRITE_BUFFER);
+    SPI1_MasterSendByte(offset);
     for (uint16_t i=0; i<size; i++) {
-        SPI0_MasterSendByte(buffer[i]);
+        SPI1_MasterSendByte(buffer[i]);
     }
-    GPIOA_SetBits(GPIO_Pin_12);
+    GPIOA_SetBits(GPIO_Pin_3);
 
     Lora_WaitOnBusy( );
 }
@@ -217,15 +212,15 @@ void Lora_ReadBuffer( uint8_t offset, uint8_t *buffer, uint8_t size )
 {
     Lora_CheckDeviceReady( );
 
-    GPIOA_ResetBits(GPIO_Pin_12);
+    GPIOA_ResetBits(GPIO_Pin_3);
 
-    SPI0_MasterSendByte(RADIO_READ_BUFFER);
-    SPI0_MasterSendByte(offset);
-    SPI0_MasterSendByte(0x00);
+    SPI1_MasterSendByte(RADIO_READ_BUFFER);
+    SPI1_MasterSendByte(offset);
+    SPI1_MasterSendByte(0x00);
     for (uint16_t i=0; i<size; i++) {
-        buffer[i] = SPI0_MasterRecvByte();
+        buffer[i] = SPI1_MasterRecvByte();
     }
-    GPIOA_SetBits(GPIO_Pin_12);
+    GPIOA_SetBits(GPIO_Pin_3);
 
     Lora_WaitOnBusy( );
 }
@@ -709,7 +704,6 @@ bool Lora_Tx(uint8_t *data, uint8_t len, uint32_t ms){
 		timeoutMs = 1500;
 	}
 	Lora_ClearIrqStatus(IRQ_RADIO_ALL);
-	LORA_TX_EN();
 	Lora_SetDioIrqParams( IRQ_TX_DONE);
 	SX126x.PacketParams.Params.LoRa.PayloadLength = len;
 	Lora_SetPacketParams( &SX126x.PacketParams );
@@ -756,7 +750,6 @@ bool Lora_TxRequest(uint8_t *data, uint8_t len, uint32_t ms){
 		timeoutMs = 1500;
 	}
 	Lora_ClearIrqStatus(IRQ_RADIO_ALL);
-	LORA_TX_EN();
 	Lora_SetDioIrqParams( IRQ_TX_DONE);
 	SX126x.PacketParams.Params.LoRa.PayloadLength = len;
 	Lora_SetPacketParams( &SX126x.PacketParams );
@@ -885,7 +878,7 @@ int8_t Lora_GetRssi(){
 void Lora_Listening(){
 	uint8_t buf[3] = {0x00, 0x00, 0x00};
 	Lora_ClearIrqStatus(IRQ_RADIO_ALL);
-	LORA_RX_EN(); //天线切换至接收模式
+ //天线切换至接收模式
 	Lora_SetDioIrqParams( IRQ_RX_DONE);
 	buf[0] = 0x96;
 	Lora_WriteRegisters(0x08AC, buf, 1);
