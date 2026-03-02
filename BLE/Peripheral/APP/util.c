@@ -1,6 +1,12 @@
 #include "board.h"
+#include "timer.h"
 #include "lora.h"
-void Lora_Process(void){
+
+
+
+
+
+void Lora_Pro(void){
     static uint16_t Timer_Lora = 0; //lora状态机时间计数,单位ms
     static uint8_t LoraBuf[64] = {0};
     uint16_t irq = 0;
@@ -11,13 +17,13 @@ void Lora_Process(void){
         return;
     }
        //
-        if (Timer_Lora >= 1800) //180s 
+        if (Timer_Lora >= 1800) //正常数据周期(60s), 长时间(180s)与网关无通讯,视为设备离线，需重启注册
         {
             Timer_Lora = 0;
             Dev.loraStatus = 1; 
         }
         if(Dev.loraStatus == 1){ //还未注册：发送注册数据包
-            if(Timer_Lora < (100 + ((Dev.nodeId*100)%100))) // 根据Dev.nodeId计算每次轮询时间,每(10+[0~3])s 轮询注册一次
+            if(Timer_Lora < (100 + ((Dev.nodeId*100)%30))) // 根据Dev.nodeId计算每次轮询时间,每(10+[0~3])s 轮询注册一次
             {
                 return; //未到轮询时间
             } 
@@ -27,7 +33,8 @@ void Lora_Process(void){
             *(uint16_t*)(LoraBuf + 2) = Dev.nodeId;  //Dev.nodeId
             AddCrc(LoraBuf,4);
             //lora频率切换为注册频段
-            Lora_Init(Dev.channel * 0.3f + 420.05f,22,10,4);  //注册频率
+            Dev.loraFrequency = Dev.channel * 0.17f + 431.1f;
+            Lora_Init(Dev.loraFrequency,22,LORA_SF_LISTEN,LORA_BW_LISTEN);  //注册频率
             Lora_Tx(LoraBuf,5);
             Dev.loraStatus = 2;
             Timer_Lora = 0; //切换至发送检测状态,重新超时计数
@@ -40,13 +47,14 @@ void Lora_Process(void){
             } else if ((irq > 0) || (Timer_Lora > 10)) { //检测到非预期的Lora中断(出错?)或者超时，说明注册失败，后续重试
                 Dev.loraStatus = 1; //切换至未注册状态
                 Timer_Lora = 0; 
+                PRINT("Login tx error.\n");
             } //else //发送中(未检测到发送完成中断，且未发送超时)，继续等待
         }else if(Dev.loraStatus == 3){  //注册请求发送成功，等待注册反馈
             Lora_CheckData(LoraBuf,&len);
             if(len > 0){
                 // cmdConfig(1)Tag(1)Timestamp(4)Dev.gatewayId(2)Dev.nodeId(2)LoraPower(1)Dev.nodeIdx(2)DataCycle(2)Dev.scanCycle(2)DeviceType(1)DeviceTag(1)Crc(1)
                 if(ChkCrc(LoraBuf,len) == 0){ //接收到数据,但crc校验错误
-                    if(Timer_Lora >= 200){ // 接收超时1s,重新尝试注册 1
+                    if(Timer_Lora >= 20){ // 接收超时1s,重新尝试注册 1
                         Timer_Lora = 0;
                         Dev.loraStatus = 1;
                         return;
@@ -64,12 +72,13 @@ void Lora_Process(void){
                     Dev.gatewayId = (LoraBuf[7]<<8)|(LoraBuf[6]);
                     //注册成功,切换至接收指令状态
                     //lora频率切换为工作频段
-                    if(Dev.channel <= 22){
-                        Dev.loraFrequency = Dev.loraFrequency + 3.1375f;
+                    if(Dev.channel%10 <= 4){
+                        Dev.loraFrequency = Dev.loraFrequency + 0.935f;
                     }else{
-                        Dev.loraFrequency = (Dev.channel - 23) * 0.3f + 420.1875f;
+                        Dev.loraFrequency = Dev.loraFrequency - 0.765f;
                     }
-                    Lora_Init(Dev.loraFrequency,22,8,0xA);  //切换至监听频率
+                    PRINT("Login to %04x ,dataScycle:%d.\n",Dev.gatewayId,Dev.scanCycle);
+                    Lora_Init(Dev.loraFrequency,22,LORA_SF_SCAN,LORA_BW_SCAN);  //切换至监听频率
                     Lora_Listening();  //监听网关指令  
                     Dev.loraStatus = 4;
                     Timer_Lora = 0;
@@ -78,6 +87,7 @@ void Lora_Process(void){
                 if(Timer_Lora >= 20){ // 接收超时2s,重新尝试注册 2
                     Timer_Lora = 0;
                     Dev.loraStatus = 1;
+                    PRINT("Login rx timeout.\n");
                     return;
                 }
             }
@@ -87,13 +97,24 @@ void Lora_Process(void){
                 if(ChkCrc(LoraBuf,len) == 1){
                     cmd = LoraBuf[0];
                     LoraTag = LoraBuf[1];
-                    if(cmd == 0x0f && *(uint16_t*)(LoraBuf + 2) == Dev.gatewayId ){ //群控下发指令，无需上报结果
+                    if(*(uint16_t*)(LoraBuf + 2) != Dev.gatewayId){ //其他网关指令
+                        Lora_Listening();
+                        return;
+                    }
+                    if(cmd == 0x0B){ //群控对时
+                        if((*(uint32_t*)(LoraBuf+4) > LocalTimestamp + 3) || (LocalTimestamp > *(uint32_t*)(LoraBuf+4) + 3)){
+                            PRINT("RTC update %d -> %d \n",LocalTimestamp,*(uint32_t*)(LoraBuf+4));
+                            LocalTimestamp = *(uint32_t*)(LoraBuf+4);
+                            RTC_SetTimestamp(LocalTimestamp);
+                            Lora_Listening();
+                            return;
+                        }
+                    }else if(cmd == 0x0f){ //群控下发指令，无需上报结果
                         Lora_Listening();
                     }else{
-                        if((*(uint16_t*)(LoraBuf + 2) != Dev.gatewayId) || (*(uint16_t*)(LoraBuf + 4) != Dev.nodeId)){
+                        if(*(uint16_t*)(LoraBuf + 4) != Dev.nodeId){
                             Lora_Listening(); //
-                        }
-                        else if(cmd == 13){ //针对节点的命令
+                        }else if(cmd == 13){ //针对节点的命令
                             if(LoraTag == 1){// 网关下发指令: eCmdData1(1)Tag(1-1)Dev.gatewayId(2)Dev.nodeId(2)Operate(1)OperateTag(2)OperateParameter(4)OperateToken(4)Crc(1)
                                 //operate 6(u8) , operateTag 7(u16) , operateParameter 9(float) 
                                 operateParameter = *(float*)(LoraBuf + 9);
@@ -104,22 +125,15 @@ void Lora_Process(void){
                                     if(LoraBuf[7] == 0){ 
                                     }
                                 }else if(LoraBuf[6] == 23){ //设定温度
-                                   
                                 }else if(LoraBuf[6] == 24){ //制冷/制热设定
-                                    
                                 }else if(LoraBuf[6] == 25){ //风机转速设定
-                                    
                                 }else if(LoraBuf[6] == 26){ //温度锁定
                                    
                                 }else if(LoraBuf[6] == 27){ //管制设定-模式锁定
                                     
                                 }else if(LoraBuf[6] == 28){ //温度补偿设定
-                                   
                                 }else if(LoraBuf[6] == 29){  //温度锁定上/下限设置
-                                    
                                 }
-
-    
                             } else { // // 网关要求节点上报数据: eCmdData1(1)Tag(1-0)Dev.gatewayId(2)Dev.nodeId(2)Timestamp(4)Crc(1)
                                 LoraTag = 0;
                             }
@@ -148,6 +162,7 @@ void Lora_Process(void){
 
                             AddCrc(LoraBuf,17);
                             Lora_Tx(LoraBuf,18);
+                            PRINT("Data to Gw:%04x\n",Dev.gatewayId);
                             Dev.loraStatus = 5; // 通过Lora发送了数据，后续检测发送完成
                             Timer_Lora = 0; //清空计时器
                         } else{ //异常指令

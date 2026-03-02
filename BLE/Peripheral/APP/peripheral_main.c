@@ -28,7 +28,7 @@
  */
 __attribute__((aligned(4))) uint32_t MEM_BUF[BLE_MEMHEAP_SIZE / 4];
 t_dev Dev;
-
+uint32_t LocalTimestamp;
 
 uint8_t TxBuff[100] = "This is uart3 test .\r\n";
 /*********************************************************************
@@ -42,7 +42,6 @@ __HIGH_CODE
 __attribute__((noinline))
 void Main_Circulation()
 {
-    static uint32_t count = 0;
     while(1)
     {   
         Period_100ms();
@@ -130,8 +129,7 @@ int main(void)
     sys_safe_access_disable();
     RTC_SetTimestamp(1767240000);
     LoadDevInfo();
-    GAPRole_PeripheralInit();
-    Peripheral_Init();
+    
 
     int arc_num = sizeof(g_arc_info)/sizeof(t_arc);
     const t_arc *i_ptr = g_arc_info;

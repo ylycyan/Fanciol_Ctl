@@ -3,6 +3,8 @@
 #include "board.h"
 #include "lora.h"
 #include "include/flash.h"
+#include "gattprofile.h"
+#include "peripheral.h"
 static uint8_t Flag_100ms = 0;
 static uint8_t Flag_1s = 0;
 
@@ -80,6 +82,9 @@ void RTC_SetTimestamp(uint32_t timestamp)
     PRINT("set ts:%u -> %04u-%02u-%02u %02u:%02u:%02u\r\n",
           timestamp, year, mon, day, hour, min, sec);
     RTC_InitTime(year, mon, day, hour, min, sec);
+    TMOS_TimerInit(0);
+    GAPRole_PeripheralInit();
+    Peripheral_Init();
 }
 
 //获取当前时间戳
@@ -103,8 +108,9 @@ void Period_100ms(void){
         Flag_100ms = 0;
         WWDG_Refresh(); //喂狗
         Check_IrBuf();
-        LED1_TOGGLE();
-        Lora_Process();
+        Lora_Pro();
+        LED_RED(LocalTimestamp % 2);
+        LocalTimestamp = Rtc_GetTimestamp();   
     }
 }
 
@@ -113,11 +119,11 @@ void Period_1s(void){
     if(Flag_1s){
         //1s事件处理
         Flag_1s = 0;
-        LED0_TOGGLE();
+
         WWDG_Refresh(); //喂狗
         Flash_Poll();
-        #if 1 //test only
-        PRINT("timestamp:%d\r\n",Rtc_GetTimestamp());
+        #if 0 //test only
+        PRINT("@timestamp:%d\r\n",Rtc_GetTimestamp());
         // Lora_Tx((uint8_t*)"123456789ABCD",10,1500);
         #endif 
     }

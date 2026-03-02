@@ -40,8 +40,7 @@ void LoadDevInfo(void){
         Dev.errorCode.bit.irMatch = 1;
         Dev.irIdx = 0xff;
         Dev.nodeId = Default_DevId;
-        Dev.loraStatus = 1;
-        Dev.mode = BITSET(Dev.mode,1);
+        BITSET(Dev.mode,1);
         SaveDevInfo(1); //首次上电，1s后保存Dev数据
         PRINT("Dev mode = %d\n",Dev.mode);
         PRINT("First Power,Init Dev Info.\r\n");
@@ -54,7 +53,7 @@ void LoadDevInfo(void){
     Dev.lastReportTime = 0;
     Dev.runTime = 0;
     Dev.loadPower = 0;
-
+    Dev.loraStatus = 1; //上电lora需重新注册
     // Dev.
     // Dev.setTemp = 25;
     if(Dev.irIdx >= (sizeof(g_arc_info)/sizeof(t_arc))){

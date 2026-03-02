@@ -55,18 +55,26 @@ typedef enum { //LORA频点定义: 单位MHz 注册/监听频率 - 扫描频率
 
 
 /* Dev Info */
-#define DevType  54	// eDeviceAirConditioner(分体空调)
+#define DevType  20	// 20：Fancoil 54：eDeviceAirConditioner(分体空调)
 #define DevTag   50
+#define LORA_SF_LISTEN 10
+#define LORA_BW_LISTEN 0x04 //1268: 125K
+#define LORA_SF_SCAN 8
+#define LORA_BW_SCAN 0x0a  //1268: 41.67k
 /*
+20：Fancoil [value0(u16),value1(u8)value2(u16)value3(u16)value4(u16)value5(u16)]
+
+
+54：eDeviceAirConditioner  [value0(tinyint),value1(tinyint),value2(smallint),value3(float),value4(float),value5(smallint),value6(smallint),value7(smallint)]
 v0:开关状态(u8:0-关,1-开)
 v1:运行模式(u8:0-自动 1-制冷 2-除湿 3-送风 4-制热)
 v2:风速(sf:0-自动 1-低 2-中 3-高)
-v3:运行时间(u16-0~1440分钟)
+v3:用电量(U16)
 v4:设定温度(sf)
 v5:环境温度(sf)
-v6:用电量(U16)
+v6:运行时间(u16-0~1440分钟)
 v7:故障码(u16-D0~15:通信模块故障,红外模块,状态检测,时间参数...)
-value0(tinyint),value1(tinyint),value2(smallint),value3(float),value4(float),value5(smallint),value6(smallint),value7(smallint)
+
 
 */ 
 
@@ -120,7 +128,7 @@ typedef enum{
     PowerOff = 1, // 关
 }OnOff_t;
 
-#define MAGIC_CODE 0x55A1 //首次上电判断
+#define MAGIC_CODE 0x55AA //首次上电判断
 
 #define MAX_IR_LEARNNUM 10
 #define MAX_ACTIONNUM 10
@@ -188,18 +196,22 @@ typedef struct{
 //cmd： len(1)cmd(1)Data(1)Crc(1)
 // len(1)cmd(1:)Version(1)NodeId(2)channel(1)irIdx(1)
 extern t_dev Dev;
-
+extern uint32_t LocalTimestamp;
 //led 
-#define LED0_PIN GPIO_Pin_19
-#define LED1_PIN GPIO_Pin_18
+// #define LED_PORT GPIOB
+#define LED_RED_PIN     GPIO_Pin_3
+#define LED_GREEN_PIN   GPIO_Pin_2
+#define LED_BLUE_PIN    GPIO_Pin_1
+#define LED_WHITE_PIN   GPIO_Pin_0
 static inline void Led_Init(void){
-    GPIOB_SetBits(LED0_PIN | LED1_PIN);
-    GPIOB_ModeCfg(LED0_PIN | LED1_PIN,GPIO_ModeOut_PP_5mA);
+    GPIOB_ResetBits(LED_RED_PIN | LED_GREEN_PIN | LED_WHITE_PIN | LED_BLUE_PIN);
+    GPIOB_ModeCfg(LED_RED_PIN | LED_GREEN_PIN | LED_WHITE_PIN | LED_BLUE_PIN,GPIO_ModeOut_PP_5mA);
 }
-#define LED0(x) (x?GPIOB_ResetBits(LED0_PIN):GPIOB_SetBits(LED0_PIN))
-#define LED1(x) (x?GPIOB_ResetBits(LED1_PIN):GPIOB_SetBits(LED1_PIN))
-#define LED0_TOGGLE() (GPIOB_ReadPortPin(LED0_PIN)?GPIOB_ResetBits(LED0_PIN):GPIOB_SetBits(LED0_PIN))
-#define LED1_TOGGLE() (GPIOB_ReadPortPin(LED1_PIN)?GPIOB_ResetBits(LED1_PIN):GPIOB_SetBits(LED1_PIN))
+// #define LED_(color) (GPIOB_SetBits(LED_##color##_PIN))
+#define LED_RED(x) (x?GPIOB_SetBits(LED_RED_PIN):GPIOB_ResetBits(LED_RED_PIN))
+#define LED_BLUE(x) (x?GPIOB_SetBits(LED_BLUE_PIN):GPIOB_ResetBits(LED_BLUE_PIN))
+#define LED_WHITE(x) (x?GPIOB_SetBits(LED_WHITE_PIN):GPIOB_ResetBits(LED_WHITE_PIN))
+#define LED_GREEN(x) (x?GPIOB_SetBits(LED_GREEN_PIN):GPIOB_ResetBits(LED_GREEN_PIN))
 
 //blueTooth 蓝牙相关配置
 #define BT_DEFAULT_ADVERTISING_INTERVAL         80
@@ -289,5 +301,5 @@ static inline int ChkCrc(uint8_t *buf, uint16_t len) {
 #define BITSET(val, bit)      ((val) |= (1U << (bit)))            // 将 val 的第 bit 位置 1
 #define BITCLR(val, bit)      ((val) &= ~(1U << (bit)))           // 将 val 的第 bit 位清 0
 #define BITTOG(val, bit)   ((val) ^= (1U << (bit)))            // 将 val 的第 bit 位取反
-extern void Lora_Process(void);
+extern void Lora_Pro(void);
 #endif

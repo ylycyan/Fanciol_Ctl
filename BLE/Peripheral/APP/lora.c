@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "lora.h"
+#include "board.h"
 /*
 void Lora_Pio_Init(void)
 {
@@ -48,8 +49,8 @@ void Lora_Spi_Init(void)
     //PB17 BUSY PB8 RESET PB9 POWEN
     GPIOB_ModeCfg(GPIO_Pin_17,GPIO_ModeIN_PU);
     GPIOB_ModeCfg(GPIO_Pin_8 | GPIO_Pin_9 ,GPIO_ModeOut_PP_5mA);
-    GPIOB_SetBits(GPIO_Pin_8);
-    GPIOB_SetBits(GPIO_Pin_9);
+    GPIOB_SetBits(GPIO_Pin_8); //rst
+    GPIOB_SetBits(GPIO_Pin_9); //power
 }
 
 #define Rtc_GetTimestamp() 0
@@ -59,20 +60,24 @@ static SX126x_t SX126x;
 static RadioOperatingModes_t OperatingMode;
 static RadioPacketTypes_t PacketType;
 
-//通过LoraBysy引脚，判断状态是否正常(可用): 0-非Ready状态(即Busy)， 1-Ready
+//通过LoraBusy引脚，判断状态是否正常(可用): 0-非Ready状态(即Busy)， 1-Ready
 void Lora_WaitOnBusy( void ) //高电平表示忙
 {
     WWDG_SetCounter(0);//喂狗
     uint32_t timeout = LORA_READY_TIMEOUT;
+    if(Dev.errorCode.bit.lora){ //存在busy情况,视为异常,防止长时间堵塞阻碍其他功能运行.
+        return;
+    }
     while( (GPIOB_ReadPortPin(GPIO_Pin_17) != 0) && (timeout > 0) ){
         timeout--;
         mDelaymS(1);
     }
-    if(timeout == 0){
-        PRINT("Lora Busy Timeout. Pin11=%ld\n", GPIOB_ReadPortPin(GPIO_Pin_17));
-        // mDelaymS(50); // Removed delay to speed up
+    if(timeout == 0){ // write/read 异常
+        PRINT("Lora Busy Timeout.\n");
+        Dev.errorCode.bit.lora = 1;
+        // mDelaymS(50);
     }
-    // mDelaymS(50); // Removed unconditional delay
+    // mDelaymS(50);
 }
 
 //Reset Lora: 官方资料要求复位引脚拉低并维持100us，安全起见，这里使用20ms
@@ -93,10 +98,10 @@ void Lora_Reset( ) {
  */
 void Lora_Wakeup()
 {
-    GPIOB_ResetBits(GPIO_Pin_8);
+    GPIOB_ResetBits(GPIO_Pin_3);
     SPI1_MasterSendByte(RADIO_GET_STATUS);
     SPI1_MasterSendByte(0x00);
-    GPIOB_SetBits(GPIO_Pin_8);
+    GPIOB_SetBits(GPIO_Pin_3);
 
     Lora_WaitOnBusy();
 }
@@ -621,6 +626,7 @@ void Lora_ClearIrqStatus( uint16_t irq )
  */
 uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
     uint8_t buf[8] = {0};
+    Dev.errorCode.bit.lora = 0;
 	Lora_Spi_Init();
 	Lora_Reset( );
     // 唤醒LoRa模块,wait for busy 

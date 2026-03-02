@@ -5,6 +5,7 @@
 
 # Add inputs and outputs from these tool invocations to the build variables 
 C_SRCS += \
+../APP/adc.c \
 ../APP/b_cdc.c \
 ../APP/board.c \
 ../APP/flash.c \
@@ -16,6 +17,7 @@ C_SRCS += \
 ../APP/util.c 
 
 C_DEPS += \
+./APP/adc.d \
 ./APP/b_cdc.d \
 ./APP/board.d \
 ./APP/flash.d \
@@ -27,6 +29,7 @@ C_DEPS += \
 ./APP/util.d 
 
 OBJS += \
+./APP/adc.o \
 ./APP/b_cdc.o \
 ./APP/board.o \
 ./APP/flash.o \
