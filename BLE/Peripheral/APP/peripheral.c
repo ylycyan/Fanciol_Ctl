@@ -723,16 +723,16 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
             tmos_memcpy(rxbuf, pValue, len);
             PrintHex("char1 rx",rxbuf,len);
 
-            //����ָ��
+            //处理指令
             if(len != rxbuf[0])
             {
-                //ָ��Ȳ���
+                //指令长度不足
                 PRINT("char1 rx len error\n");
                 break;
             }
             if(!ChkCrc(rxbuf,len))
             {
-                //crcУ��ʧ��
+                //crc 
                 PRINT("char1 rx crc error\n");
                 break;
             }
@@ -741,24 +741,24 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
             {
                 case BT_CMD_FAIL:
                 {
-                    //ʧ��ָ��
+                    //失败指令
                     break;
                 }
                 case BT_CMD_DATA:
                 {
-                    //����ָ��
+                    //成功指令
                     break;
                 }
                 case BT_CMD_OPERATE:
                 {
                     Dev.errorCode.bit.irMatch = 0;
                     Ir_cmd(rxbuf[2]);
-                    //����ָ��
+                    //操作指令
                     break;
                 }
                 case BT_CMD_IRTRANS:
                 {
-                    //����ָ��͸��
+                    //红外指令透传
                     Dev.errorCode.bit.irMatch = 0;
                     tmos_memcpy(IrBuf.txbuf,rxbuf+2,len-2);
                     IrBuf.rxlen = 0;
@@ -797,7 +797,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                 }
                 case BT_CMD_SYSPARAMS:
                 {
-                    //ϵͳ����ָ��
+                    //系统参数指令
                     // tx:(len(1)cmd(1:8)option(1:1)Crc(1))
                     // rx:(len(1)cmd(1:8)option(1:1)ver(1)nodeId(2)channel(1)irIdx(1)tem(1)LoadTime(1)errorCode(2)Crc(1))
                     // PRINT("time:%s\n",__DATE__);

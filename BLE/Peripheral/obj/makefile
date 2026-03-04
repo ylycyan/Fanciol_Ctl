@@ -39,34 +39,34 @@ endif
 
 # Add inputs and outputs from these tool invocations to the build variables 
 SECONDARY_FLASH += \
-BackupUpgrade_OTA.hex \
+tcFancoil.hex \
 
 SECONDARY_LIST += \
-BackupUpgrade_OTA.lst \
+tcFancoil.lst \
 
 SECONDARY_SIZE += \
-BackupUpgrade_OTA.siz \
+tcFancoil.siz \
 
 
 # All Target
 all: 
 	$(MAKE) --no-print-directory main-build 
 
-main-build: BackupUpgrade_OTA.elf secondary-outputs
+main-build: tcFancoil.elf secondary-outputs
 
 # Tool invocations
-BackupUpgrade_OTA.elf: $(OBJS) $(USER_OBJS_ESCAPE)
-	@	riscv-none-embed-gcc -march=rv32imac -mabi=ilp32 -mcmodel=medany -msmall-data-limit=8 -mno-save-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -g -T "f:/code/Fanciol_Ctl/BLE/Peripheral/Ld/Link.ld" -nostartfiles -Xlinker --gc-sections -L"f:\code\Fanciol_Ctl\BLE\Peripheral" -L"f:/code/Fanciol_Ctl/BLE/LIB" -L"f:/code/Fanciol_Ctl/SRC/StdPeriphDriver" -Xlinker --print-memory-usage -Wl,-Map,"BackupUpgrade_OTA.map" --specs=nano.specs --specs=nosys.specs -o "BackupUpgrade_OTA.elf" $(OBJS) $(LIBS)
-BackupUpgrade_OTA.hex: BackupUpgrade_OTA.elf
-	@	riscv-none-embed-objcopy -O ihex "BackupUpgrade_OTA.elf" "BackupUpgrade_OTA.hex"
-BackupUpgrade_OTA.lst: BackupUpgrade_OTA.elf
-	@	riscv-none-embed-objdump --source --all-headers --demangle --line-numbers --wide "BackupUpgrade_OTA.elf" > "BackupUpgrade_OTA.lst"
-BackupUpgrade_OTA.siz: BackupUpgrade_OTA.elf
-	riscv-none-embed-size --format=berkeley "BackupUpgrade_OTA.elf"
+tcFancoil.elf: $(OBJS) $(USER_OBJS_ESCAPE)
+	@	riscv-none-embed-gcc -march=rv32imac -mabi=ilp32 -mcmodel=medany -msmall-data-limit=8 -mno-save-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -g -T "f:/code/Fanciol_Ctl/BLE/Peripheral/Ld/Link.ld" -nostartfiles -Xlinker --gc-sections -L"f:\code\Fanciol_Ctl\BLE\Peripheral" -L"f:/code/Fanciol_Ctl/BLE/LIB" -L"f:/code/Fanciol_Ctl/SRC/StdPeriphDriver" -Xlinker --print-memory-usage -Wl,-Map,"tcFancoil.map" --specs=nano.specs --specs=nosys.specs -o "tcFancoil.elf" $(OBJS) $(LIBS)
+tcFancoil.hex: tcFancoil.elf
+	@	riscv-none-embed-objcopy -O ihex "tcFancoil.elf" "tcFancoil.hex"
+tcFancoil.lst: tcFancoil.elf
+	@	riscv-none-embed-objdump --source --all-headers --demangle --line-numbers --wide "tcFancoil.elf" > "tcFancoil.lst"
+tcFancoil.siz: tcFancoil.elf
+	riscv-none-embed-size --format=berkeley "tcFancoil.elf"
 
 # Other Targets
 clean:
-	-$(RM) $(DIR_OBJS) $(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE) BackupUpgrade_OTA.elf
+	-$(RM) $(DIR_OBJS) $(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE) tcFancoil.elf
 	-$(RM) $(DIR_EXPANDS) $(CALLGRAPH_DOT)
 	-$(RM) $(DIR_DEPS)
 secondary-outputs: $(SECONDARY_FLASH) $(SECONDARY_LIST) $(SECONDARY_SIZE)

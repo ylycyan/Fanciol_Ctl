@@ -7,16 +7,16 @@
 #include "peripheral.h"
 static uint8_t Flag_100ms = 0;
 static uint8_t Flag_1s = 0;
-
-//主频60M，看门狗超时复位最长时间为 131072/60000000*255=0.557056s。
+volatile uint32_t CurTick = 0;  //??tick ,??10ms
+//??60M????????????? 131072/60000000*255=0.557056s?
 void WWDG_Init(void){
-    WWDG_SetCounter(0);//喂狗
-    WWDG_ClearFlag();//清除中断标志
-    WWDG_ResetCfg(ENABLE);//使能看门狗复位
+    WWDG_SetCounter(0);//??
+    WWDG_ClearFlag();//??????
+    WWDG_ResetCfg(ENABLE);//???????
 }
 
 void WWDG_Refresh(void){
-    WWDG_SetCounter(0);//喂狗
+    WWDG_SetCounter(0);//??
 }
 
 static uint8_t is_leap_year(uint16_t y){
@@ -26,7 +26,7 @@ static uint8_t is_leap_year(uint16_t y){
     return 1;
 }
 
-// ***慎用!!! 尽量在初始化程序中调用,若在沁恒tmos任务中调用RTC_InitTime()可能导致异常. 
+// ***??!!! ???????????,????tmos?????RTC_InitTime()??????. 
 void RTC_SetTimestamp(uint32_t timestamp)
 {
     static const uint8_t mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
@@ -73,7 +73,7 @@ void RTC_SetTimestamp(uint32_t timestamp)
     min = (uint16_t)(sod / 60u);
     sec = (uint16_t)(sod % 60u);
 
-    //lse 使能 与HAL_TimeInit()冲突,会导致异常重启,lse是否工作待确认
+    //lse ?? ?HAL_TimeInit()??,???????,lse???????
     // LClk32K_Select(Clk32K_LSE);
     // R8_SAFE_ACCESS_SIG = SAFE_ACCESS_SIG1;
     // R8_SAFE_ACCESS_SIG = SAFE_ACCESS_SIG2;
@@ -81,13 +81,21 @@ void RTC_SetTimestamp(uint32_t timestamp)
     // R8_SAFE_ACCESS_SIG = 0;
     PRINT("set ts:%u -> %04u-%02u-%02u %02u:%02u:%02u\r\n",
           timestamp, year, mon, day, hour, min, sec);
+
+    CH58X_BLEInit();
+    HAL_Init();
+        //lse test
+    sys_safe_access_enable();
+    R8_CK32K_CONFIG |= RB_CLK_OSC32K_XT | RB_CLK_INT32K_PON | RB_CLK_XT32K_PON;
+    sys_safe_access_disable();
     RTC_InitTime(year, mon, day, hour, min, sec);
+
     TMOS_TimerInit(0);
     GAPRole_PeripheralInit();
     Peripheral_Init();
 }
 
-//获取当前时间戳
+//???????
 uint32_t Rtc_GetTimestamp(void){
     struct tm t = {0};
     uint16_t year, mon, day, hour, min, sec;
@@ -101,12 +109,12 @@ uint32_t Rtc_GetTimestamp(void){
     return mktime(&t);
 }
 
-//100ms事件处理,主循环中轮询处理
+//100ms????,????????
 void Period_100ms(void){
     if(Flag_100ms){
-        //100ms事件处理
+        //100ms????
         Flag_100ms = 0;
-        WWDG_Refresh(); //喂狗
+        WWDG_Refresh(); //??
         Check_IrBuf();
         Lora_Pro();
         LED_RED(LocalTimestamp % 2);
@@ -114,16 +122,18 @@ void Period_100ms(void){
     }
 }
 
-//1s事件处理,主循环中轮询处理
+//1s????,????????
 void Period_1s(void){
     if(Flag_1s){
-        //1s事件处理
+        //1s????
         Flag_1s = 0;
 
-        WWDG_Refresh(); //喂狗
+        WWDG_Refresh(); //??
         Flash_Poll();
-        #if 0 //test only
-        PRINT("@timestamp:%d\r\n",Rtc_GetTimestamp());
+        ADC_Pro();
+        #if 1 //test only
+        // FREQ_SYS
+        PRINT("#curtick:%d , @timestamp:%d\r\n",CurTick,LocalTimestamp);
         // Lora_Tx((uint8_t*)"123456789ABCD",10,1500);
         #endif 
     }
@@ -131,11 +141,12 @@ void Period_1s(void){
 
 __INTERRUPT                                   //interrupt flag
 __HIGH_CODE                                   //put in ram
-void TMR0_IRQHandler(void)  {                 //timer0 每10ms中断
+void TMR0_IRQHandler(void)  {                 //timer0 ?10ms??
     static uint32_t tick = 0;
     if(TMR0_GetITFlag(TMR0_3_IT_CYC_END)){    //check flag
         TMR0_ClearITFlag(TMR0_3_IT_CYC_END);  //clear flag
         tick++;
+        CurTick = SysTick->CNT / (FREQ_SYS / 1000);
         if(tick % 10 == 0){ //100ms
             Flag_100ms = 1;
         }

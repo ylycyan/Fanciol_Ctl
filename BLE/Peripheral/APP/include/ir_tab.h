@@ -76,9 +76,9 @@ typedef enum {
 } IR_CMD_t;
 
 // 空调控制指令码表
-// static const t_arc g_arc_info[] = {};
-
-
+static const t_arc g_arc_info[] = {};
+// static const t_arc g_arc_info[]
+#if 0
 static const t_arc g_arc_info[] =
     {
         {.num = 24,
@@ -213,7 +213,7 @@ static const t_arc g_arc_info[] =
          .name = "米家(MI JIA)",
          .cmd = {958, 1052}}, /*米家(MI JIA)@11(+59 */
 };
-
+#endif
 #elif (IR_MODULE) // 其他红外模块定义
 #error undefined ir module
 #endif

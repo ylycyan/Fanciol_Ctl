@@ -47,7 +47,7 @@ void Lora_Pro(void){
             } else if ((irq > 0) || (Timer_Lora > 10)) { //检测到非预期的Lora中断(出错?)或者超时，说明注册失败，后续重试
                 Dev.loraStatus = 1; //切换至未注册状态
                 Timer_Lora = 0; 
-                PRINT("Login tx error.\n");
+                PRINT("Login tx error @%d.\n",LocalTimestamp);
             } //else //发送中(未检测到发送完成中断，且未发送超时)，继续等待
         }else if(Dev.loraStatus == 3){  //注册请求发送成功，等待注册反馈
             Lora_CheckData(LoraBuf,&len);
@@ -77,7 +77,7 @@ void Lora_Pro(void){
                     }else{
                         Dev.loraFrequency = Dev.loraFrequency - 0.765f;
                     }
-                    PRINT("Login to %04x ,dataScycle:%d.\n",Dev.gatewayId,Dev.scanCycle);
+                    PRINT("Login to %04x ,dataScycle:%d @%d.\n",Dev.gatewayId,Dev.scanCycle,LocalTimestamp);
                     Lora_Init(Dev.loraFrequency,22,LORA_SF_SCAN,LORA_BW_SCAN);  //切换至监听频率
                     Lora_Listening();  //监听网关指令  
                     Dev.loraStatus = 4;
@@ -87,7 +87,7 @@ void Lora_Pro(void){
                 if(Timer_Lora >= 20){ // 接收超时2s,重新尝试注册 2
                     Timer_Lora = 0;
                     Dev.loraStatus = 1;
-                    PRINT("Login rx timeout.\n");
+                    PRINT("Login rx timeout @%d.\n",LocalTimestamp);
                     return;
                 }
             }
@@ -162,7 +162,7 @@ void Lora_Pro(void){
 
                             AddCrc(LoraBuf,17);
                             Lora_Tx(LoraBuf,18);
-                            PRINT("Data to Gw:%04x\n",Dev.gatewayId);
+                            PRINT("Data to Gw:%04x @%d\n",Dev.gatewayId,LocalTimestamp);
                             Dev.loraStatus = 5; // 通过Lora发送了数据，后续检测发送完成
                             Timer_Lora = 0; //清空计时器
                         } else{ //异常指令

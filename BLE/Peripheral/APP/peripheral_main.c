@@ -63,7 +63,7 @@ int main(void)
     uint8_t  s;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
     //timer0 init
-    TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 ?10msùùùù???
+    TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 ?10ms???????
     TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);        //enable peripheral interrupt
     PFIC_EnableIRQ(TMR0_IRQn);                    //enable timer0 core interrupt
     //wwdg init
@@ -119,14 +119,11 @@ int main(void)
 
 #endif
 
-    // InitUSBDevice(); //usb-cdc¥Æø⁄µ˜ ‘ 
+    // InitUSBDevice(); //usb-cdc??????? 
     PRINT("%s ,build in(%s:%s)\n", VER_LIB,__DATE__,__TIME__);
-    CH58X_BLEInit();
-    HAL_Init();
-    //lse test
-    sys_safe_access_enable();
-    R8_CK32K_CONFIG |= RB_CLK_OSC32K_XT | RB_CLK_INT32K_PON | RB_CLK_XT32K_PON;
-    sys_safe_access_disable();
+
+
+
     RTC_SetTimestamp(1767240000);
     LoadDevInfo();
     

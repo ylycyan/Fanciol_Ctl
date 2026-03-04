@@ -8,6 +8,7 @@
 #define __BOARD_H__
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include "CH58x_common.h"
 #include "flash.h"
 #include "ir_tab.h"
@@ -49,11 +50,6 @@ typedef enum { //LORA频点定义: 单位MHz 注册/监听频率 - 扫描频率
     eFrequencyIllegal	=10
 } tFrequency;
 
-/* Infrared */
-
-
-
-
 /* Dev Info */
 #define DevType  20	// 20：Fancoil 54：eDeviceAirConditioner(分体空调)
 #define DevTag   50
@@ -61,6 +57,8 @@ typedef enum { //LORA频点定义: 单位MHz 注册/监听频率 - 扫描频率
 #define LORA_BW_LISTEN 0x04 //1268: 125K
 #define LORA_SF_SCAN 8
 #define LORA_BW_SCAN 0x0a  //1268: 41.67k
+#define MAGIC_CODE 0x55AA //首次上电判断
+#define AD_INTERVAL 10 //adc采集间隔
 /*
 20：Fancoil [value0(u16),value1(u8)value2(u16)value3(u16)value4(u16)value5(u16)]
 
@@ -78,7 +76,7 @@ v7:故障码(u16-D0~15:通信模块故障,红外模块,状态检测,时间参数
 
 */ 
 
-
+/* Infrared */
 #define IRBUFSIZE 128
 typedef enum{
     IR_TYPE_NORMAL = 0,
@@ -128,7 +126,7 @@ typedef enum{
     PowerOff = 1, // 关
 }OnOff_t;
 
-#define MAGIC_CODE 0x55AA //首次上电判断
+
 
 #define MAX_IR_LEARNNUM 10
 #define MAX_ACTIONNUM 10
@@ -174,7 +172,7 @@ typedef struct{
     DEV_ACTION_T actions[MAX_ACTIONNUM];  //本地指令组(只在本地执行,定时执行对应动作,不上云)
     //上报数据
     OnOff_t onOff; // 空调开关状态,0:关 1:开
-    uint16_t tem; // 环境温度
+    float tem; // 环境温度
     Mode_t ctlMode; // 空调运行模式
     uint16_t temSet; // 设定温度
     Wind_t wind; // 风速
@@ -302,4 +300,5 @@ static inline int ChkCrc(uint8_t *buf, uint16_t len) {
 #define BITCLR(val, bit)      ((val) &= ~(1U << (bit)))           // 将 val 的第 bit 位清 0
 #define BITTOG(val, bit)   ((val) ^= (1U << (bit)))            // 将 val 的第 bit 位取反
 extern void Lora_Pro(void);
+extern void ADC_Pro(void);
 #endif
