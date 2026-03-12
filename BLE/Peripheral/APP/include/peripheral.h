@@ -33,6 +33,46 @@ extern "C" {
 #define SBP_PHY_UPDATE_EVT      0x0010
 #define OTA_FLASH_ERASE_EVT     0x0020
 
+// 蓝牙通讯协议定义
+// 帧结构: LEN(1) + CMD(1) + PAYLOAD(N) + CRC(1)
+
+// 指令类型
+typedef enum {
+    BT_CMD_WRITE      = 0x01, // 写属性 (上位机 -> 设备)
+    BT_CMD_READ       = 0x02, // 读属性 (上位机 -> 设备)
+    BT_CMD_NOTIFY     = 0x03, // 属性通知/应答 (设备 -> 上位机)
+    BT_CMD_ACK        = 0x04, // 操作成功应答 (设备 -> 上位机)
+    BT_CMD_ERROR      = 0x05, // 错误应答 (设备 -> 上位机)
+    BT_CMD_ACTION     = 0x06  // 执行动作 (上位机 -> 设备)
+} BT_CMD_Type;
+
+// 属性ID定义 (PID)
+typedef enum {
+    PID_SWITCH        = 0x01, // 开关 (u8: 0关 1开)
+    PID_MODE          = 0x02, // 模式 (u8: 0自动 1制冷 2除湿 3送风 4制热)
+    PID_TEMP_SET      = 0x03, // 设定温度 (u16: 放大10倍)
+    PID_TEMP_ROOM     = 0x04, // 环境温度 (s16: 放大10倍)
+    PID_FAN_SPEED     = 0x05, // 风速 (u8: 0自动 1低 2中 3高)
+    PID_LOCK          = 0x06, // 锁定状态 (u8)
+    PID_ERROR         = 0x07, // 故障码 (u16)
+    
+    PID_LORA_CFG      = 0x10, // Lora配置 (NodeID[2] + Channel[1])
+    PID_IR_CFG        = 0x11, // 红外配置 (Brand[1] + Type[2])
+    PID_DEV_INFO      = 0x12, // 设备信息 (RunTime[2] + Power[2])
+    PID_TIMESTAMP     = 0x13, // 时间戳 (u32)
+    
+    PID_ALL_STATE     = 0xF0, // 全状态查询 (返回 Switch+Mode+TempSet+TempRoom+Fan+Error)
+} BT_PID_Type;
+
+// 动作ID定义 (ActionID)
+typedef enum {
+    ACT_RESET         = 0x01, // 复位设备
+    ACT_IR_MATCH      = 0x02, // 红外匹配
+    ACT_IR_LEARN      = 0x03, // 红外学习
+    ACT_IR_SEND       = 0x04, // 红外透传发送
+    ACT_SAVE_PARAMS   = 0x05, // 保存参数到Flash
+} BT_Action_Type;
+
 /*********************************************************************
  * MACROS
  */

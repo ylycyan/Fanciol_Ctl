@@ -69,7 +69,7 @@ void LED_GREEN_BLINK(bool IsBlinking, uint32_t BlinkInterval){
     LED_SetBlink(LED_GREEN_PIN, IsBlinking, BlinkInterval, FALSE);
 }
 
-void LED_BLINK(void){
+void LED_Pro(void){
     uint32_t CurrentTime = CurTick;
     for(int i=0; i<sizeof(LEDs)/sizeof(LEDs[0]); i++){
         // 仅处理开启闪烁且 Interval > 0 的 LED

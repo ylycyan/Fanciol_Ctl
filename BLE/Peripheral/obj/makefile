@@ -1,5 +1,5 @@
 ################################################################################
-# MRS Version: 2.3.0
+# MRS Version: 2.4.0
 # Automatically-generated file. Do not edit!
 ################################################################################
 -include ../makefile.init
@@ -56,7 +56,7 @@ main-build: tcFancoil.elf secondary-outputs
 
 # Tool invocations
 tcFancoil.elf: $(OBJS) $(USER_OBJS_ESCAPE)
-	@	riscv-none-embed-gcc -march=rv32imac -mabi=ilp32 -mcmodel=medany -msmall-data-limit=8 -mno-save-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -g -T "f:/code/Fanciol_Ctl/BLE/Peripheral/Ld/Link.ld" -nostartfiles -Xlinker --gc-sections -L"f:\code\Fanciol_Ctl\BLE\Peripheral" -L"f:/code/Fanciol_Ctl/BLE/LIB" -L"f:/code/Fanciol_Ctl/SRC/StdPeriphDriver" -Xlinker --print-memory-usage -Wl,-Map,"tcFancoil.map" --specs=nano.specs --specs=nosys.specs -o "tcFancoil.elf" $(OBJS) $(LIBS)
+	@	riscv-none-embed-gcc -march=rv32imac -mabi=ilp32 -mcmodel=medany -msmall-data-limit=8 -mno-save-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -g -T "f:\code\Fanciol_Ctl\BLE\Peripheral\Ld\Link.ld" -nostartfiles -Xlinker --gc-sections -L"f:\code\Fanciol_Ctl\BLE\Peripheral" -L"f:\code\Fanciol_Ctl\BLE\LIB" -L"f:\code\Fanciol_Ctl\SRC\StdPeriphDriver" -Xlinker --print-memory-usage -Wl,-Map,"tcFancoil.map" --specs=nano.specs --specs=nosys.specs -o "tcFancoil.elf" $(OBJS) $(LIBS)
 tcFancoil.hex: tcFancoil.elf
 	@	riscv-none-embed-objcopy -O ihex "tcFancoil.elf" "tcFancoil.hex"
 tcFancoil.lst: tcFancoil.elf

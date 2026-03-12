@@ -13,13 +13,13 @@
 #include "flash.h"
 #include "ir_tab.h"
 #define Default_DevId 0xBB01 //默认的设备编号
-
+#define Default_Channel 5 
 /* Lora */
 #define LORA_POWER 22				//lora发送功率：22
 #define LORA_SF_LISTEN 10				//监听LORA的扩频因子:10 //Sf10+Bw7:  128b-1210ms, 112b-1050ms, 104b-1000ms(6只热量计上报数据:16*6+7),88b-880ms(5只热量计上报数据:16*5+7),72b-760ms(4只热量计上报数据),56b-600ms,27b-400ms(配置下发)
 #define LORA_BW_LISTEN 0x04				//监听LORA的带宽:125K sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
-#define LORA_SF_SCAN 8					//扫描LORA的扩频因子:8 //Sf8+Bw5: 71b-660ms(4台冷机上报数据) 43b-450ms(4台变频器上报数据) 15b-235ms(4路电流上报)
-#define LORA_BW_SCAN 0x0a				//扫描LORA的带宽:41.7 sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
+#define LORA_SF_SCAN 11					//扫描LORA的扩频因子:8 //Sf8+Bw5: 71b-660ms(4台冷机上报数据) 43b-450ms(4台变频器上报数据) 15b-235ms(4路电流上报)
+#define LORA_BW_SCAN 0x04				//扫描LORA的带宽:41.7 sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
 
 //旧版本(分体空调&三速开关)固定频点(0~31),基于场景普遍安装较分散,兼容普通节点统一改为Radio(0~4)*channel(0~9)版本
 //节点以内置的频道 431.1/432.8/434.5/436.2/437.9 为参考，按不同的频点进行扫描注册。如果收到修改频道指令，则更新至 FLASH/EEPROM，重启后以新的频道扫描注册
@@ -53,11 +53,7 @@ typedef enum { //LORA频点定义: 单位MHz 注册/监听频率 - 扫描频率
 /* Dev Info */
 #define DevType  20	// 20：Fancoil 54：eDeviceAirConditioner(分体空调)
 #define DevTag   50
-#define LORA_SF_LISTEN 10
-#define LORA_BW_LISTEN 0x04 //1268: 125K
-#define LORA_SF_SCAN 8
-#define LORA_BW_SCAN 0x0a  //1268: 41.67k
-#define MAGIC_CODE 0x55AA //首次上电判断
+#define MAGIC_CODE 0x55AB //首次上电判断
 #define AD_INTERVAL 10 //adc采集间隔
 /*
 20：Fancoil [value0(u16),value1(u8)value2(u16)value3(u16)value4(u16)value5(u16)]

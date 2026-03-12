@@ -30,7 +30,7 @@ void Lora_Pro(void){
             *(uint16_t*)(LoraBuf + 2) = Dev.nodeId;  //Dev.nodeId
             AddCrc(LoraBuf,4);
             //lora频率切换为注册频段
-            Dev.loraFrequency = Dev.channel * 0.17f + 431.1f;
+            Dev.loraFrequency = Dev.channel * 0.3f + 420.05f;
             Lora_Init(Dev.loraFrequency,22,LORA_SF_LISTEN,LORA_BW_LISTEN);  //注册频率
             Lora_Tx(LoraBuf,5);
             Dev.loraStatus = 2;
@@ -69,10 +69,10 @@ void Lora_Pro(void){
                     Dev.gatewayId = (LoraBuf[7]<<8)|(LoraBuf[6]);
                     //注册成功,切换至接收指令状态
                     //lora频率切换为工作频段
-                    if(Dev.channel%10 <= 4){
-                        Dev.loraFrequency = Dev.loraFrequency + 0.935f;
+                    if(Dev.channel <= 22){
+                        Dev.loraFrequency = Dev.loraFrequency + 3.1375f;
                     }else{
-                        Dev.loraFrequency = Dev.loraFrequency - 0.765f;
+                        Dev.loraFrequency = (Dev.channel - 23) * 0.3f + 420.1875f;
                     }
                     PRINT("Login to %04x ,dataScycle:%d @%d.\n",Dev.gatewayId,Dev.scanCycle,LocalTimestamp);
                     Lora_Init(Dev.loraFrequency,22,LORA_SF_SCAN,LORA_BW_SCAN);  //切换至监听频率

@@ -713,147 +713,199 @@ static uint8_t peripheralBuildAdvData(void)
 
 //M:len(1)cmd(1)DATA(N)Crc(1)
 //S:Len(1)cmd(1)Crc(1)
+// 辅助发送函数
+static void SendBtResponse(uint8_t cmd, uint8_t* payload, uint8_t payloadLen) {
+    uint8_t txBuf[64];
+    if(payloadLen + 3 > 64) return;
+    txBuf[0] = payloadLen + 3; // Total Len
+    txBuf[1] = cmd;            // Cmd
+    if(payloadLen > 0) {
+        tmos_memcpy(&txBuf[2], payload, payloadLen);
+    }
+    AddCrc(txBuf, payloadLen + 2);
+    peripheralCharNotify(SIMPLEPROFILE_CHAR1, txBuf, txBuf[0]);
+}
+
 static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len)
 {
     switch(paramID)
     {
         case SIMPLEPROFILE_CHAR1:
         {
-            uint8_t rxbuf[50];
+            uint8_t rxbuf[64];
+            if(len > 64) len = 64;
             tmos_memcpy(rxbuf, pValue, len);
-            PrintHex("char1 rx",rxbuf,len);
+            PrintHex("RX", rxbuf, len);
 
-            //处理指令
-            if(len != rxbuf[0])
+            // 校验: 长度至少3字节(Len+Cmd+Crc), 首字节为长度, CRC校验通过
+            if(len < 3 || len != rxbuf[0] || !ChkCrc(rxbuf, len))
             {
-                //指令长度不足
-                PRINT("char1 rx len error\n");
+                PRINT("Protocol Error: Len/CRC\n");
+                SendBtResponse(BT_CMD_ERROR, (uint8_t*)"CRC/LEN", 7);
                 break;
             }
-            if(!ChkCrc(rxbuf,len))
-            {
-                //crc 
-                PRINT("char1 rx crc error\n");
-                break;
-            }
-            BT_CMD_t cmd = rxbuf[1];
+
+            uint8_t cmd = rxbuf[1];
+            uint8_t* pData = &rxbuf[2];
+            uint8_t dataLen = len - 3; 
+            
+            uint8_t rspBuf[60];
+            uint8_t rspLen = 0;
+            uint16_t tmpU16;
+            int16_t tmpS16;
+
             switch(cmd)
             {
-                case BT_CMD_FAIL:
+                case BT_CMD_WRITE: // 写属性
                 {
-                    //失败指令
+                    uint8_t i = 0;
+                    while(i < dataLen) {
+                        uint8_t pid = pData[i++];
+                        switch(pid) {
+                            case PID_SWITCH:
+                                if(i < dataLen) Dev.onOff = pData[i++];
+                                break;
+                            case PID_MODE:
+                                if(i < dataLen) Dev.ctlMode = pData[i++];
+                                break;
+                            case PID_TEMP_SET:
+                                if(i + 1 < dataLen) {
+                                    Dev.temSet = (pData[i] | (pData[i+1]<<8)); // 小端
+                                    i += 2;
+                                }
+                                break;
+                            case PID_FAN_SPEED:
+                                if(i < dataLen) Dev.wind = pData[i++];
+                                break;
+                            case PID_LOCK:
+                                // if(i < dataLen) Dev.lock = pData[i++];
+                                i++; // Skip
+                                break;
+                            case PID_LORA_CFG:
+                                if(i + 2 < dataLen) {
+                                    Dev.nodeId = (pData[i] | (pData[i+1]<<8));
+                                    Dev.channel = pData[i+2];
+                                    i += 3;
+                                }
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+                    SendBtResponse(BT_CMD_ACK, NULL, 0);
+                    // 这里可以触发保存或应用逻辑
                     break;
                 }
-                case BT_CMD_DATA:
+                case BT_CMD_READ: // 读属性
                 {
-                    //成功指令
+                    uint8_t i = 0;
+                    while(i < dataLen) {
+                        uint8_t pid = pData[i++];
+                        rspBuf[rspLen++] = pid;
+                        switch(pid) {
+                            case PID_SWITCH:
+                                rspBuf[rspLen++] = Dev.onOff;
+                                break;
+                            case PID_MODE:
+                                rspBuf[rspLen++] = Dev.ctlMode;
+                                break;
+                            case PID_TEMP_SET:
+                                rspBuf[rspLen++] = Dev.temSet & 0xFF;
+                                rspBuf[rspLen++] = (Dev.temSet >> 8) & 0xFF;
+                                break;
+                            case PID_TEMP_ROOM:
+                                tmpS16 = (int16_t)(Dev.tem * 10);
+                                rspBuf[rspLen++] = tmpS16 & 0xFF;
+                                rspBuf[rspLen++] = (tmpS16 >> 8) & 0xFF;
+                                break;
+                            case PID_FAN_SPEED:
+                                rspBuf[rspLen++] = Dev.wind;
+                                break;
+                            case PID_ERROR:
+                                rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
+                                rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;
+                                break;
+                            case PID_ALL_STATE:
+                                // Switch(1)
+                                rspBuf[rspLen++] = Dev.onOff;
+                                // Mode(1)
+                                rspBuf[rspLen++] = Dev.ctlMode;
+                                // TempSet(2)
+                                rspBuf[rspLen++] = Dev.temSet & 0xFF;
+                                rspBuf[rspLen++] = (Dev.temSet >> 8) & 0xFF;
+                                // TempRoom(2)
+                                tmpS16 = (int16_t)(Dev.tem * 10);
+                                rspBuf[rspLen++] = tmpS16 & 0xFF;
+                                rspBuf[rspLen++] = (tmpS16 >> 8) & 0xFF;
+                                // Fan(1)
+                                rspBuf[rspLen++] = Dev.wind;
+                                // Error(2)
+                                rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
+                                rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;
+                                break;
+                            case PID_DEV_INFO:
+                                // RunTime(2)
+                                rspBuf[rspLen++] = Dev.runTime & 0xFF;
+                                rspBuf[rspLen++] = (Dev.runTime >> 8) & 0xFF;
+                                // Power(2)
+                                rspBuf[rspLen++] = Dev.loadPower & 0xFF;
+                                rspBuf[rspLen++] = (Dev.loadPower >> 8) & 0xFF;
+                                break;
+                        }
+                    }
+                    SendBtResponse(BT_CMD_NOTIFY, rspBuf, rspLen);
                     break;
                 }
-                case BT_CMD_OPERATE:
+                case BT_CMD_ACTION: // 执行动作
                 {
-                    Dev.errorCode.bit.irMatch = 0;
-                    Ir_cmd(rxbuf[2]);
-                    //操作指令
-                    break;
-                }
-                case BT_CMD_IRTRANS:
-                {
-                    //红外指令透传
-                    Dev.errorCode.bit.irMatch = 0;
-                    tmos_memcpy(IrBuf.txbuf,rxbuf+2,len-2);
-                    IrBuf.rxlen = 0;
-                    IrBuf.isFinish = 0;
-                    PrintHex("send ",IrBuf.txbuf,len-2);
-                    UART3_SendString(IrBuf.txbuf,len-2);
-                    break;
-                }
-                case BT_CMD_IRMATCH:
-                {
-                    Dev.errorCode.bit.irMatch = 0;
-                    tmos_memcpy(IrBuf.txbuf,rxbuf+2,len-2);
-                    IrBuf.rxlen = 0;
-                    IrBuf.isFinish = 0;
-                    IrBuf.type = IR_TYPE_MATCH;
-                    IrBuf.txbuf[0] = 0x30;
-                    IrBuf.txbuf[1] = 0x70;
-                    IrBuf.txbuf[2] = 0xa0;
-                    PrintHex("send ",IrBuf.txbuf,3);
-                    UART3_SendString(IrBuf.txbuf,3);
-                    break;
-                }
-                case BT_CMD_IRLEARN:
-                {
-                    Dev.errorCode.bit.irMatch = 0;
-                    tmos_memcpy(IrBuf.txbuf,rxbuf+2,len-2);
-                    IrBuf.rxlen = 0;
-                    IrBuf.isFinish = 0;
-                    IrBuf.type = IR_TYPE_LEARNing;
-                    IrBuf.txbuf[0] = 0x30;
-                    IrBuf.txbuf[1] = 0x20;
-                    IrBuf.txbuf[2] = 0x50;
-                    PrintHex("send ",IrBuf.txbuf,3);
-                    UART3_SendString(IrBuf.txbuf,3);
-                    break;
-                }
-                case BT_CMD_SYSPARAMS:
-                {
-                    //系统参数指令
-                    // tx:(len(1)cmd(1:8)option(1:1)Crc(1))
-                    // rx:(len(1)cmd(1:8)option(1:1)ver(1)nodeId(2)channel(1)irIdx(1)tem(1)LoadTime(1)errorCode(2)Crc(1))
-                    // PRINT("time:%s\n",__DATE__);
-                    if(rxbuf[2] == eBtSet){
-                        //设置系统参数指令
-                        Dev.nodeId = *(uint16_t*)(rxbuf + 4);
-                        Dev.channel = rxbuf[6];
-                        Dev.irType = *(uint16_t*)(rxbuf+7);
-                        // Dev.tem = rxbuf[8];
-                        Dev.runTime = rxbuf[9];
-                        // SaveDevInfo(1); //1s�󱣴�Dev����
-                        PRINT("Set SysParams success.\r\n");
-                    }else if(rxbuf[2] == eBtGet){
-                        //查询系统参数指令
-                        BTFrame.dat[0] = 14; 
-                        BTFrame.dat[1] = BT_CMD_SYSPARAMS; 
-                        BTFrame.dat[2] = eBtGet; 
-                        BTFrame.dat[3] = 0xfe; 
-                        *(uint16_t*)(BTFrame.dat + 4) = Dev.nodeId; 
-                        BTFrame.dat[6] = Dev.channel; 
-                        *(uint16_t*)(BTFrame.dat + 7) = Dev.irType; 
-                        BTFrame.dat[9] = Dev.tem;
-                        BTFrame.dat[10] = Dev.runTime;
-                        *(uint16_t*)(BTFrame.dat + 11) = Dev.errorCode.u16Val;
-                        AddCrc(BTFrame.dat, 13);
-                        peripheralCharNotify(SIMPLEPROFILE_CHAR1, BTFrame.dat, 13);
+                    uint8_t action = pData[0];
+                    switch(action) {
+                        case ACT_RESET:
+                            PRINT("Resetting...\n");
+                            SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            SYS_ResetExecute();
+                            break;
+                        case ACT_IR_SEND: // 红外透传: [ACT][Data...]
+                            Dev.errorCode.bit.irMatch = 0;
+                            tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
+                            IrBuf.rxlen = 0;
+                            IrBuf.isFinish = 0;
+                            UART3_SendString(IrBuf.txbuf, dataLen - 1);
+                            SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            break;
+                        case ACT_IR_MATCH:
+                            // ... 逻辑同旧代码 ...
+                            Dev.errorCode.bit.irMatch = 0;
+                            tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
+                            IrBuf.rxlen = 0;
+                            IrBuf.isFinish = 0;
+                            IrBuf.type = IR_TYPE_MATCH;
+                            IrBuf.txbuf[0] = 0x30; IrBuf.txbuf[1] = 0x70; IrBuf.txbuf[2] = 0xa0;
+                            UART3_SendString(IrBuf.txbuf, 3);
+                            SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            break;
+                        case ACT_IR_LEARN:
+                            // ... 逻辑同旧代码 ...
+                            Dev.errorCode.bit.irMatch = 0;
+                            tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
+                            IrBuf.rxlen = 0;
+                            IrBuf.isFinish = 0;
+                            IrBuf.type = IR_TYPE_LEARNing;
+                            IrBuf.txbuf[0] = 0x30; IrBuf.txbuf[1] = 0x20; IrBuf.txbuf[2] = 0x50;
+                            UART3_SendString(IrBuf.txbuf, 3);
+                            SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            break;
+                        case ACT_SAVE_PARAMS:
+                            // SaveDevInfo(1); 
+                            SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            break;
                     }
                     break;
                 }
-                case BT_CMD_UPDATE:
-                {
-                    //升级指令
-                    break;
-                }
-                case BT_CMD_RESET: //重置指令
-                {
-                    PRINT("reset device.\r\n");
-                    SYS_ResetExecute();
-                    break;
-                }
-                case BT_CMD_ILLEGAL:
-                {
-                    //非法指令
-                    break;
-                }
                 default:
-                {
-                    //未定义指令
+                    SendBtResponse(BT_CMD_ERROR, (uint8_t*)"UNK_CMD", 7);
                     break;
-                }
             }
-
-            // peripheralCharNotify(SIMPLEPROFILE_CHAR1, rxbuf, len-1);  //����֪ͨ
-
-
-
             break;
         }
 
@@ -865,13 +917,10 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
             IrBuf.rxlen = 0;
             IrBuf.isFinish = 0;
             UART3_SendString(rxbuf,len);
-            // peripheralCharNotify(SIMPLEPROFILE_CHAR2, rxbuf, len);
             break;
         }
 
-
         default:
-            // should not reach here!
             break;
     }
 }

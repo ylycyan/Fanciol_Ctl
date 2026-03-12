@@ -40,6 +40,7 @@ void LoadDevInfo(void){
         Dev.errorCode.bit.irMatch = 1;
         Dev.irIdx = 0xff;
         Dev.nodeId = Default_DevId;
+        Dev.channel = Default_Channel;
         BITSET(Dev.mode,1);
         SaveDevInfo(1); //首次上电，1s后保存Dev数据
         PRINT("Dev mode = %d\n",Dev.mode);
