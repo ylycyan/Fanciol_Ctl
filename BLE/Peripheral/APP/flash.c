@@ -54,6 +54,7 @@ void LoadDevInfo(void){
     Dev.runTime = 0;
     Dev.loadPower = 0;
     Dev.loraStatus = 1; //上电lora需重新注册
+    Timer_Lora = 3000;
     // Dev.
     // Dev.setTemp = 25;
     if(Dev.irIdx >= (sizeof(g_arc_info)/sizeof(t_arc))){

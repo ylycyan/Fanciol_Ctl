@@ -117,8 +117,17 @@ void Period_100ms(void){
         WWDG_Refresh(); //??
         Check_IrBuf();
         Lora_Pro();
-        LED_RED(LocalTimestamp % 2);
-        LocalTimestamp = Rtc_GetTimestamp();   
+        LED_Pro();
+        LocalTimestamp = Rtc_GetTimestamp();
+        // LED_GREEN(LocalTimestamp % 2);
+        LED_GREEN_BLINK(TRUE, 1000);
+        LED_BLUE_BLINK(TRUE, 500);
+        LED_WHITE_BLINK(TRUE, 200);
+        if(Dev.loraStatus < 4){
+            LED_RED_BLINK(TRUE,3000);
+        }else{
+            LED_RED_BLINK(TRUE,300);
+        }
     }
 }
 
@@ -131,7 +140,7 @@ void Period_1s(void){
         WWDG_Refresh(); //??
         Flash_Poll();
         ADC_Pro();
-        #if 1 //test only
+        #if 0 //test only
         // FREQ_SYS
         PRINT("#curtick:%d , @timestamp:%d\r\n",CurTick,LocalTimestamp);
         // Lora_Tx((uint8_t*)"123456789ABCD",10,1500);

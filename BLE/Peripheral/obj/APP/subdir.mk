@@ -10,6 +10,7 @@ C_SRCS += \
 ../APP/board.c \
 ../APP/flash.c \
 ../APP/ir.c \
+../APP/led.c \
 ../APP/lora.c \
 ../APP/peripheral.c \
 ../APP/peripheral_main.c \
@@ -22,6 +23,7 @@ C_DEPS += \
 ./APP/board.d \
 ./APP/flash.d \
 ./APP/ir.d \
+./APP/led.d \
 ./APP/lora.d \
 ./APP/peripheral.d \
 ./APP/peripheral_main.d \
@@ -34,6 +36,7 @@ OBJS += \
 ./APP/board.o \
 ./APP/flash.o \
 ./APP/ir.o \
+./APP/led.o \
 ./APP/lora.o \
 ./APP/peripheral.o \
 ./APP/peripheral_main.o \

@@ -4,7 +4,7 @@
 		{
 			"type": "mrs-debugger",
 			"request": "launch",
-			"name": "BackupUpgrade_OTA",
+			"name": "tcFancoil",
 			"cwd": "f:\\code\\Fanciol_Ctl\\BLE\\Peripheral",
 			"openOCDCfg": {
 				"useLocalOpenOCD": true,
@@ -38,8 +38,8 @@
 					"additionalCommands": []
 				},
 				"loadedFiles": {
-					"executableFile": "f:\\code\\Fanciol_Ctl\\BLE\\Peripheral\\obj\\BackupUpgrade_OTA.elf",
-					"symbolFile": "f:\\code\\Fanciol_Ctl\\BLE\\Peripheral\\obj\\BackupUpgrade_OTA.elf",
+					"executableFile": "f:\\code\\Fanciol_Ctl\\BLE\\Peripheral\\obj\\tcFancoil.elf",
+					"symbolFile": "f:\\code\\Fanciol_Ctl\\BLE\\Peripheral\\obj\\tcFancoil.elf",
 					"executableFileOffset": 0,
 					"symbolFileOffset": 0
 				},

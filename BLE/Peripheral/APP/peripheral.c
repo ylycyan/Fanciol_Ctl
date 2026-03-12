@@ -802,37 +802,37 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                     // rx:(len(1)cmd(1:8)option(1:1)ver(1)nodeId(2)channel(1)irIdx(1)tem(1)LoadTime(1)errorCode(2)Crc(1))
                     // PRINT("time:%s\n",__DATE__);
                     if(rxbuf[2] == eBtSet){
-                        //����ָ��
+                        //设置系统参数指令
                         Dev.nodeId = *(uint16_t*)(rxbuf + 4);
                         Dev.channel = rxbuf[6];
-                        Dev.irIdx = rxbuf[7];
-                        Dev.tem = rxbuf[8];
+                        Dev.irType = *(uint16_t*)(rxbuf+7);
+                        // Dev.tem = rxbuf[8];
                         Dev.runTime = rxbuf[9];
                         // SaveDevInfo(1); //1s�󱣴�Dev����
                         PRINT("Set SysParams success.\r\n");
                     }else if(rxbuf[2] == eBtGet){
-                        //��ѯָ��
-                        BTFrame.dat[0] = 13; 
+                        //查询系统参数指令
+                        BTFrame.dat[0] = 14; 
                         BTFrame.dat[1] = BT_CMD_SYSPARAMS; 
                         BTFrame.dat[2] = eBtGet; 
                         BTFrame.dat[3] = 0xfe; 
                         *(uint16_t*)(BTFrame.dat + 4) = Dev.nodeId; 
                         BTFrame.dat[6] = Dev.channel; 
-                        BTFrame.dat[7] = g_arc_info[Dev.irIdx].cmd[Dev.irType]; 
-                        BTFrame.dat[8] = Dev.tem;
-                        BTFrame.dat[9] = Dev.runTime;
-                        *(uint16_t*)(BTFrame.dat + 10) = Dev.errorCode.u16Val;
-                        AddCrc(BTFrame.dat, 12);
+                        *(uint16_t*)(BTFrame.dat + 7) = Dev.irType; 
+                        BTFrame.dat[9] = Dev.tem;
+                        BTFrame.dat[10] = Dev.runTime;
+                        *(uint16_t*)(BTFrame.dat + 11) = Dev.errorCode.u16Val;
+                        AddCrc(BTFrame.dat, 13);
                         peripheralCharNotify(SIMPLEPROFILE_CHAR1, BTFrame.dat, 13);
                     }
                     break;
                 }
                 case BT_CMD_UPDATE:
                 {
-                    //����ָ��
+                    //升级指令
                     break;
                 }
-                case BT_CMD_RESET: //������λ
+                case BT_CMD_RESET: //重置指令
                 {
                     PRINT("reset device.\r\n");
                     SYS_ResetExecute();
@@ -840,12 +840,12 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                 }
                 case BT_CMD_ILLEGAL:
                 {
-                    //�Ƿ�ָ��
+                    //非法指令
                     break;
                 }
                 default:
                 {
-                    //δָ֪��
+                    //未定义指令
                     break;
                 }
             }

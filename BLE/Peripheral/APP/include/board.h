@@ -166,7 +166,7 @@ typedef struct{
     uint8_t scanCycle; //数据上报周期
 
     uint8_t irIdx; // 空调号索引(83),对应g_arc_info中的空调品牌
-    uint8_t irType; // 空调类型(<200),对应g_arc_info中各品牌的指令下标
+    uint16_t irType; // 空调类型(<200),对应g_arc_info中各品牌的指令下标
     uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
     DEV_ACTION_T actions[MAX_ACTIONNUM];  //本地指令组(只在本地执行,定时执行对应动作,不上云)
@@ -301,4 +301,11 @@ static inline int ChkCrc(uint8_t *buf, uint16_t len) {
 #define BITTOG(val, bit)   ((val) ^= (1U << (bit)))            // 将 val 的第 bit 位取反
 extern void Lora_Pro(void);
 extern void ADC_Pro(void);
+extern void LED_Pro(void);
+void LED_GREEN_BLINK(bool IsBlinking, uint32_t BlinkInterval);
+void LED_RED_BLINK(bool IsBlinking, uint32_t BlinkInterval);
+void LED_BLUE_BLINK(bool IsBlinking, uint32_t BlinkInterval);
+void LED_WHITE_BLINK(bool IsBlinking, uint32_t BlinkInterval);
+extern volatile uint32_t CurTick;
+extern volatile uint16_t Timer_Lora;
 #endif

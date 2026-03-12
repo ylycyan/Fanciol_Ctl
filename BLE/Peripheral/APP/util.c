@@ -2,12 +2,9 @@
 #include "timer.h"
 #include "lora.h"
 
-
-
-
+volatile uint16_t Timer_Lora = 0; //lora状态机时间计数,单位ms
 
 void Lora_Pro(void){
-    static uint16_t Timer_Lora = 0; //lora状态机时间计数,单位ms
     static uint8_t LoraBuf[64] = {0};
     uint16_t irq = 0;
     uint8_t len,cmd,LoraTag; 
