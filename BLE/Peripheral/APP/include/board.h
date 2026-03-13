@@ -174,7 +174,7 @@ typedef struct{
     Wind_t wind; // 风速
     uint16_t runTime; // 空调运行时间,单位:分钟
     uint16_t loadPower; // 负载功率,单位:W*10
-    uint8_t mode; // 控制模式()
+    uint8_t mode; // 控制模式(0:本地 1:远程)
     union{  // 故障码(0:正常 \\ 异常>> bit 0:lora离线 1:红外学习异常 2：红外匹配异常(未匹配设备或找不到索引或索引错误[或无反馈?]) 3:ad转换异常 4:功率转换异常 5:flash操作异常)
         uint16_t u16Val; 
         struct{

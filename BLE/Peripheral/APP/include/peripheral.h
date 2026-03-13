@@ -56,12 +56,13 @@ typedef enum {
     PID_LOCK          = 0x06, // 锁定状态 (u8)
     PID_ERROR         = 0x07, // 故障码 (u16)
     
-    PID_LORA_CFG      = 0x10, // Lora配置 (NodeID[2] + Channel[1])
-    PID_IR_CFG        = 0x11, // 红外配置 (Brand[1] + Type[2])
-    PID_DEV_INFO      = 0x12, // 设备信息 (RunTime[2] + Power[2])
-    PID_TIMESTAMP     = 0x13, // 时间戳 (u32)
-    
-    PID_ALL_STATE     = 0xF0, // 全状态查询 (返回 Switch+Mode+TempSet+TempRoom+Fan+Error)
+    PID_LORA_CFG      = 0x10,
+    PID_IR_CFG        = 0x11,
+    PID_DEV_INFO      = 0x12,
+    PID_TIMESTAMP     = 0x13,
+    PID_SYS_PARAMS    = 0x14,
+    PID_SYS_CTRL      = 0x15,
+    PID_ALL_STATE     = 0xF0
 } BT_PID_Type;
 
 // 动作ID定义 (ActionID)

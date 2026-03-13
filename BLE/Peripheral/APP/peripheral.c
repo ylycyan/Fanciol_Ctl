@@ -788,6 +788,15 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                     i += 3;
                                 }
                                 break;
+                            case PID_SYS_CTRL:
+                                if(i + 5 < dataLen) {
+                                    Dev.nodeId = (pData[i] | (pData[i+1]<<8));
+                                    Dev.channel = pData[i+2];
+                                    Dev.irType = (pData[i+3] | (pData[i+4]<<8));
+                                    Dev.mode = pData[i+5];
+                                    i += 6;
+                                }
+                                break;
                             default:
                                 break;
                         }
@@ -848,6 +857,25 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 rspBuf[rspLen++] = Dev.runTime & 0xFF;
                                 rspBuf[rspLen++] = (Dev.runTime >> 8) & 0xFF;
                                 // Power(2)
+                                rspBuf[rspLen++] = Dev.loadPower & 0xFF;
+                                rspBuf[rspLen++] = (Dev.loadPower >> 8) & 0xFF;
+                                break;
+                            case PID_SYS_PARAMS:
+                                rspBuf[rspLen++] = Dev.nodeId & 0xFF;
+                                rspBuf[rspLen++] = (Dev.nodeId >> 8) & 0xFF;
+                                rspBuf[rspLen++] = Dev.channel & 0xFF;
+                                rspBuf[rspLen++] = Dev.loraStatus;
+                                rspBuf[rspLen++] = Dev.scanCycle;
+                                rspBuf[rspLen++] = Dev.irType & 0xFF;
+                                rspBuf[rspLen++] = (Dev.irType >> 8) & 0xFF;
+                                rspBuf[rspLen++] = Dev.mode;
+                                rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
+                                rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;
+                                tmpS16 = (int16_t)(Dev.tem * 10);
+                                rspBuf[rspLen++] = tmpS16 & 0xFF;
+                                rspBuf[rspLen++] = (tmpS16 >> 8) & 0xFF;
+                                rspBuf[rspLen++] = Dev.runTime & 0xFF;
+                                rspBuf[rspLen++] = (Dev.runTime >> 8) & 0xFF;
                                 rspBuf[rspLen++] = Dev.loadPower & 0xFF;
                                 rspBuf[rspLen++] = (Dev.loadPower >> 8) & 0xFF;
                                 break;
