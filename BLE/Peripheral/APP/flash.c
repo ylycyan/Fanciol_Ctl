@@ -41,7 +41,7 @@ void LoadDevInfo(void){
         Dev.irIdx = 0xff;
         Dev.nodeId = Default_DevId;
         Dev.channel = Default_Channel;
-        BITSET(Dev.mode,1);
+        BITSET(Dev.mode,0);
         SaveDevInfo(1); //首次上电，1s后保存Dev数据
         PRINT("Dev mode = %d\n",Dev.mode);
         PRINT("First Power,Init Dev Info.\r\n");

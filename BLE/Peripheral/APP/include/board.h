@@ -53,7 +53,7 @@ typedef enum { //LORA频点定义: 单位MHz 注册/监听频率 - 扫描频率
 /* Dev Info */
 #define DevType  20	// 20：Fancoil 54：eDeviceAirConditioner(分体空调)
 #define DevTag   50
-#define MAGIC_CODE 0x55AB //首次上电判断
+#define MAGIC_CODE 0x52AB //首次上电判断
 #define AD_INTERVAL 10 //adc采集间隔
 /*
 20：Fancoil [value0(u16),value1(u8)value2(u16)value3(u16)value4(u16)value5(u16)]
@@ -249,48 +249,13 @@ typedef struct{
 static BT_FRAME_T BTFrame;
 
 //uilt functions
-static inline void PrintHex(char *msg, uint8_t *buffer, uint16_t size){
-    uint16_t i;
-	if (buffer == NULL) {
-		return;
-	}
-    if (msg != NULL) {
-		PRINT("%s(%d bytes): ", msg, size);
-	}
-    for (i = 0; i < size; i++) {
-		PRINT("%02x ", buffer[i]);
-	}
-	PRINT("\n");
-}
+extern void PrintHex(char *msg, uint8_t *buffer, uint16_t size);
 
 //兼容普通节点板crc算法
-static inline void AddCrc(uint8_t *buf, uint16_t len) {
-	uint8_t crcValue =0;
-	uint16_t i;
-	for (i=0; i<len; i++) {
-		crcValue = crcValue + buf[i];
-	}
-	crcValue = crcValue + 0xec;
-	*(buf + len) = crcValue;
-	return;
-}
+extern void AddCrc(uint8_t *buf, uint16_t len);
 
-static inline int ChkCrc(uint8_t *buf, uint16_t len) {
-	uint8_t crcValue =0;
-	uint16_t i;
-	if (len <= 1) {
-		return 0;
-	}
-	for (i=0; i<len-1; i++) {
-		crcValue = crcValue + buf[i];
-	}
-	crcValue = crcValue + 0xec;
-	if (crcValue == buf[len - 1]) {
-		return 1;
-	} else {
-		return 0;
-	}
-}
+extern int ChkCrc(uint8_t *buf, uint16_t len);
+
 #define BITGET(val, bit)      (((val) >> (bit)) & 1)              // 获取 val 的第 bit 位（0 或 1）
 #define BITSET(val, bit)      ((val) |= (1U << (bit)))            // 将 val 的第 bit 位置 1
 #define BITCLR(val, bit)      ((val) &= ~(1U << (bit)))           // 将 val 的第 bit 位清 0

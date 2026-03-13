@@ -59,9 +59,8 @@ typedef enum {
     PID_LORA_CFG      = 0x10,
     PID_IR_CFG        = 0x11,
     PID_DEV_INFO      = 0x12,
-    PID_TIMESTAMP     = 0x13,
-    PID_SYS_PARAMS    = 0x14,
-    PID_SYS_CTRL      = 0x15,
+    PID_SYS_PARAMS    = 0x13,
+    PID_SYS_CTRL      = 0x14,
     PID_ALL_STATE     = 0xF0
 } BT_PID_Type;
 

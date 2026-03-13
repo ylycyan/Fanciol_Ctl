@@ -23,8 +23,10 @@
 #include "board.h"
 #include "include/board.h"
 #include "include/ir_tab.h"
+#include "include/flash.h"
 #include "ota.h"
 #include "OTAprofile.h"
+#include "timer.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -723,6 +725,7 @@ static void SendBtResponse(uint8_t cmd, uint8_t* payload, uint8_t payloadLen) {
         tmos_memcpy(&txBuf[2], payload, payloadLen);
     }
     AddCrc(txBuf, payloadLen + 2);
+    PrintHex("Tx",txBuf,txBuf[0]);
     peripheralCharNotify(SIMPLEPROFILE_CHAR1, txBuf, txBuf[0]);
 }
 
@@ -770,7 +773,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 break;
                             case PID_TEMP_SET:
                                 if(i + 1 < dataLen) {
-                                    Dev.temSet = (pData[i] | (pData[i+1]<<8)); // 小端
+                                    Dev.temSet = (pData[i] | (pData[i+1]<<8));
                                     i += 2;
                                 }
                                 break;
@@ -778,8 +781,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 if(i < dataLen) Dev.wind = pData[i++];
                                 break;
                             case PID_LOCK:
-                                // if(i < dataLen) Dev.lock = pData[i++];
-                                i++; // Skip
+                                i++;
                                 break;
                             case PID_LORA_CFG:
                                 if(i + 2 < dataLen) {
@@ -787,22 +789,33 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                     Dev.channel = pData[i+2];
                                     i += 3;
                                 }
+                                Dev.loraStatus = 1;
+                                Timer_Lora = 30000;
+                                SaveDevInfo(2);//2s后保存Dev数据
+                                break;
+                            case PID_IR_CFG:
+                                if(i + 1 < dataLen) {
+                                    Dev.irType = (pData[i+0] | (pData[i+1]<<8));
+                                    i += 2;
+                                }
+                                SaveDevInfo(2);//2s后保存Dev数据
                                 break;
                             case PID_SYS_CTRL:
-                                if(i + 5 < dataLen) {
+                                if(i + 3 < dataLen) {
                                     Dev.nodeId = (pData[i] | (pData[i+1]<<8));
                                     Dev.channel = pData[i+2];
-                                    Dev.irType = (pData[i+3] | (pData[i+4]<<8));
-                                    Dev.mode = pData[i+5];
-                                    i += 6;
+                                    Dev.mode = pData[i+3];
+                                    i += 4;
                                 }
+                                Dev.loraStatus = 1;
+                                Timer_Lora = 30000;
+                                SaveDevInfo(2);//2s后保存Dev数据
                                 break;
                             default:
                                 break;
                         }
                     }
                     SendBtResponse(BT_CMD_ACK, NULL, 0);
-                    // 这里可以触发保存或应用逻辑
                     break;
                 }
                 case BT_CMD_READ: // 读属性
@@ -833,6 +846,16 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                             case PID_ERROR:
                                 rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
                                 rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;
+                                break;
+                            case PID_LORA_CFG:
+                                rspBuf[rspLen++] = Dev.nodeId & 0xFF;
+                                rspBuf[rspLen++] = (Dev.nodeId >> 8) & 0xFF;
+                                rspBuf[rspLen++] = Dev.channel & 0xFF;
+                                break;
+                            case PID_IR_CFG:
+                                rspBuf[rspLen++] = Dev.irIdx;
+                                rspBuf[rspLen++] = Dev.irType & 0xFF;
+                                rspBuf[rspLen++] = (Dev.irType >> 8) & 0xFF;
                                 break;
                             case PID_ALL_STATE:
                                 // Switch(1)

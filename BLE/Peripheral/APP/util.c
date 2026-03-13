@@ -10,15 +10,9 @@ void Lora_Pro(void){
     uint8_t len,cmd,LoraTag; 
     float operateParameter;
     Timer_Lora ++; //100ms 只作粗略估计,不考虑tx\其他程序运行时间,实际影响可忽略不记
-    if(!BITGET(Dev.mode,1)){ //bit1 lora不启用
+    if(!BITGET(Dev.mode,0)){ //bit0 lora不启用
         return;
     }
-       //
-        if (Timer_Lora >= 1800) //正常数据周期(60s), 长时间(180s)与网关无通讯,视为设备离线，需重启注册
-        {
-            Timer_Lora = 0;
-            Dev.loraStatus = 1; 
-        }
         if(Dev.loraStatus == 1){ //还未注册：发送注册数据包
             if(Timer_Lora < (100 + ((Dev.nodeId*100)%30))) // 根据Dev.nodeId计算每次轮询时间,每(10+[0~3])s 轮询注册一次
             {
@@ -183,4 +177,50 @@ void Lora_Pro(void){
                 Lora_Listening();
             }
         }
+}
+
+
+
+//uilt functions
+void PrintHex(char *msg, uint8_t *buffer, uint16_t size){
+    uint16_t i;
+	if (buffer == NULL) {
+		return;
+	}
+    if (msg != NULL) {
+		PRINT("%s(%d bytes): ", msg, size);
+	}
+    for (i = 0; i < size; i++) {
+		PRINT("%02x ", buffer[i]);
+	}
+	PRINT("\n");
+}
+
+//兼容普通节点板crc算法
+void AddCrc(uint8_t *buf, uint16_t len) {
+	uint8_t crcValue =0;
+	uint16_t i;
+	for (i=0; i<len; i++) {
+		crcValue = crcValue + buf[i];
+	}
+	crcValue = crcValue + 0xec;
+	*(buf + len) = crcValue;
+	return;
+}
+
+int ChkCrc(uint8_t *buf, uint16_t len) {
+	uint8_t crcValue =0;
+	uint16_t i;
+	if (len <= 1) {
+		return 0;
+	}
+	for (i=0; i<len-1; i++) {
+		crcValue = crcValue + buf[i];
+	}
+	crcValue = crcValue + 0xec;
+	if (crcValue == buf[len - 1]) {
+		return 1;
+	} else {
+		return 0;
+	}
 }
