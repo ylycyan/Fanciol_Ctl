@@ -716,7 +716,7 @@ static uint8_t peripheralBuildAdvData(void)
 //M:len(1)cmd(1)DATA(N)Crc(1)
 //S:Len(1)cmd(1)Crc(1)
 // 辅助发送函数
-static void SendBtResponse(uint8_t cmd, uint8_t* payload, uint8_t payloadLen) {
+void SendBtResponse(uint8_t cmd, uint8_t* payload, uint8_t payloadLen) {
     uint8_t txBuf[64];
     if(payloadLen + 3 > 64) return;
     txBuf[0] = payloadLen + 3; // Total Len

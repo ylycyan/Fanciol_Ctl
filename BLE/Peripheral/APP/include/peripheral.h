@@ -61,6 +61,7 @@ typedef enum {
     PID_DEV_INFO      = 0x12,
     PID_SYS_PARAMS    = 0x13,
     PID_SYS_CTRL      = 0x14,
+    PID_IR_MATCH      = 0x15,
     PID_ALL_STATE     = 0xF0
 } BT_PID_Type;
 
@@ -97,6 +98,7 @@ extern void Peripheral_Init(void);
  * Task Event Processor for the BLE Application
  */
 extern uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events);
+extern void SendBtResponse(uint8_t cmd, uint8_t* payload, uint8_t payloadLen);
 
 /*********************************************************************
 *********************************************************************/

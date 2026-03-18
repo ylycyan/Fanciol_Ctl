@@ -24,9 +24,16 @@ APP/peripheral.o: ../APP/peripheral.c \
  f:/code/Fanciol_Ctl/BLE/Peripheral/APP/include/board.h \
  f:/code/Fanciol_Ctl/BLE/Peripheral/APP/include/flash.h \
  f:/code/Fanciol_Ctl/BLE/Peripheral/APP/include/ir_tab.h \
- ../APP/include/board.h ../APP/include/ir_tab.h \
+ ../APP/include/board.h ../APP/include/ir_tab.h ../APP/include/flash.h \
  f:/code/Fanciol_Ctl/BLE/Peripheral/APP/include/ota.h \
- f:/code/Fanciol_Ctl/BLE/Peripheral/Profile/include/OTAprofile.h
+ f:/code/Fanciol_Ctl/BLE/Peripheral/Profile/include/OTAprofile.h \
+ f:/code/Fanciol_Ctl/BLE/Peripheral/APP/include/timer.h \
+ f:/code/Fanciol_Ctl/BLE/HAL/include/HAL.h \
+ f:/code/Fanciol_Ctl/BLE/HAL/include/CONFIG.h \
+ f:/code/Fanciol_Ctl/BLE/HAL/include/RTC.h \
+ f:/code/Fanciol_Ctl/BLE/HAL/include/SLEEP.h \
+ f:/code/Fanciol_Ctl/BLE/HAL/include/LED.h \
+ f:/code/Fanciol_Ctl/BLE/HAL/include/KEY.h
 
 f:/code/Fanciol_Ctl/BLE/HAL/include/CONFIG.h:
 
@@ -82,6 +89,22 @@ f:/code/Fanciol_Ctl/BLE/Peripheral/APP/include/ir_tab.h:
 
 ../APP/include/ir_tab.h:
 
+../APP/include/flash.h:
+
 f:/code/Fanciol_Ctl/BLE/Peripheral/APP/include/ota.h:
 
 f:/code/Fanciol_Ctl/BLE/Peripheral/Profile/include/OTAprofile.h:
+
+f:/code/Fanciol_Ctl/BLE/Peripheral/APP/include/timer.h:
+
+f:/code/Fanciol_Ctl/BLE/HAL/include/HAL.h:
+
+f:/code/Fanciol_Ctl/BLE/HAL/include/CONFIG.h:
+
+f:/code/Fanciol_Ctl/BLE/HAL/include/RTC.h:
+
+f:/code/Fanciol_Ctl/BLE/HAL/include/SLEEP.h:
+
+f:/code/Fanciol_Ctl/BLE/HAL/include/LED.h:
+
+f:/code/Fanciol_Ctl/BLE/HAL/include/KEY.h:

@@ -5,6 +5,11 @@
 #include "gattprofile.h"
 IRBUF_t IrBuf = {0};
 
+#define IR_MATCH_OK 0x00
+#define IR_MATCH_FAIL 0x01
+#define IR_MATCH_TIMEOUT 0x02
+#define IR_MATCH_ERROR 0x03
+
 //检测红外模块接收缓冲区数据
 //蓝牙连接状态下，可通过FFE2直接透传测试
 void Check_IrBuf(void){ //
@@ -35,47 +40,45 @@ void Check_IrBuf(void){ //
         //匹配失败 RX 返回：FF FF（匹配失败）；
         // 匹配超时 RX 返回：88 99 AA （二十秒自动超时）
         //匹配成功 RX 返回：03 3E （匹配到的索引号）
+        uint8_t status = IR_MATCH_ERROR;
+        uint16_t irType = 0xFFFF;
         if(IrBuf.rxlen == 2){
             if((IrBuf.rxbuf[0] == 0xFF) && (IrBuf.rxbuf[1] == 0xFF)){
                 #if _IR_INFO_
                     PRINT("ir Matched Fialed.\r\n");
                 #endif
-                Dev.errorCode.bit.irLearn = 1;
+                Dev.errorCode.bit.irMatch = 1;
+                status = IR_MATCH_FAIL;
             }else{ //匹配成功
                 //查询 g_arc_info 表中是否存在对应编号
-                uint16_t temp = (((uint16_t)IrBuf.rxbuf[0])<<8)|(IrBuf.rxbuf[1]);
+                irType = (((uint16_t)IrBuf.rxbuf[0])<<8)|(IrBuf.rxbuf[1]);
+                Dev.irType = irType;
+                Dev.errorCode.bit.irMatch = 0;
+                status = IR_MATCH_OK;
                  #if _IR_INFO_
-                    PRINT("\nir Matched:%d\r\n",temp);
+                    PRINT("\nir Matched:%d\r\n",Dev.irType);
                 #endif
-                for(int i,j = 0;i<(sizeof(g_arc_info)/sizeof(t_arc));i++){
-                    for(j = 0;j<g_arc_info[i].num;j++){
-                        if(g_arc_info[i].cmd[j] == temp){ //flash表中找到对应设备,//存在多个设备同一编号匹配多个设备情况,对模块只关心编号.调试时打印所有匹配到的型号信息
-                            Dev.irIdx = i;
-                            Dev.irType = j;
-                            Dev.errorCode.bit.irLearn = 0;
-                            #if _IR_INFO_
-                                PRINT("\n\t### ir Match Success ###\r\n");
-                                PRINT("\t### match device:%s,index:%d\r\n",g_arc_info[i].name,g_arc_info[i].cmd[j]);
-                            #endif
-                            break;
-                        }
-                    }
-                }
-                Dev.errorCode.bit.irLearn = 1; //未匹配到对应品牌空调
             }
         }else if(IrBuf.rxlen == 3){  //20s自动超时返回
             if((IrBuf.rxbuf[0] == 0x88) && (IrBuf.rxbuf[1] == 0x99) && (IrBuf.rxbuf[2] == 0xAA)){
                 #if _IR_INFO_
                 PRINT("ir Matched timeout\r\n");
                 #endif
-                Dev.errorCode.bit.irLearn = 1;
+                Dev.errorCode.bit.irMatch = 1;
+                status = IR_MATCH_TIMEOUT;
             }
         }else{
-            Dev.errorCode.bit.irLearn = 1;
+            Dev.errorCode.bit.irMatch = 1;
             #if _IR_INFO_
             PrintHex("ir Unexpected rx",IrBuf.rxbuf,IrBuf.rxlen);
             #endif
         }
+        uint8_t payload[4];
+        payload[0] = PID_IR_MATCH;
+        payload[1] = status;
+        payload[2] = irType & 0xFF;
+        payload[3] = (irType >> 8) & 0xFF;
+        SendBtResponse(BT_CMD_NOTIFY, payload, 4);
         
     }else if(IrBuf.type == IR_TYPE_LEARNing){ //按遥控器手动学习
         #if _IR_INFO_
