@@ -794,9 +794,10 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 SaveDevInfo(2);//2s后保存Dev数据
                                 break;
                             case PID_IR_CFG:
-                                if(i + 1 < dataLen) {
+                                if(i + 2 < dataLen) {
                                     Dev.irType = (pData[i+0] | (pData[i+1]<<8));
-                                    i += 2;
+                                    Dev.irIdx = pData[i+2];
+                                    i += 3;
                                 }
                                 SaveDevInfo(2);//2s后保存Dev数据
                                 break;
@@ -853,9 +854,9 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 rspBuf[rspLen++] = Dev.channel & 0xFF;
                                 break;
                             case PID_IR_CFG:
-                                rspBuf[rspLen++] = Dev.irIdx;
                                 rspBuf[rspLen++] = Dev.irType & 0xFF;
                                 rspBuf[rspLen++] = (Dev.irType >> 8) & 0xFF;
+                                rspBuf[rspLen++] = Dev.irIdx;
                                 break;
                             case PID_ALL_STATE:
                                 // Switch(1)
@@ -891,6 +892,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 rspBuf[rspLen++] = Dev.scanCycle;
                                 rspBuf[rspLen++] = Dev.irType & 0xFF;
                                 rspBuf[rspLen++] = (Dev.irType >> 8) & 0xFF;
+                                rspBuf[rspLen++] = Dev.irIdx;
                                 rspBuf[rspLen++] = Dev.mode;
                                 rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
                                 rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;

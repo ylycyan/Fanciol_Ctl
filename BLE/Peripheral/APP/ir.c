@@ -73,12 +73,13 @@ void Check_IrBuf(void){ //
             PrintHex("ir Unexpected rx",IrBuf.rxbuf,IrBuf.rxlen);
             #endif
         }
-        uint8_t payload[4];
+        uint8_t payload[5];
         payload[0] = PID_IR_MATCH;
         payload[1] = status;
         payload[2] = irType & 0xFF;
         payload[3] = (irType >> 8) & 0xFF;
-        SendBtResponse(BT_CMD_NOTIFY, payload, 4);
+        payload[4] = Dev.irIdx;
+        SendBtResponse(BT_CMD_NOTIFY, payload, 5);
         
     }else if(IrBuf.type == IR_TYPE_LEARNing){ //按遥控器手动学习
         #if _IR_INFO_
