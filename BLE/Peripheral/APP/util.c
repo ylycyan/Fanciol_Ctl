@@ -72,7 +72,7 @@ void Lora_Pro(void){
                     Lora_Init(Dev.loraFrequency,22,LORA_SF_SCAN,LORA_BW_SCAN);  //切换至监听频率
                     Lora_Listening();  //监听网关指令  
                     Dev.loraStatus = 4;
-                    Timer_Lora = 0;
+                    Timer_Lora = Dev.scanCycle * 10;
                 }
             }else{ //未收到反馈
                 if(Timer_Lora >= 20){ // 接收超时2s,重新尝试注册 2
@@ -164,7 +164,7 @@ void Lora_Pro(void){
                     Lora_Listening();
                 }
             } //未收到反馈
-            if(Timer_Lora >= 1800){ //超过三个采集周期未收到反馈，切换到注册频率重新注册
+            if(Timer_Lora >= (Dev.scanCycle * 10 * 3)){ //超过三个采集周期未收到反馈，切换到注册频率重新注册
                 Dev.loraStatus = 1;
                 Timer_Lora = 300;
                 return;

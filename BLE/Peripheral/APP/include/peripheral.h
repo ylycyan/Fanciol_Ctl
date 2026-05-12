@@ -70,7 +70,7 @@ typedef enum {
     ACT_RESET         = 0x01, // 复位设备
     ACT_IR_MATCH      = 0x02, // 红外匹配
     ACT_IR_LEARN      = 0x03, // 红外学习
-    ACT_IR_SEND       = 0x04, // 红外透传发送
+    ACT_IR_CMD       = 0x04, // 红外指令发送
     ACT_SAVE_PARAMS   = 0x05, // 保存参数到Flash
 } BT_Action_Type;
 

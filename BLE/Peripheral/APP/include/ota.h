@@ -24,8 +24,6 @@
 
 #define IAP_LEN                247
 
-#define OTA_DATAFLASH_ADD      0x00077000 - FLASH_ROM_MAX_SIZE
-
 typedef struct
 {
     unsigned char ImageFlag;

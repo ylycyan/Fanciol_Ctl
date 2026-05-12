@@ -10,36 +10,36 @@ IRBUF_t IrBuf = {0};
 #define IR_MATCH_TIMEOUT 0x02
 #define IR_MATCH_ERROR 0x03
 
-//¼ì²âºìÍâÄ£¿é½ÓÊÕ»º³åÇøÊı¾İ
-//À¶ÑÀÁ¬½Ó×´Ì¬ÏÂ£¬¿ÉÍ¨¹ıFFE2Ö±½ÓÍ¸´«²âÊÔ
+//æ£€æµ‹çº¢å¤–æ¨¡å—æ¥æ”¶ç¼“å†²åŒºæ•°æ®
+//è“ç‰™è¿æ¥çŠ¶æ€ä¸‹ï¼Œå¯é€šè¿‡FFE2ç›´æ¥é€ä¼ æµ‹è¯•
 void Check_IrBuf(void){ //
     static uint16_t lastRxLen = 0;
     uint8_t state;
-    if(!IrBuf.isFinish){ //Î´½ÓÊÕÍê³É
+    if(!IrBuf.isFinish){ //æœªæ¥æ”¶å®Œæˆ
         if(IrBuf.rxlen > 0){
-            if(IrBuf.rxlen == lastRxLen){ //100msÃ»ÊÕµ½ĞÂÊı¾İ,½ÓÊÕÍê±Ï
+            if(IrBuf.rxlen == lastRxLen){ //100msæ²¡æ”¶åˆ°æ–°æ•°æ®,æ¥æ”¶å®Œæ¯•
                 IrBuf.isFinish = 1;
                 lastRxLen = 0;
             }else{
-                lastRxLen = IrBuf.rxlen; //Î´½ÓÊÕÍê±Ï
+                lastRxLen = IrBuf.rxlen; //æœªæ¥æ”¶å®Œæ¯•
                 return;   
             }
         }else{
             return; 
         }
-    }else{ //½ÓÊÕÍê³É
+    }else{ //æ¥æ”¶å®Œæˆ
         return;
     }
     PrintHex("uart3 rx",IrBuf.rxbuf,IrBuf.rxlen);
     GAPRole_GetParameter(GAPROLE_STATE,&state);
-    if(state == GAPROLE_CONNECTED){ //À¶ÑÀÒÑÁ¬½Ó
+    if(state == GAPROLE_CONNECTED){ //è“ç‰™å·²è¿æ¥
         peripheralCharNotify(SIMPLEPROFILE_CHAR2, IrBuf.rxbuf, IrBuf.rxlen);
     }
     #if(IR_MODULE == HXD039B)
-    if(IrBuf.type == IR_TYPE_MATCH){ //²é±íÆ¥Åä
-        //Æ¥ÅäÊ§°Ü RX ·µ»Ø£ºFF FF£¨Æ¥ÅäÊ§°Ü£©£»
-        // Æ¥Åä³¬Ê± RX ·µ»Ø£º88 99 AA £¨¶şÊ®Ãë×Ô¶¯³¬Ê±£©
-        //Æ¥Åä³É¹¦ RX ·µ»Ø£º03 3E £¨Æ¥Åäµ½µÄË÷ÒıºÅ£©
+    if(IrBuf.type == IR_TYPE_MATCH){ //æŸ¥è¡¨åŒ¹é…
+        //åŒ¹é…å¤±è´¥ RX è¿”å›ï¼šFF FFï¼ˆåŒ¹é…å¤±è´¥ï¼‰ï¼›
+        // åŒ¹é…è¶…æ—¶ RX è¿”å›ï¼š88 99 AA ï¼ˆäºŒåç§’è‡ªåŠ¨è¶…æ—¶ï¼‰
+        //åŒ¹é…æˆåŠŸ RX è¿”å›ï¼š03 3E ï¼ˆåŒ¹é…åˆ°çš„ç´¢å¼•å·ï¼‰
         uint8_t status = IR_MATCH_ERROR;
         uint16_t irType = 0xFFFF;
         if(IrBuf.rxlen == 2){
@@ -49,8 +49,8 @@ void Check_IrBuf(void){ //
                 #endif
                 Dev.errorCode.bit.irMatch = 1;
                 status = IR_MATCH_FAIL;
-            }else{ //Æ¥Åä³É¹¦
-                //²éÑ¯ g_arc_info ±íÖĞÊÇ·ñ´æÔÚ¶ÔÓ¦±àºÅ
+            }else{ //åŒ¹é…æˆåŠŸ
+                //æŸ¥è¯¢ g_arc_info è¡¨ä¸­æ˜¯å¦å­˜åœ¨å¯¹åº”ç¼–å·
                 irType = (((uint16_t)IrBuf.rxbuf[0])<<8)|(IrBuf.rxbuf[1]);
                 Dev.irType = irType;
                 Dev.errorCode.bit.irMatch = 0;
@@ -59,7 +59,7 @@ void Check_IrBuf(void){ //
                     PRINT("\nir Matched:%d\r\n",Dev.irType);
                 #endif
             }
-        }else if(IrBuf.rxlen == 3){  //20s×Ô¶¯³¬Ê±·µ»Ø
+        }else if(IrBuf.rxlen == 3){  //20sè‡ªåŠ¨è¶…æ—¶è¿”å›
             if((IrBuf.rxbuf[0] == 0x88) && (IrBuf.rxbuf[1] == 0x99) && (IrBuf.rxbuf[2] == 0xAA)){
                 #if _IR_INFO_
                 PRINT("ir Matched timeout\r\n");
@@ -81,11 +81,11 @@ void Check_IrBuf(void){ //
         payload[4] = Dev.irIdx;
         SendBtResponse(BT_CMD_NOTIFY, payload, 5);
         
-    }else if(IrBuf.type == IR_TYPE_LEARNing){ //°´Ò£¿ØÆ÷ÊÖ¶¯Ñ§Ï°
+    }else if(IrBuf.type == IR_TYPE_LEARNing){ //æŒ‰é¥æ§å™¨æ‰‹åŠ¨å­¦ä¹ 
         #if _IR_INFO_
             PrintHex("ir Learning rx",IrBuf.rxbuf,IrBuf.rxlen);
         #endif
-        if(IrBuf.rxlen == 3){  //20s×Ô¶¯³¬Ê±·µ»Ø
+        if(IrBuf.rxlen == 3){  //20sè‡ªåŠ¨è¶…æ—¶è¿”å›
             if((IrBuf.rxbuf[0] == 0x88) && (IrBuf.rxbuf[1] == 0x99) && (IrBuf.rxbuf[2] == 0xAA)){
                 #if _IR_INFO_
                 PRINT("ir Matched timeout\r\n");
@@ -94,9 +94,9 @@ void Check_IrBuf(void){ //
             }
         }else{
 
-            //Ñ§Ï°Êı¾İĞ£Ñé? 
-            //Ö»ĞèÒª°ÑÍ¨¹ı·¢ËÍ 30 20 50 Ñ§Ï°ÃüÁî·µ»ØµÄ 230 ¸ö×Ö½ÚÑ§Ï°Êı¾İµÚÒ»¸ö×Ö½Ú 00 ¸ÄÎª 30 03 ÔÙ·¢ËÍ¸øĞ¾Æ¬¼´¿É¿ØÖÆÉè±¸
-            //@todo ·½·¨´ıÓÅ»¯
+            //å­¦ä¹ æ•°æ®æ ¡éªŒ? 
+            //åªéœ€è¦æŠŠé€šè¿‡å‘é€ 30 20 50 å­¦ä¹ å‘½ä»¤è¿”å›çš„ 230 ä¸ªå­—èŠ‚å­¦ä¹ æ•°æ®ç¬¬ä¸€ä¸ªå­—èŠ‚ 00 æ”¹ä¸º 30 03 å†å‘é€ç»™èŠ¯ç‰‡å³å¯æ§åˆ¶è®¾å¤‡
+            //@todo æ–¹æ³•å¾…ä¼˜åŒ–
             Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].cmd[0] = 0x30;
             Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].cmd[1] = 0x03;
             memcpy(Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].cmd+2,IrBuf.rxbuf+1,229);
@@ -118,8 +118,8 @@ void Check_IrBuf(void){ //
 
 void IR_Init(void){ //uart3
     GPIOA_SetBits(GPIO_Pin_5);
-    GPIOA_ModeCfg(GPIO_Pin_4, GPIO_ModeIN_PU);      // RXD-ÅäÖÃÉÏÀ­ÊäÈë
-    GPIOA_ModeCfg(GPIO_Pin_5, GPIO_ModeOut_PP_5mA); // TXD-ÅäÖÃÍÆÍìÊä³ö£¬×¢ÒâÏÈÈÃIO¿ÚÊä³ö¸ßµçÆ½
+    GPIOA_ModeCfg(GPIO_Pin_4, GPIO_ModeIN_PU);      // RXD-é…ç½®ä¸Šæ‹‰è¾“å…¥
+    GPIOA_ModeCfg(GPIO_Pin_5, GPIO_ModeOut_PP_5mA); // TXD-é…ç½®æ¨æŒ½è¾“å‡ºï¼Œæ³¨æ„å…ˆè®©IOå£è¾“å‡ºé«˜ç”µå¹³
     UART3_DefInit();
     UART3_INTCfg(ENABLE, RB_IER_RECV_RDY | RB_IER_LINE_STAT);
     PFIC_EnableIRQ(UART3_IRQn);
@@ -129,37 +129,37 @@ __INTERRUPT
 __HIGH_CODE
 void UART3_IRQHandler(void){
     switch( UART3_GetITFlag() ){
-        case UART_II_LINE_STAT:        // ÏßÂ·×´Ì¬´íÎó
+        case UART_II_LINE_STAT:        // çº¿è·¯çŠ¶æ€é”™è¯¯
             UART3_GetLinSTA();
             break;
         case UART_II_RECV_RDY:
         case UART_II_RECV_TOUT:
             while(R8_UART3_RFC) {
-                IrBuf.rxbuf[IrBuf.rxlen & (IRBUFSIZE-1)] = R8_UART3_RBR; //»·ĞÎ½ÓÊÕÊı¾İ£¬±ÜÃâÒç³ö
+                IrBuf.rxbuf[IrBuf.rxlen & (IRBUFSIZE-1)] = R8_UART3_RBR; //ç¯å½¢æ¥æ”¶æ•°æ®ï¼Œé¿å…æº¢å‡º
                 IrBuf.rxlen += 1;
             }
             // IrBuf.rxlen = (IrBuf.rxlen & (IRBUFSIZE-1)) + 1 ;
             break;
-        case UART_II_THR_EMPTY: // ·¢ËÍ»º´æÇø¿Õ£¬¿É¼ÌĞø·¢ËÍ
+        case UART_II_THR_EMPTY: // å‘é€ç¼“å­˜åŒºç©ºï¼Œå¯ç»§ç»­å‘é€
             break;
-        case UART_II_MODEM_CHG: // Ö»Ö§³Ö´®¿Ú0
+        case UART_II_MODEM_CHG: // åªæ”¯æŒä¸²å£0
             break;
         default:
             break;
      }
 }
 
-//ÆÕÍ¨Ö¸Áî²é±í ·¢ËÍ+½ÓÊÕ
+//æ™®é€šæŒ‡ä»¤æŸ¥è¡¨ å‘é€+æ¥æ”¶
 void Ir_cmd(IR_CMD_t cmd){
     if(Dev.errorCode.bit.irMatch){
         PRINT("Error: file:%s,line:%d,unMatched ir device .",__FILE__,__LINE__);
         return;
     }
-    int16_t timeout = 100,temp = 0; //100ms³¬Ê±
+    int16_t timeout = 100,temp = 0; //100msè¶…æ—¶
     IrBuf.isFinish = 0;
     IrBuf.type = IR_TYPE_NORMAL;
     #if(IR_MODULE == HXD039B)
-        //¹¹Ôìcmd°ü 30 06+(2B)+(1B)
+        //æ„é€ cmdåŒ… 30 06+(2B)+(1B)
         if(Dev.irIdx >= (sizeof(g_arc_info)/sizeof(t_arc))){
             PRINT("Error: file:%s,line:%d,irIdx:%d out of range.\r\n",__FILE__,__LINE__,Dev.irIdx);
             Dev.errorCode.bit.irMatch = 1;
@@ -177,7 +177,7 @@ void Ir_cmd(IR_CMD_t cmd){
         #endif
         while(timeout > 0){
             if(IrBuf.rxlen > 0){
-                if(IrBuf.rxlen == temp){ //Á¬Ğø20msÎŞ½ÓÊÕÊı¾İ£¬ÈÏÎª½ÓÊÕÍê±Ï
+                if(IrBuf.rxlen == temp){ //è¿ç»­20msæ— æ¥æ”¶æ•°æ®ï¼Œè®¤ä¸ºæ¥æ”¶å®Œæ¯•
                     break;
                 }else{
                     temp = IrBuf.rxlen;

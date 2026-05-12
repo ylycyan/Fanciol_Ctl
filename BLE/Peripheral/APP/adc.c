@@ -2,10 +2,10 @@
 #include "board.h"
 #include <math.h>
 #define _DEBUG_AD 0
-const float Rp=10000.0; //10K
-const float T2 = (273.15+25.0);;//T2
-const float Bx = 3950.0;//B
-const float Ka = 273.15;
+const float Rp=10000.0f; //10K
+const float T2 = (273.15f+25.0f);;//T2
+const float Bx = 3950.0f;//B
+const float Ka = 273.15f;
 void ADC_Init(void){
 
 }

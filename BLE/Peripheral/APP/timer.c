@@ -123,10 +123,10 @@ void Period_100ms(void){
         LED_GREEN_BLINK(TRUE, 1000);
         LED_BLUE_BLINK(TRUE, 500);
         LED_WHITE_BLINK(TRUE, 200);
-        if(Dev.loraStatus < 4){
-            LED_RED_BLINK(TRUE,3000);
-        }else{
+        if((Dev.loraStatus >= 4) && (Timer_Lora < Dev.scanCycle * 10)){ 
             LED_RED_BLINK(TRUE,300);
+        }else{
+            LED_RED_BLINK(TRUE,3000);
         }
     }
 }

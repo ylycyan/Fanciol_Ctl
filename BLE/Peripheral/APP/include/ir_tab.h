@@ -67,12 +67,12 @@ typedef enum {
   IR_CMD_TEMP_DOWN = 0x96,        // 温度减
   IR_CMD_TEMP_UP = 0x97,          // 温度加
   // fan speed
-  IR_CMD_FAN_FAST_COOL = 0x9c, // 快速制冷
-  IR_CMD_FAN_FAST_HEAT = 0x9d, // 快速制热
+  IR_CMD_FAST_COOL = 0x9c, // 快速制冷
+  IR_CMD_FAST_HEAT = 0x9d, // 快速制热
   // sleep
-  IR_CMD_SLEEP_MUTE_OFF = 0x9e, // 静音关
-  IR_CMD_SLEEP_MUTE_ON = 0x9f,  // 静音开
-  Ir_Illegal
+  IR_CMD_MUTE_OFF = 0x9e, // 静音关
+  IR_CMD_MUTE_ON = 0x9f,  // 静音开
+    Ir_Illegal
 } IR_CMD_t;
 
 // 空调控制指令码表

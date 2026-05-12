@@ -4,13 +4,18 @@
 	"isNormalMRSProject": true,
 	"basic": {
 		"chipInfo": {
-			"rtos": "NoneOS",
-			"calibrateSupport": false,
-			"link": "WCH-Link",
 			"vendor": "WCH",
+			"toolchain": "RISC-V",
 			"series": "CH58X",
+			"rtos": "NoneOS",
 			"mcu": "CH583M",
-			"toolchain": "RISC-V"
+			"description": "",
+			"tempratureScope": "",
+			"artifactType": "executable",
+			"link": "WCH-Link",
+			"peripheral_version": "1.0",
+			"calibrateSupport": false,
+			"calibrateCommand": ""
 		},
 		"linkedFolders": [
 			{
@@ -248,7 +253,7 @@
 						"do_not_use_syscalls": true,
 						"verbose": false,
 						"use_wch_printffloat": false,
-						"use_wch_printf": false,
+						"use_wch_printf": true,
 						"use_iqmath": false,
 						"other_linker_flags": ""
 					}
@@ -291,7 +296,7 @@
 						"do_not_use_syscalls": true,
 						"verbose": false,
 						"use_wch_printffloat": false,
-						"use_wch_printf": false,
+						"use_wch_printf": true,
 						"use_iqmath": false,
 						"other_linker_flags": ""
 					}
@@ -428,6 +433,7 @@
 			},
 			"debugInRAM": false
 		},
+		"svdpath": null,
 		"output": {
 			"showDebugGDBTrace": true,
 			"saveDebugOutputToFile": false,
@@ -441,10 +447,8 @@
 			"ATTR_BUILD_BEFORE_LAUNCH_ATTR": 2,
 			"GdbServerAllocateConsole": true,
 			"GdbServerAllocateTelnetConsole": false,
-			"SkipDownloadBeforeDebug": false,
 			"StartGdbCLient": true,
-			"UPDATE_THREADLIST_ON_SUSPEND": false,
-			"DebugInRam": false
+			"UPDATE_THREADLIST_ON_SUSPEND": false
 		}
 	}
 }

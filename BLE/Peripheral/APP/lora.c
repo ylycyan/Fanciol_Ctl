@@ -638,6 +638,13 @@ uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
     // 设置调节器DCDC
     Lora_SetRegulatorMode( USE_DCDC );
     
+        // Rx Gain 保持寄存器：确保Sleep/Wake后Rx Boosted Gain不丢失
+    {
+        uint8_t tmp;
+        tmp = 0x01; Lora_WriteRegisters(0x029F, &tmp, 1);
+        tmp = 0x08; Lora_WriteRegisters(0x02A0, &tmp, 1);
+        tmp = 0xAC; Lora_WriteRegisters(0x02A1, &tmp, 1);
+    }
     // 设置缓冲区基地址
     Lora_SetBufferBaseAddress( 0x00, 0x00 );
     
@@ -659,7 +666,7 @@ uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
     SX126x.ModulationParams.PacketType = PACKET_TYPE_LORA;
     SX126x.ModulationParams.Params.LoRa.SpreadingFactor = sf;
     SX126x.ModulationParams.Params.LoRa.Bandwidth =  bw;
-    SX126x.ModulationParams.Params.LoRa.CodingRate= 1;
+    SX126x.ModulationParams.Params.LoRa.CodingRate= 4;
     SX126x.ModulationParams.Params.LoRa.LowDatarateOptimize = 0x00;
 
     // 设置LoRa的数据包参数
@@ -681,7 +688,7 @@ uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
     Lora_SetPacketParams( &SX126x.PacketParams );
     
     // 设置发送功率参数
-    Lora_SetTxParams(power,RADIO_RAMP_40_US);
+    Lora_SetTxParams(power,RADIO_RAMP_200_US);
     
     // 设置射频频率
     Lora_SetRfFrequency( freq *1000000.0f );

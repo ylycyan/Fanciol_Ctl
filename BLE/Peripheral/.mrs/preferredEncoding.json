@@ -15,6 +15,10 @@
 		{
 			"file": "APP/peripheral.c",
 			"encoding": "utf8"
+		},
+		{
+			"file": "APP/include/peripheral.h",
+			"encoding": "utf8"
 		}
 	]
 }

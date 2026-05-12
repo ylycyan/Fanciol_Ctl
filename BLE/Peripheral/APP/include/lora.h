@@ -13,7 +13,7 @@
 	//#define FREQ_STEP		198.3642578125	//((double)(XTAL_FREQ / pow(2.0, 19.0)))
 	#define XTAL_FREQ		32000000		//126x
 	#define FREQ_STEP		0.953674316		//((double)(XTAL_FREQ / pow(2.0, 25.0)))
-	#define PREAMBLE_LENGTH 6
+	#define PREAMBLE_LENGTH 8
 	#define LORA_BUFFER_LENGTH 256		//Lora数据包长度 256
 	#define LORA_ERR_CODING 1 //纠错码1 - 4/5
 	#define LORA_TX_TIMEOUT 1200

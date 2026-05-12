@@ -6,13 +6,13 @@
 static volatile uint16_t Flash_Delay = 0;
 
 int Flash_Erase(void){
-    return EEPROM_ERASE(0, EEPROM_BLOCK_SIZE);
+    return EEPROM_ERASE(DATAFLASH_ADDR_DEV, EEPROM_BLOCK_SIZE);
 }
 int Flash_Write(uint8_t *data, uint32_t len){
-    return EEPROM_WRITE(0, data, len);
+    return EEPROM_WRITE(DATAFLASH_ADDR_DEV, data, len);
 }
 int Flash_Read(uint8_t *data, uint32_t len){
-    return EEPROM_READ(0, data, len);
+    return EEPROM_READ(DATAFLASH_ADDR_DEV, data, len);
 }
 
 void SaveDevInfo(uint16_t delay){

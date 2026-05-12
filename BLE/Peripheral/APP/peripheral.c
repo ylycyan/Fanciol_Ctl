@@ -918,22 +918,30 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                             SendBtResponse(BT_CMD_ACK, NULL, 0);
                             SYS_ResetExecute();
                             break;
-                        case ACT_IR_SEND: // 红外透传: [ACT][Data...]
+                        case ACT_IR_CMD: // 红外控制指令: [ACT][CMD]
                             Dev.errorCode.bit.irMatch = 0;
-                            tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
+                            // tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
                             IrBuf.rxlen = 0;
                             IrBuf.isFinish = 0;
-                            UART3_SendString(IrBuf.txbuf, dataLen - 1);
+                            IrBuf.txbuf[0] = 0x30;
+                            IrBuf.txbuf[1] = 0x06;
+                            IrBuf.txbuf[2] = Dev.irType>>8;
+                            IrBuf.txbuf[3] = Dev.irType&0xff;
+                            IrBuf.txbuf[4] = pData[1];
+                            UART3_SendString(IrBuf.txbuf, 5);
+                            PrintHex("ir ctl ",IrBuf.txbuf,5);
                             SendBtResponse(BT_CMD_ACK, NULL, 0);
                             break;
                         case ACT_IR_MATCH:
                             // ... 逻辑同旧代码 ...
                             Dev.errorCode.bit.irMatch = 0;
-                            tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
+                            // tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
                             IrBuf.rxlen = 0;
                             IrBuf.isFinish = 0;
                             IrBuf.type = IR_TYPE_MATCH;
-                            IrBuf.txbuf[0] = 0x30; IrBuf.txbuf[1] = 0x70; IrBuf.txbuf[2] = 0xa0;
+                            IrBuf.txbuf[0] = 0x30; 
+                            IrBuf.txbuf[1] = 0x70; 
+                            IrBuf.txbuf[2] = 0xa0;
                             UART3_SendString(IrBuf.txbuf, 3);
                             SendBtResponse(BT_CMD_ACK, NULL, 0);
                             break;
@@ -1002,13 +1010,13 @@ void SwitchImageFlag(uint8_t new_flag)
     uint16_t i;
     uint32_t ver_flag;
 
-    EEPROM_READ(OTA_DATAFLASH_ADD, (uint32_t *)&block_buf[0], 4);
+    EEPROM_READ(DATAFLASH_ADDR_OTA, (uint32_t *)&block_buf[0], 4);
 
-    EEPROM_ERASE(OTA_DATAFLASH_ADD, EEPROM_PAGE_SIZE);
+    EEPROM_ERASE(DATAFLASH_ADDR_OTA, EEPROM_PAGE_SIZE);
 
     block_buf[0] = new_flag;
 
-    EEPROM_WRITE(OTA_DATAFLASH_ADD, (uint32_t *)&block_buf[0], 4);
+    EEPROM_WRITE(DATAFLASH_ADDR_OTA, (uint32_t *)&block_buf[0], 4);
 }
 
 void DisableAllIRQ(void)

@@ -16,10 +16,10 @@
 #define Default_Channel 5 
 /* Lora */
 #define LORA_POWER 22				//lora发送功率：22
-#define LORA_SF_LISTEN 10				//监听LORA的扩频因子:10 //Sf10+Bw7:  128b-1210ms, 112b-1050ms, 104b-1000ms(6只热量计上报数据:16*6+7),88b-880ms(5只热量计上报数据:16*5+7),72b-760ms(4只热量计上报数据),56b-600ms,27b-400ms(配置下发)
+#define LORA_SF_LISTEN 9				//监听LORA的扩频因子:10 //Sf10+Bw7:  128b-1210ms, 112b-1050ms, 104b-1000ms(6只热量计上报数据:16*6+7),88b-880ms(5只热量计上报数据:16*5+7),72b-760ms(4只热量计上报数据),56b-600ms,27b-400ms(配置下发)
 #define LORA_BW_LISTEN 0x04				//监听LORA的带宽:125K sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
-#define LORA_SF_SCAN 11					//扫描LORA的扩频因子:8 //Sf8+Bw5: 71b-660ms(4台冷机上报数据) 43b-450ms(4台变频器上报数据) 15b-235ms(4路电流上报)
-#define LORA_BW_SCAN 0x04				//扫描LORA的带宽:41.7 sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
+#define LORA_SF_SCAN 10					//扫描LORA的扩频因子:8 //Sf8+Bw5: 71b-660ms(4台冷机上报数据) 43b-450ms(4台变频器上报数据) 15b-235ms(4路电流上报)
+#define LORA_BW_SCAN 0x05				//扫描LORA的带宽:41.7 sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
 
 //旧版本(分体空调&三速开关)固定频点(0~31),基于场景普遍安装较分散,兼容普通节点统一改为Radio(0~4)*channel(0~9)版本
 //节点以内置的频道 431.1/432.8/434.5/436.2/437.9 为参考，按不同的频点进行扫描注册。如果收到修改频道指令，则更新至 FLASH/EEPROM，重启后以新的频道扫描注册
@@ -129,7 +129,8 @@ typedef enum{
 
 //红外学习结构体,一般空调红外控制包不超过230byte
 typedef struct{  
-    uint8_t type; //红外组合命令,暂不做定义，仅作为区分
+    uint8_t enable:1; //改通道是否启用
+    uint8_t type:7; //红外组合命令(1:制冷开机 2:制热开机 3:关机 )
     uint8_t cmd[256];
 }IR_LEARNING_t;
 extern IRBUF_t IrBuf;
@@ -215,7 +216,7 @@ static inline void Led_Init(void){
 #define BT_DEFAULT_DESIRED_SLAVE_LATENCY        0
 #define BT_DEFAULT_DESIRED_CONN_TIMEOUT         1000
 #define BT_COMPANY_ID                           0x07D7  //蓝牙厂商 ID
-#define BT_DEVICE_NAME                          "Wch Bt test" //设备名
+#define BT_DEVICE_NAME                          "matter lights" //设备名
 // #define BT_DEFAULT_MAC_ADDR                     {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02} //BLE MAC 地址 默认由芯片地址随机生成
 
 //蓝牙协议
