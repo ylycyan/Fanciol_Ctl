@@ -3,26 +3,26 @@
 
 #include <stdint.h>
 
-/*flash·Ö²¼
+/*flashåˆ†å¸ƒ
     ch583-m  flash(512kB) = dataflash + codeflash
-    ´úÂë¶Î codeflash(448KB)
+    ä»£ç æ®µ codeflash(448KB)
         0x0 ~ 0x6FFFF
-    Êı¾İ¶Î dataflash(32KB) 
+    æ•°æ®æ®µ dataflash(32KB) 
         0x70000 ~ 0x77FFF
-    ·ÇÒ×Ê§´æ´¢Çø backupFlash:8KB (¿ÉĞĞĞÔ´ı²âÊÔ)
+    éæ˜“å¤±å­˜å‚¨åŒº backupFlash:8KB (å¯è¡Œæ€§å¾…æµ‹è¯•)
         0x7E000 ~ 0x7FFFF 
 
-    codeflash·Ö²¼: JumpIAP + AppA + AppB + AppUpdater
-        JumpIAP(0x0 + 4K):¹Ì¶¨4K,½ö×ö¹Ì¼şÌø×ªAppUpdate
-        AppA(0x00001000 + 216K):ÒµÎñÔËĞĞ¹Ì¼ş
-        AppB(0x00037000 + 216K):AppÉı¼¶,´óĞ¡µÈÍ¬AppA
-        AppbootLoader(0x6D000 + 12K):ÎŞ¸üĞÂ¹Ì¼şÖ±½ÓÌø×ª,ÈôÓĞ¸üĞÂ¹Ì¼ş,½«AppB°áÔËµ½AppA²¢Ìø×ª¡£
+    codeflashåˆ†å¸ƒ: JumpIAP + AppA + AppB + AppUpdater
+        JumpIAP(0x0 + 4K):å›ºå®š4K,ä»…åšå›ºä»¶è·³è½¬AppUpdate
+        AppA(0x00001000 + 216K):ä¸šåŠ¡è¿è¡Œå›ºä»¶
+        AppB(0x00037000 + 216K):Appå‡çº§,å¤§å°ç­‰åŒAppA
+        AppbootLoader(0x6D000 + 12K):æ— æ›´æ–°å›ºä»¶ç›´æ¥è·³è½¬,è‹¥æœ‰æ›´æ–°å›ºä»¶,å°†AppBæ¬è¿åˆ°AppAå¹¶è·³è½¬ã€‚
     
-    dataflash·Ö²¼: ×îĞ¡erase block(4096B)
-        0x0 ~ 0x 1000  len:4k  devÉè±¸ĞÅÏ¢
-        0x2000 ~ 0x 6FFF 24K  Ôİ²»Ê¹ÓÃ
+    dataflashåˆ†å¸ƒ: æœ€å°erase block(4096B)
+        0x0 ~ 0x 1000  len:4k  devè®¾å¤‡ä¿¡æ¯
+        0x2000 ~ 0x 6FFF 24K  æš‚ä¸ä½¿ç”¨
         0x7000 ~ 0x7004 u32   ota flag
-        0x7e00 ~ 0x7FFF À¶ÑÀÕ»Ê¹ÓÃ?
+        0x7e00 ~ 0x7FFF è“ç‰™æ ˆä½¿ç”¨?
 */
 
 #define DATAFLASH_ADDR_OTA      0x7000

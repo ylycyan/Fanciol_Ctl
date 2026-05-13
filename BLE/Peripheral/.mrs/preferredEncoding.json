@@ -19,6 +19,18 @@
 		{
 			"file": "APP/include/peripheral.h",
 			"encoding": "utf8"
+		},
+		{
+			"file": "APP/ir.c",
+			"encoding": "utf8"
+		},
+		{
+			"file": "APP/include/ota.h",
+			"encoding": "utf8"
+		},
+		{
+			"file": "APP/flash.c",
+			"encoding": "utf8"
 		}
 	]
 }

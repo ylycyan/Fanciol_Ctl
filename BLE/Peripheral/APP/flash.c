@@ -16,10 +16,10 @@ int Flash_Read(uint8_t *data, uint32_t len){
 }
 
 void SaveDevInfo(uint16_t delay){
-    Flash_Delay = delay ? delay : 1; //Ä¬ÈÏ1sºó±£´æDevÊı¾İ
+    Flash_Delay = delay ? delay : 1; //é»˜è®¤1såä¿å­˜Devæ•°æ®
 }
 
-//1sÊÂ¼ş´¦Àí,Ö÷Ñ­»·ÖĞÂÖÑ¯´¦Àí
+//1säº‹ä»¶å¤„ç†,ä¸»å¾ªç¯ä¸­è½®è¯¢å¤„ç†
 void Flash_Poll(void){
     if(Flash_Delay && --Flash_Delay == 0){
         if(Flash_Erase() || Flash_Write((uint8_t*)&Dev,sizeof(Dev))){
@@ -31,10 +31,10 @@ void Flash_Poll(void){
 
 void LoadDevInfo(void){
     Flash_Read((uint8_t*)&Dev,sizeof(Dev));
-    //´òÓ¡DevÊı¾İ
+    //æ‰“å°Devæ•°æ®
     PRINT("Dev.magicCode:0x%04x,Dev.errorCode:0x%04x,Dev.onOff:%d,Dev.mode:%d,Dev.wind:%d,Dev.irIdx:%d,Dev.irType:%d,Dev.setTemp:%d.\r\n",
         Dev.magicCode,Dev.errorCode.u16Val,Dev.onOff,Dev.mode,Dev.wind,Dev.irIdx,Dev.irType,Dev.temSet);
-    if(Dev.magicCode != MAGIC_CODE){ //Ê×´ÎÉÏµç£¬Çå¿ÕËùÓĞÉè±¸Êı¾İ
+    if(Dev.magicCode != MAGIC_CODE){ //é¦–æ¬¡ä¸Šç”µï¼Œæ¸…ç©ºæ‰€æœ‰è®¾å¤‡æ•°æ®
         memset(&Dev,0,sizeof(Dev));
         Dev.magicCode = MAGIC_CODE;
         Dev.errorCode.bit.irMatch = 1;
@@ -42,19 +42,19 @@ void LoadDevInfo(void){
         Dev.nodeId = Default_DevId;
         Dev.channel = Default_Channel;
         BITSET(Dev.mode,0);
-        SaveDevInfo(1); //Ê×´ÎÉÏµç£¬1sºó±£´æDevÊı¾İ
+        SaveDevInfo(1); //é¦–æ¬¡ä¸Šç”µï¼Œ1såä¿å­˜Devæ•°æ®
         PRINT("Dev mode = %d\n",Dev.mode);
         PRINT("First Power,Init Dev Info.\r\n");
     }
-    //ÉÏµçÄ¬ÈÏ³õÊ¼»¯
-    Dev.onOff = PowerOff; //Ä¬ÈÏ¹Ø
-    Dev.ctlMode = Mode_Auto; //ÉÏµçÄ£Ê½:×Ô¶¯
-    Dev.wind = Wind_Auto; //ÉÏµç·çËÙ:×Ô¶¯
+    //ä¸Šç”µé»˜è®¤åˆå§‹åŒ–
+    Dev.onOff = PowerOff; //é»˜è®¤å…³
+    Dev.ctlMode = Mode_Auto; //ä¸Šç”µæ¨¡å¼:è‡ªåŠ¨
+    Dev.wind = Wind_Auto; //ä¸Šç”µé£é€Ÿ:è‡ªåŠ¨
     Dev.lastOnTime = 0;
     Dev.lastReportTime = 0;
     Dev.runTime = 0;
     Dev.loadPower = 0;
-    Dev.loraStatus = 1; //ÉÏµçloraĞèÖØĞÂ×¢²á
+    Dev.loraStatus = 1; //ä¸Šç”µloraéœ€é‡æ–°æ³¨å†Œ
     Timer_Lora = 3000;
     // Dev.
     // Dev.setTemp = 25;

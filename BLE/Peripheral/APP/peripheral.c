@@ -794,10 +794,26 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 SaveDevInfo(2);//2s后保存Dev数据
                                 break;
                             case PID_IR_CFG:
-                                if(i + 2 < dataLen) {
-                                    Dev.irType = (pData[i+0] | (pData[i+1]<<8));
-                                    Dev.irIdx = pData[i+2];
-                                    i += 3;
+                                Dev.irActType = pData[i+0];
+                                switch (Dev.irActType)
+                                {
+                                case ACT_TYPE_IR:
+                                    /* code */
+                                    if(i + 3 < dataLen) {
+                                        Dev.irType = (pData[i+1] | (pData[i+2]<<8));
+                                        Dev.irIdx = pData[i+3];
+                                        i += 4;
+                                    }
+                                case ACT_TYPE_LEARN:
+                                    if(i + 1 < dataLen) {
+                                        Dev.irType = (pData[i+1] | (pData[i+2]<<8));
+                                        Dev.irIdx = pData[i+3];
+                                        i += 4;
+                                    }
+                                    break;
+                                
+                                default:
+                                    break;
                                 }
                                 SaveDevInfo(2);//2s后保存Dev数据
                                 break;
@@ -952,7 +968,9 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                             IrBuf.rxlen = 0;
                             IrBuf.isFinish = 0;
                             IrBuf.type = IR_TYPE_LEARNing;
-                            IrBuf.txbuf[0] = 0x30; IrBuf.txbuf[1] = 0x20; IrBuf.txbuf[2] = 0x50;
+                            IrBuf.txbuf[0] = 0x30;  //模块进入红外学习模式指令
+                            IrBuf.txbuf[1] = 0x20; 
+                            IrBuf.txbuf[2] = 0x50;
                             UART3_SendString(IrBuf.txbuf, 3);
                             SendBtResponse(BT_CMD_ACK, NULL, 0);
                             break;

@@ -61,7 +61,8 @@ typedef enum {
     PID_DEV_INFO      = 0x12,
     PID_SYS_PARAMS    = 0x13,
     PID_SYS_CTRL      = 0x14,
-    PID_IR_MATCH      = 0x15,
+    PID_IR_MATCH      = 0x15, // 红外匹配结果 (u8: 0失败 1成功 2超时 + u16匹配到的类型 + u8索引)
+    PID_IR_LEARN      = 0x16, // 红外学习结果 (u8: 0失败 1成功 2超时 + u16学习到的类型 + u8索引)
     PID_ALL_STATE     = 0xF0
 } BT_PID_Type;
 

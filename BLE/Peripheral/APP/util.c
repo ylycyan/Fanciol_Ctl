@@ -2,97 +2,97 @@
 #include "timer.h"
 #include "lora.h"
 
-volatile uint16_t Timer_Lora = 0; //lora×´Ì¬»úÊ±¼ä¼ÆÊı,µ¥Î»ms
+volatile uint16_t Timer_Lora = 0; //loraçŠ¶æ€æœºæ—¶é—´è®¡æ•°,å•ä½ms
 
 void Lora_Pro(void){
     static uint8_t LoraBuf[64] = {0};
     uint16_t irq = 0;
     uint8_t len,cmd,LoraTag; 
     float operateParameter;
-    Timer_Lora ++; //100ms Ö»×÷´ÖÂÔ¹À¼Æ,²»¿¼ÂÇtx\ÆäËû³ÌĞòÔËĞĞÊ±¼ä,Êµ¼ÊÓ°Ïì¿ÉºöÂÔ²»¼Ç
-    if(!BITGET(Dev.mode,0)){ //bit0 lora²»ÆôÓÃ
+    Timer_Lora ++; //100ms åªä½œç²—ç•¥ä¼°è®¡,ä¸è€ƒè™‘tx\å…¶ä»–ç¨‹åºè¿è¡Œæ—¶é—´,å®é™…å½±å“å¯å¿½ç•¥ä¸è®°
+    if(!BITGET(Dev.mode,0)){ //bit0 loraä¸å¯ç”¨
         return;
     }
-        if(Dev.loraStatus == 1){ //»¹Î´×¢²á£º·¢ËÍ×¢²áÊı¾İ°ü
-            if(Timer_Lora < (100 + ((Dev.nodeId*100)%30))) // ¸ù¾İDev.nodeId¼ÆËãÃ¿´ÎÂÖÑ¯Ê±¼ä,Ã¿(10+[0~3])s ÂÖÑ¯×¢²áÒ»´Î
+        if(Dev.loraStatus == 1){ //è¿˜æœªæ³¨å†Œï¼šå‘é€æ³¨å†Œæ•°æ®åŒ…
+            if(Timer_Lora < (100 + ((Dev.nodeId*100)%30))) // æ ¹æ®Dev.nodeIdè®¡ç®—æ¯æ¬¡è½®è¯¢æ—¶é—´,æ¯(10+[0~3])s è½®è¯¢æ³¨å†Œä¸€æ¬¡
             {
-                return; //Î´µ½ÂÖÑ¯Ê±¼ä
+                return; //æœªåˆ°è½®è¯¢æ—¶é—´
             } 
-            //·¢ËÍ×¢²áÇëÇó  eCmdLogin(1)Tag(1)Dev.nodeId(2)Crc(1)
+            //å‘é€æ³¨å†Œè¯·æ±‚  eCmdLogin(1)Tag(1)Dev.nodeId(2)Crc(1)
             *(LoraBuf) = 5;  //cmdLogin
             *(LoraBuf + 1) = 0;  //tag
             *(uint16_t*)(LoraBuf + 2) = Dev.nodeId;  //Dev.nodeId
             AddCrc(LoraBuf,4);
-            //loraÆµÂÊÇĞ»»Îª×¢²áÆµ¶Î
+            //loraé¢‘ç‡åˆ‡æ¢ä¸ºæ³¨å†Œé¢‘æ®µ
             Dev.loraFrequency = Dev.channel * 0.3f + 420.05f;
-            Lora_Init(Dev.loraFrequency,22,LORA_SF_LISTEN,LORA_BW_LISTEN);  //×¢²áÆµÂÊ
+            Lora_Init(Dev.loraFrequency,22,LORA_SF_LISTEN,LORA_BW_LISTEN);  //æ³¨å†Œé¢‘ç‡
             Lora_Tx(LoraBuf,5);
             Dev.loraStatus = 2;
-            Timer_Lora = 0; //ÇĞ»»ÖÁ·¢ËÍ¼ì²â×´Ì¬,ÖØĞÂ³¬Ê±¼ÆÊı
+            Timer_Lora = 0; //åˆ‡æ¢è‡³å‘é€æ£€æµ‹çŠ¶æ€,é‡æ–°è¶…æ—¶è®¡æ•°
         }else if(Dev.loraStatus == 2){
             irq = Lora_GetIrqStatus();
-            if (irq == IRQ_TX_DONE) { //·¢ËÍÍê³É£ºRFLR_IRQFLAGS_TXDONE
-                Lora_Listening(); //±£³ÖÔÚ×¢²áÍ¨µÀ(ÆµÂÊ²»±ä)½ÓÊÕÍø¹Ø·´À¡
-                Dev.loraStatus = 3; //·¢ËÍÍê³É£¬µÈ´ıÍø¹Ø·´À¡
-                Timer_Lora = 0; //½ÓÊÕÊ±ÖØĞÂ¼ÆËã³¬Ê±Ê±¼ä
-            } else if ((irq > 0) || (Timer_Lora > 10)) { //¼ì²âµ½·ÇÔ¤ÆÚµÄLoraÖĞ¶Ï(³ö´í?)»òÕß³¬Ê±£¬ËµÃ÷×¢²áÊ§°Ü£¬ºóĞøÖØÊÔ
-                Dev.loraStatus = 1; //ÇĞ»»ÖÁÎ´×¢²á×´Ì¬
+            if (irq == IRQ_TX_DONE) { //å‘é€å®Œæˆï¼šRFLR_IRQFLAGS_TXDONE
+                Lora_Listening(); //ä¿æŒåœ¨æ³¨å†Œé€šé“(é¢‘ç‡ä¸å˜)æ¥æ”¶ç½‘å…³åé¦ˆ
+                Dev.loraStatus = 3; //å‘é€å®Œæˆï¼Œç­‰å¾…ç½‘å…³åé¦ˆ
+                Timer_Lora = 0; //æ¥æ”¶æ—¶é‡æ–°è®¡ç®—è¶…æ—¶æ—¶é—´
+            } else if ((irq > 0) || (Timer_Lora > 10)) { //æ£€æµ‹åˆ°éé¢„æœŸçš„Loraä¸­æ–­(å‡ºé”™?)æˆ–è€…è¶…æ—¶ï¼Œè¯´æ˜æ³¨å†Œå¤±è´¥ï¼Œåç»­é‡è¯•
+                Dev.loraStatus = 1; //åˆ‡æ¢è‡³æœªæ³¨å†ŒçŠ¶æ€
                 Timer_Lora = 0; 
                 PRINT("Login tx error @%d.\n",LocalTimestamp);
-            } //else //·¢ËÍÖĞ(Î´¼ì²âµ½·¢ËÍÍê³ÉÖĞ¶Ï£¬ÇÒÎ´·¢ËÍ³¬Ê±)£¬¼ÌĞøµÈ´ı
-        }else if(Dev.loraStatus == 3){  //×¢²áÇëÇó·¢ËÍ³É¹¦£¬µÈ´ı×¢²á·´À¡
+            } //else //å‘é€ä¸­(æœªæ£€æµ‹åˆ°å‘é€å®Œæˆä¸­æ–­ï¼Œä¸”æœªå‘é€è¶…æ—¶)ï¼Œç»§ç»­ç­‰å¾…
+        }else if(Dev.loraStatus == 3){  //æ³¨å†Œè¯·æ±‚å‘é€æˆåŠŸï¼Œç­‰å¾…æ³¨å†Œåé¦ˆ
             Lora_CheckData(LoraBuf,&len);
             if(len > 0){
                 // cmdConfig(1)Tag(1)Timestamp(4)Dev.gatewayId(2)Dev.nodeId(2)LoraPower(1)Dev.nodeIdx(2)DataCycle(2)Dev.scanCycle(2)DeviceType(1)DeviceTag(1)Crc(1)
-                if(ChkCrc(LoraBuf,len) == 0){ //½ÓÊÕµ½Êı¾İ,µ«crcĞ£Ñé´íÎó
-                    if(Timer_Lora >= 20){ // ½ÓÊÕ³¬Ê±1s,ÖØĞÂ³¢ÊÔ×¢²á 1
+                if(ChkCrc(LoraBuf,len) == 0){ //æ¥æ”¶åˆ°æ•°æ®,ä½†crcæ ¡éªŒé”™è¯¯
+                    if(Timer_Lora >= 20){ // æ¥æ”¶è¶…æ—¶1s,é‡æ–°å°è¯•æ³¨å†Œ 1
                         Timer_Lora = 0;
                         Dev.loraStatus = 1;
                         return;
                     }
-                }//ÊÕµ½×¢²á·´À¡
+                }//æ”¶åˆ°æ³¨å†Œåé¦ˆ
                 if((*LoraBuf == 7) && (*(uint16_t*)(LoraBuf+8) == Dev.nodeId)){
                     // Dev.scanCycle = *(uint16_t *)(LoraBuf + 15);
                     // Dev.scanCycle = 0x3c;
                     Dev.scanCycle = (LoraBuf[16]<<8)|(LoraBuf[15]);
-                    if(Dev.scanCycle < 60){ // ²É¼¯ÖÜÆÚÏŞ¶¨ 1~3min
+                    if(Dev.scanCycle < 60){ // é‡‡é›†å‘¨æœŸé™å®š 1~3min
                         Dev.scanCycle = 60;
                     }else if(Dev.scanCycle > 180){
                         Dev.scanCycle = 180;
                     }
                     Dev.gatewayId = (LoraBuf[7]<<8)|(LoraBuf[6]);
-                    //×¢²á³É¹¦,ÇĞ»»ÖÁ½ÓÊÕÖ¸Áî×´Ì¬
-                    //loraÆµÂÊÇĞ»»Îª¹¤×÷Æµ¶Î
+                    //æ³¨å†ŒæˆåŠŸ,åˆ‡æ¢è‡³æ¥æ”¶æŒ‡ä»¤çŠ¶æ€
+                    //loraé¢‘ç‡åˆ‡æ¢ä¸ºå·¥ä½œé¢‘æ®µ
                     if(Dev.channel <= 22){
                         Dev.loraFrequency = Dev.loraFrequency + 3.1375f;
                     }else{
                         Dev.loraFrequency = (Dev.channel - 23) * 0.3f + 420.1875f;
                     }
                     PRINT("Login to %04x ,dataScycle:%d @%d.\n",Dev.gatewayId,Dev.scanCycle,LocalTimestamp);
-                    Lora_Init(Dev.loraFrequency,22,LORA_SF_SCAN,LORA_BW_SCAN);  //ÇĞ»»ÖÁ¼àÌıÆµÂÊ
-                    Lora_Listening();  //¼àÌıÍø¹ØÖ¸Áî  
+                    Lora_Init(Dev.loraFrequency,22,LORA_SF_SCAN,LORA_BW_SCAN);  //åˆ‡æ¢è‡³ç›‘å¬é¢‘ç‡
+                    Lora_Listening();  //ç›‘å¬ç½‘å…³æŒ‡ä»¤  
                     Dev.loraStatus = 4;
                     Timer_Lora = Dev.scanCycle * 10;
                 }
-            }else{ //Î´ÊÕµ½·´À¡
-                if(Timer_Lora >= 20){ // ½ÓÊÕ³¬Ê±2s,ÖØĞÂ³¢ÊÔ×¢²á 2
+            }else{ //æœªæ”¶åˆ°åé¦ˆ
+                if(Timer_Lora >= 20){ // æ¥æ”¶è¶…æ—¶2s,é‡æ–°å°è¯•æ³¨å†Œ 2
                     Timer_Lora = 0;
                     Dev.loraStatus = 1;
                     PRINT("Login rx timeout @%d.\n",LocalTimestamp);
                     return;
                 }
             }
-        }else if(Dev.loraStatus == 4){ //¼àÌıÍø¹ØÖ¸Áî
+        }else if(Dev.loraStatus == 4){ //ç›‘å¬ç½‘å…³æŒ‡ä»¤
             Lora_CheckData(LoraBuf,&len);
             if(len > 0){
                 if(ChkCrc(LoraBuf,len) == 1){
                     cmd = LoraBuf[0];
                     LoraTag = LoraBuf[1];
-                    if(*(uint16_t*)(LoraBuf + 2) != Dev.gatewayId){ //ÆäËûÍø¹ØÖ¸Áî
+                    if(*(uint16_t*)(LoraBuf + 2) != Dev.gatewayId){ //å…¶ä»–ç½‘å…³æŒ‡ä»¤
                         Lora_Listening();
                         return;
                     }
-                    if(cmd == 0x0B){ //Èº¿Ø¶ÔÊ±
+                    if(cmd == 0x0B){ //ç¾¤æ§å¯¹æ—¶
                         if((*(uint32_t*)(LoraBuf+4) > LocalTimestamp + 3) || (LocalTimestamp > *(uint32_t*)(LoraBuf+4) + 3)){
                             PRINT("RTC update %d -> %d \n",LocalTimestamp,*(uint32_t*)(LoraBuf+4));
                             LocalTimestamp = *(uint32_t*)(LoraBuf+4);
@@ -100,39 +100,39 @@ void Lora_Pro(void){
                             Lora_Listening();
                             return;
                         }
-                    }else if(cmd == 0x0f){ //Èº¿ØÏÂ·¢Ö¸Áî£¬ÎŞĞèÉÏ±¨½á¹û
+                    }else if(cmd == 0x0f){ //ç¾¤æ§ä¸‹å‘æŒ‡ä»¤ï¼Œæ— éœ€ä¸ŠæŠ¥ç»“æœ
                         Lora_Listening();
                     }else{
                         if(*(uint16_t*)(LoraBuf + 4) != Dev.nodeId){
                             Lora_Listening(); //
-                        }else if(cmd == 13){ //Õë¶Ô½ÚµãµÄÃüÁî
-                            if(LoraTag == 1){// Íø¹ØÏÂ·¢Ö¸Áî: eCmdData1(1)Tag(1-1)Dev.gatewayId(2)Dev.nodeId(2)Operate(1)OperateTag(2)OperateParameter(4)OperateToken(4)Crc(1)
+                        }else if(cmd == 13){ //é’ˆå¯¹èŠ‚ç‚¹çš„å‘½ä»¤
+                            if(LoraTag == 1){// ç½‘å…³ä¸‹å‘æŒ‡ä»¤: eCmdData1(1)Tag(1-1)Dev.gatewayId(2)Dev.nodeId(2)Operate(1)OperateTag(2)OperateParameter(4)OperateToken(4)Crc(1)
                                 //operate 6(u8) , operateTag 7(u16) , operateParameter 9(float) 
                                 operateParameter = *(float*)(LoraBuf + 9);
-                                if(LoraBuf[6] == 21){  //¿ª»ú
-                                    if(LoraBuf[7] == 0){  //0:Ä¬ÈÏÄ£Ê½¿ª»ú  1:ÖÆÀäÄ£Ê½¿ª»ú  2:ÖÆÈÈÄ£Ê½¿ª»ú 3:Ö¸¶¨µÄÎÂ¶ÈÖÆÀä¿ª»ú  4:Ö¸¶¨µÄÎÂ¶ÈÖÆÈÈ¿ª»ú 
+                                if(LoraBuf[6] == 21){  //å¼€æœº
+                                    if(LoraBuf[7] == 0){  //0:é»˜è®¤æ¨¡å¼å¼€æœº  1:åˆ¶å†·æ¨¡å¼å¼€æœº  2:åˆ¶çƒ­æ¨¡å¼å¼€æœº 3:æŒ‡å®šçš„æ¸©åº¦åˆ¶å†·å¼€æœº  4:æŒ‡å®šçš„æ¸©åº¦åˆ¶çƒ­å¼€æœº 
                                     }
-                                }else if(LoraBuf[6] == 22){ //¹Ø»ú 
+                                }else if(LoraBuf[6] == 22){ //å…³æœº 
                                     if(LoraBuf[7] == 0){ 
                                     }
-                                }else if(LoraBuf[6] == 23){ //Éè¶¨ÎÂ¶È
-                                }else if(LoraBuf[6] == 24){ //ÖÆÀä/ÖÆÈÈÉè¶¨
-                                }else if(LoraBuf[6] == 25){ //·ç»ú×ªËÙÉè¶¨
-                                }else if(LoraBuf[6] == 26){ //ÎÂ¶ÈËø¶¨
+                                }else if(LoraBuf[6] == 23){ //è®¾å®šæ¸©åº¦
+                                }else if(LoraBuf[6] == 24){ //åˆ¶å†·/åˆ¶çƒ­è®¾å®š
+                                }else if(LoraBuf[6] == 25){ //é£æœºè½¬é€Ÿè®¾å®š
+                                }else if(LoraBuf[6] == 26){ //æ¸©åº¦é”å®š
                                    
-                                }else if(LoraBuf[6] == 27){ //¹ÜÖÆÉè¶¨-Ä£Ê½Ëø¶¨
+                                }else if(LoraBuf[6] == 27){ //ç®¡åˆ¶è®¾å®š-æ¨¡å¼é”å®š
                                     
-                                }else if(LoraBuf[6] == 28){ //ÎÂ¶È²¹³¥Éè¶¨
-                                }else if(LoraBuf[6] == 29){  //ÎÂ¶ÈËø¶¨ÉÏ/ÏÂÏŞÉèÖÃ
+                                }else if(LoraBuf[6] == 28){ //æ¸©åº¦è¡¥å¿è®¾å®š
+                                }else if(LoraBuf[6] == 29){  //æ¸©åº¦é”å®šä¸Š/ä¸‹é™è®¾ç½®
                                 }
-                            } else { // // Íø¹ØÒªÇó½ÚµãÉÏ±¨Êı¾İ: eCmdData1(1)Tag(1-0)Dev.gatewayId(2)Dev.nodeId(2)Timestamp(4)Crc(1)
+                            } else { // // ç½‘å…³è¦æ±‚èŠ‚ç‚¹ä¸ŠæŠ¥æ•°æ®: eCmdData1(1)Tag(1-0)Dev.gatewayId(2)Dev.nodeId(2)Timestamp(4)Crc(1)
                                 LoraTag = 0;
                             }
-                            // ÉÏ±¨Êı¾İ·´À¡£º Cmd(1:13)Tag(1-1)Dev.nodeId(2)Rssi(1)ErrorInfo(1)TempSet(2)OnOff(1)Temp(2)Mode(2)Wend(2)LockMode(2)Crc(1)
+                            // ä¸ŠæŠ¥æ•°æ®åé¦ˆï¼š Cmd(1:13)Tag(1-1)Dev.nodeId(2)Rssi(1)ErrorInfo(1)TempSet(2)OnOff(1)Temp(2)Mode(2)Wend(2)LockMode(2)Crc(1)
                             // Beep = ~Beep;
-                            // ÉÏ±¨Êı¾İ
+                            // ä¸ŠæŠ¥æ•°æ®
                             // Beep = ~Beep;
-                            // TempSetting(u16-sfloat)OpStatus(u8)EnvironmentTemp(u16-sfloat)FanTempDiff(u16-sfloat)ValveTempDiff(u16-sfloat),StatusCode(u16) //OpStatus:(¸ß4Î»)0-¹Ø 1-ÖÆÀä 2-ÖÆÈÈ 3-ĞÂ·ç 4-ÖÆÀä+ĞÂ·ç 5-ÖÆÈÈ+ĞÂ·ç 6-Î´Öª (µÍ4Î»)FanSpeed:0-×Ô¶¯ 1-µÍËÙ 2-ÖĞËÙ 3-¸ßËÙ
+                            // TempSetting(u16-sfloat)OpStatus(u8)EnvironmentTemp(u16-sfloat)FanTempDiff(u16-sfloat)ValveTempDiff(u16-sfloat),StatusCode(u16) //OpStatus:(é«˜4ä½)0-å…³ 1-åˆ¶å†· 2-åˆ¶çƒ­ 3-æ–°é£ 4-åˆ¶å†·+æ–°é£ 5-åˆ¶çƒ­+æ–°é£ 6-æœªçŸ¥ (ä½4ä½)FanSpeed:0-è‡ªåŠ¨ 1-ä½é€Ÿ 2-ä¸­é€Ÿ 3-é«˜é€Ÿ
                             LoraBuf[0] = 1;  //ecmdOk
                             LoraBuf[1] = LoraTag;  //tag
                             LoraBuf[2] = Dev.nodeId&0xff;  //
@@ -140,36 +140,36 @@ void Lora_Pro(void){
                             LoraBuf[4] = (uint8_t)Lora_GetRssi();
                             LoraBuf[5] = 0; //errorInfo
                             LoraBuf[6] = 0;  
-                            LoraBuf[7] = Dev.temSet;  //Éè¶¨ÎÂ¶È  u16
+                            LoraBuf[7] = Dev.temSet;  //è®¾å®šæ¸©åº¦  u16
                             LoraBuf[8] = 0;  //OpStatus u8
                             LoraBuf[9] = 0;			
-                            LoraBuf[10] = Dev.tem;// »·¾³ÎÂ¶È u16
-                            LoraBuf[11] = 0;  //ÖÆÀäÖÆÈÈ u16
+                            LoraBuf[10] = Dev.tem;// ç¯å¢ƒæ¸©åº¦ u16
+                            LoraBuf[11] = 0;  //åˆ¶å†·åˆ¶çƒ­ u16
                             LoraBuf[12] = Dev.ctlMode;
                             LoraBuf[13] = 0;
-                            LoraBuf[14] = Dev.wind; //·çËÙ¶È
-                            LoraBuf[15] = 0; // status code = 0: ±êÊ¶±¾µØÃæ°å¿ØÖÆ±»½ûÓÃ
+                            LoraBuf[14] = Dev.wind; //é£é€Ÿåº¦
+                            LoraBuf[15] = 0; // status code = 0: æ ‡è¯†æœ¬åœ°é¢æ¿æ§åˆ¶è¢«ç¦ç”¨
                             LoraBuf[16] = 0;
 
                             AddCrc(LoraBuf,17);
                             Lora_Tx(LoraBuf,18);
                             PRINT("Data to Gw:%04x @%d\n",Dev.gatewayId,LocalTimestamp);
-                            Dev.loraStatus = 5; // Í¨¹ıLora·¢ËÍÁËÊı¾İ£¬ºóĞø¼ì²â·¢ËÍÍê³É
-                            Timer_Lora = 0; //Çå¿Õ¼ÆÊ±Æ÷
-                        } else{ //Òì³£Ö¸Áî
+                            Dev.loraStatus = 5; // é€šè¿‡Loraå‘é€äº†æ•°æ®ï¼Œåç»­æ£€æµ‹å‘é€å®Œæˆ
+                            Timer_Lora = 0; //æ¸…ç©ºè®¡æ—¶å™¨
+                        } else{ //å¼‚å¸¸æŒ‡ä»¤
                             Lora_Listening();
                         }
                     }
-                } else{ //Crc ´íÎó,¼ÌĞø±£³Ö¼àÌı,²»¸üĞÂTimerLora³¬Ê±¼ì²â
+                } else{ //Crc é”™è¯¯,ç»§ç»­ä¿æŒç›‘å¬,ä¸æ›´æ–°TimerLoraè¶…æ—¶æ£€æµ‹
                     Lora_Listening();
                 }
-            } //Î´ÊÕµ½·´À¡
-            if(Timer_Lora >= (Dev.scanCycle * 10 * 3)){ //³¬¹ıÈı¸ö²É¼¯ÖÜÆÚÎ´ÊÕµ½·´À¡£¬ÇĞ»»µ½×¢²áÆµÂÊÖØĞÂ×¢²á
+            } //æœªæ”¶åˆ°åé¦ˆ
+            if(Timer_Lora >= (Dev.scanCycle * 10 * 3)){ //è¶…è¿‡ä¸‰ä¸ªé‡‡é›†å‘¨æœŸæœªæ”¶åˆ°åé¦ˆï¼Œåˆ‡æ¢åˆ°æ³¨å†Œé¢‘ç‡é‡æ–°æ³¨å†Œ
                 Dev.loraStatus = 1;
                 Timer_Lora = 300;
                 return;
             }
-        }else if(Dev.loraStatus == 5){ //·¢ËÍÖ¸ÁîÏìÓ¦µ½Íø¹Ø,µÈ´ı·¢ËÍÍê³É
+        }else if(Dev.loraStatus == 5){ //å‘é€æŒ‡ä»¤å“åº”åˆ°ç½‘å…³,ç­‰å¾…å‘é€å®Œæˆ
             irq = Lora_GetIrqStatus();       
             if(irq == IRQ_TX_DONE || (Timer_Lora > 15)){
                 Dev.loraStatus = 4;
@@ -196,7 +196,7 @@ void PrintHex(char *msg, uint8_t *buffer, uint16_t size){
 	PRINT("\n");
 }
 
-//¼æÈİÆÕÍ¨½Úµã°åcrcËã·¨
+//å…¼å®¹æ™®é€šèŠ‚ç‚¹æ¿crcç®—æ³•
 void AddCrc(uint8_t *buf, uint16_t len) {
 	uint8_t crcValue =0;
 	uint16_t i;

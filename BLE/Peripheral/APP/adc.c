@@ -14,7 +14,7 @@ void ADC_Pro(void){
     if(abs((int)(lastSampStamp - LocalTimestamp)) < AD_INTERVAL){
         return;
     }
-    WWDG_SetCounter(0);//Î¹¹·
+    WWDG_SetCounter(0);//å–‚ç‹—
     lastSampStamp = LocalTimestamp;
     uint16_t caliVal,temp,maxVal,minVal,i;
     uint32_t sum = 0;
@@ -24,25 +24,25 @@ void ADC_Pro(void){
     #endif
     GPIOA_ModeCfg(GPIO_Pin_7, GPIO_ModeIN_Floating);
     ADC_ExtSingleChSampInit(SampleFreq_3_2, ADC_PGA_0);
-    caliVal = ADC_DataCalib_Rough(); //»ñÈ¡ÄÚ²¿Ð£×¼Öµ
+    caliVal = ADC_DataCalib_Rough(); //èŽ·å–å†…éƒ¨æ ¡å‡†å€¼
     #if _DEBUG_AD
     PRINT("Calibration Val:%d\n",caliVal);
     #endif
     ADC_ChannelCfg(11);
     for(i = 0;i < 20;i++){
-        WWDG_SetCounter(0);//Î¹¹·
+        WWDG_SetCounter(0);//å–‚ç‹—
         temp =  ADC_ExcutSingleConver() + caliVal;
         if(temp > maxVal) maxVal = temp;
         if(temp < minVal) minVal = temp;
         sum += temp;
     }
-    sum -= (maxVal + minVal); //È¥µô×î´ó×îÐ¡Öµ
-    // ch583x ÄÚ²¿±¶ÂÊ
-    // -12dB(1/4 ±¶)	(ADC/512-3)*Vref	5*Vref	    -0.2V ¡« VIO33+0.2V	2.9V ¡« VIO33
-    // -6dB(1/2 ±¶)	    (ADC/1024-1)*Vref	3*Vref	    -0.2V ¡« 3.15V	    1.9V ¡« 3V
-    // 0db(1±¶)	        (ADC/2048)*Vref	    2*Vref	    0V ¡« 2.1V	        0V ¡« 2V
-    // 6db(2±¶)	        (ADC/4096+0.5)*Vref	1.5*Vref	0.525V ¡« 1.575V	0.6V ¡« 1.5V
-    vol = ((sum/18.0f)*1.050)/2048;// 0db£º v = val*1.05/2048
+    sum -= (maxVal + minVal); //åŽ»æŽ‰æœ€å¤§æœ€å°å€¼
+    // ch583x å†…éƒ¨å€çŽ‡
+    // -12dB(1/4 å€)	(ADC/512-3)*Vref	5*Vref	    -0.2V ï½ž VIO33+0.2V	2.9V ï½ž VIO33
+    // -6dB(1/2 å€)	    (ADC/1024-1)*Vref	3*Vref	    -0.2V ï½ž 3.15V	    1.9V ï½ž 3V
+    // 0db(1å€)	        (ADC/2048)*Vref	    2*Vref	    0V ï½ž 2.1V	        0V ï½ž 2V
+    // 6db(2å€)	        (ADC/4096+0.5)*Vref	1.5*Vref	0.525V ï½ž 1.575V	0.6V ï½ž 1.5V
+    vol = ((sum/18.0f)*1.050)/2048;// 0dbï¼š v = val*1.05/2048
     if(vol <= 0.001f){
         return;
     }

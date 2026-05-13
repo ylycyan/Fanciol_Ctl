@@ -140,6 +140,22 @@ void Period_1s(void){
         WWDG_Refresh(); //??
         Flash_Poll();
         ADC_Pro();
+        Rule_Pro();       //规则引擎: 每秒评估一次触发条件
+        Meter_Update(1);  //计量更新: 累计运行时间和电量
+
+        // 每天00:00重置规则的executed标志
+        {
+            static uint8_t last_day = 0;
+            uint16_t y, m, d, h, mi, s;
+            RTC_GetTime(&y, &m, &d, &h, &mi, &s);
+            if (d != last_day && h == 0 && mi == 0 && s < 2) {
+                Rule_DailyReset();
+                last_day = d;
+            } else if (d != last_day) {
+                last_day = d;
+            }
+        }
+
         #if 0 //test only
         // FREQ_SYS
         PRINT("#curtick:%d , @timestamp:%d\r\n",CurTick,LocalTimestamp);

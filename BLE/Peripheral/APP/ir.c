@@ -91,6 +91,7 @@ void Check_IrBuf(void){ //
                 PRINT("ir Matched timeout\r\n");
                 #endif
                 Dev.errorCode.bit.irLearn = 1;
+                status = IR_MATCH_TIMEOUT;
             }
         }else{
 
@@ -100,7 +101,7 @@ void Check_IrBuf(void){ //
             Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].cmd[0] = 0x30;
             Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].cmd[1] = 0x03;
             memcpy(Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].cmd+2,IrBuf.rxbuf+1,229);
-            Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].type = Dev.learnNum%MAX_IR_LEARNNUM;
+            Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].type = 0;
             Dev.learnNum++;
             if(Dev.learnNum > MAX_IR_LEARNNUM){
                 Dev.learnNum = MAX_IR_LEARNNUM;
@@ -110,7 +111,15 @@ void Check_IrBuf(void){ //
                 // PrintHex("ir Learning rx",IrBuf.rxbuf,IrBuf.rxlen);
             #endif
             Dev.errorCode.bit.irLearn = 0;
+            status = IR_MATCH_OK;
         }
+        uint8_t payload[5];
+        payload[0] = PID_IR_LEARN;
+        payload[1] = status;
+        payload[2] = irType & 0xFF;
+        payload[3] = (irType >> 8) & 0xFF;
+        payload[4] = Dev.irIdx;
+        SendBtResponse(BT_CMD_NOTIFY, payload, 5);
     }
     #elif (IR_MODULE == xx)
     #endif
@@ -199,3 +208,4 @@ void Ir_cmd(IR_CMD_t cmd){
     #endif
     IrBuf.isFinish = 1;
 }
+

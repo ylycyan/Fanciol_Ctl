@@ -125,30 +125,106 @@ typedef enum{
 
 
 #define MAX_IR_LEARNNUM 10
-#define MAX_ACTIONNUM 10
+#define MAX_RULES       10
 
 //红外学习结构体,一般空调红外控制包不超过230byte
 typedef struct{  
-    uint8_t enable:1; //改通道是否启用
-    uint8_t type:7; //红外组合命令(1:制冷开机 2:制热开机 3:关机 )
+    uint8_t enable:1; //该通道是否学习到数据
+    uint8_t type:7; //红外组合命令(0：无匹配操作 1:开机 2:关机 3:制冷开机 4:制热开机)
     uint8_t cmd[256];
 }IR_LEARNING_t;
 extern IRBUF_t IrBuf;
 
-//本地指令组(只在本地执行,定时执行对应动作,不上云),lse自校准待确认，常规10ppm晶振月误差大概(30*24*3600 *10/1000000 = 26s)
-typedef struct{  
-    uint32_t actionTime; //操作执行时间
-    uint32_t stopTime; //指令组停止时间
-    uint8_t l_week; //按工作日启用 bit[1~7]对应周一~周日
-    uint16_t l_month; //按月启用 bit[0~11] -> 1~12MM
-    union{
-        uint32_t u16Val[2];
-        uint8_t onOff:1;
-        uint8_t mode:3;
-        uint8_t wind:2;
-        uint8_t temSet;
-    }Act; //具体操作
-}DEV_ACTION_T;
+//本地规则引擎 - 触发类型(3bit, 8种)
+typedef enum {
+    TRIG_NONE        = 0, // 无触发(禁用)
+    TRIG_TIME        = 1, // 按时间触发(每日定时, 时:分)
+    TRIG_TEMP_ABOVE  = 2, // 环境温度 > 阈值
+    TRIG_TEMP_BELOW  = 3, // 环境温度 < 阈值
+    TRIG_POWER_ABOVE = 4, // 实时功率 > 阈值(单位:W)
+    TRIG_RUNTIME     = 5, // 累计运行时间 > 阈值(单位:分钟)
+    TRIG_ENERGY      = 6, // 累计电量 > 阈值(单位:0.1kWh)
+    TRIG_COMBINED    = 7, // 时间窗口 + 条件同时满足(AND)
+} TrigType_t;
+
+//本地规则引擎 - 动作类型(2bit, 4种)
+typedef enum {
+    ACT_TYPE_IR     = 0, // 发送红外指令空调控制(开关/模式/风速/温度)
+    ACT_TYPE_LEARN  = 1, // 发送学习的红外码
+    // ACT_TYPE_REPORT = 2, // 立即上报数据(无空调操作)
+} ActType_t;
+
+//本地规则引擎 - ctrl控制字位域
+typedef struct {
+    uint8_t enable    : 1;  // 规则使能 0:禁用 1:启用
+    uint8_t trig_type : 3;  // TrigType_t 触发类型(0~7)
+    uint8_t executed  : 1;  // 已执行标志(单次规则防重复, 每天0点自动清除)
+    uint8_t reserved  : 3;  // 保留
+} RuleCtrl_t;
+
+//本地规则引擎 - 16字节紧凑规则结构体(精确对齐, 无填充)
+typedef struct {
+    // === Byte 0: 控制字 (位域) ===
+    RuleCtrl_t ctrl;
+
+    // === Byte 1: 调度/条件标志 ===
+    uint8_t flags;
+    // 时间触发: bit[0~6] = 周日~周六(1=启用), bit7 = 每月标志(1=忽略月份)
+    // 条件触发: bit0 = 锁存(触发后保持直到手动复位)
+    //           bit1 = 反向动作(条件不满足时执行, 即"回差恢复")
+
+    // === Byte 2~3: 触发主值 (uint16, 按trig_type复用) ===
+    uint16_t trig_val;
+    // TRIG_TIME:        自00:00起的分钟数(0~1439, 精度1分钟)
+    // TRIG_TEMP_ABOVE/BELOW: 温度×10 (200~350 = 20.0°C~35.0°C)
+    // TRIG_POWER_ABOVE: 功率×10 (0~65535 = 0~6553.5W)
+    // TRIG_RUNTIME:     累计分钟数(0~65535)
+    // TRIG_ENERGY:      累计0.1kWh(0~6553.5)
+    // TRIG_COMBINED:    起始时间(分钟)
+
+    // === Byte 4~5: 触发副值 (uint16) ===
+    uint16_t trig_val2;
+    // TRIG_TIME:        停止时间分钟(0=不停止, 0xFFFF=单点触发)
+    // TRIG_TEMP/POWER:  回差值(×10, 防抖用, 如回差5=0.5°C)
+    // TRIG_RUNTIME:     0
+    // TRIG_ENERGY:      0
+    // TRIG_COMBINED:    停止时间分钟
+
+    // === Byte 6~7: 调度扩展/阈值上限 (uint16) ===
+    uint16_t sched;
+    // TRIG_TIME:        月调度 bit[0~11] = 1~12月(1=启用), 全0=每月
+    // TRIG_COMBINED:    月调度(同上)
+    // TRIG_TEMP_ABOVE:  温度上限×10(区间触发时用, 0=单阈值)
+    // TRIG_POWER_ABOVE: 功率上限×10(区间触发时用, 0=单阈值)
+    // TRIG_TEMP_BELOW/其他: 条件持续时间(秒), 0=立即触发
+
+    // === Byte 8~15: 动作载荷 (union, 8字节) ===
+    union {
+        uint8_t raw[8];
+        struct {                            // ACT_AC: 空调控制
+            uint8_t onOff   : 1;            // 0:关 1:开 (OnOff_t)
+            uint8_t mode    : 3;            // Mode_t
+            uint8_t wind    : 2;            // Wind_t
+            uint8_t sweep   : 1;            // 扫风 0:关 1:开
+            uint8_t sleep   : 1;            // 睡眠 0:关 1:开
+            uint8_t temSet;                 // 设定温度(整数, 16~32)
+            uint8_t reserved[6];            // 保留扩展
+        } ir;
+        struct {                            // ACT_LEARN: 学习码
+            uint8_t learnIdx;               // 学习码索引(0~9)
+            uint8_t reserved[7];
+        } learn;
+    } act;
+} DEV_RULE_T;                               // 精确16字节, 无填充
+
+//本地规则引擎 - 计量数据结构体(12字节)
+typedef struct {
+    uint32_t energy_wh;      // 累计电量 (0.1kWh, 最大6553.5)
+    uint32_t run_minutes;    // 累计运行时间 (分钟, 最大~45天)
+    uint16_t onoff_count;    // 开关机次数 (0~65535)
+    uint16_t fault_count;    // 故障次数 (0~65535)
+    uint32_t last_save_ts;   // 上次保存时间戳(秒)
+} DEV_METER_T;              // 12字节
 
 //设备结构体,存入DataFlash,掉电保存
 typedef struct{
@@ -162,11 +238,13 @@ typedef struct{
     uint16_t gatewayId; //网关Id
     uint8_t scanCycle; //数据上报周期
 
+    ActType_t irActType; // 动作类型(0~2) 0:红外控制 1:红外学习控制 //2:上报数据
     uint8_t irIdx; // 空调号索引(83),对应g_arc_info中的空调品牌
     uint16_t irType; // 空调类型(<200),对应g_arc_info中各品牌的指令下标
     uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
-    DEV_ACTION_T actions[MAX_ACTIONNUM];  //本地指令组(只在本地执行,定时执行对应动作,不上云)
+    DEV_RULE_T    rules[MAX_RULES];       //本地规则引擎(定时/条件触发/计量,不上云, 160字节)
+    DEV_METER_T   meter;                  //计量数据(12字节)
     //上报数据
     OnOff_t onOff; // 空调开关状态,0:关 1:开
     float tem; // 环境温度
@@ -264,6 +342,16 @@ extern int ChkCrc(uint8_t *buf, uint16_t len);
 extern void Lora_Pro(void);
 extern void ADC_Pro(void);
 extern void LED_Pro(void);
+extern void Rule_Pro(void);
+extern void Rule_Init(void);
+extern void Rule_DailyReset(void);
+extern void Rule_ResetOne(uint8_t index);
+extern const DEV_RULE_T* Rule_Get(uint8_t index);
+extern void Rule_Set(uint8_t index, const DEV_RULE_T *rule);
+extern void Rule_Clear(uint8_t index);
+extern void Meter_Update(uint32_t dt_sec);
+extern void Meter_Save(void);
+extern void Meter_Reset(void);
 void LED_GREEN_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 void LED_RED_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 void LED_BLUE_BLINK(bool IsBlinking, uint32_t BlinkInterval);
