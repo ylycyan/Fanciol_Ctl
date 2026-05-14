@@ -191,7 +191,7 @@ static void Rule_Execute(DEV_RULE_T *r)
     }
 
     PRINT("[Rule] exec rule trig=%d act=%d\r\n",
-          r->ctrl.trig_type, act_type);
+          r->ctrl.trig_type, Dev.irActType);
 }
 
 /* ------------------------------------------------------------------ */

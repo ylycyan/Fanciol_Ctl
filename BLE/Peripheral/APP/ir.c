@@ -4,6 +4,7 @@
 #include "peripheral.h"
 #include "gattprofile.h"
 IRBUF_t IrBuf = {0};
+uint8_t IrLearnChannel = 0; //当前正在学习的通道索引 (0-9)
 
 #define IR_MATCH_OK 0x00
 #define IR_MATCH_FAIL 0x01
@@ -85,41 +86,38 @@ void Check_IrBuf(void){ //
         #if _IR_INFO_
             PrintHex("ir Learning rx",IrBuf.rxbuf,IrBuf.rxlen);
         #endif
+        uint8_t status = IR_MATCH_ERROR;
+        uint8_t ch = IrLearnChannel;
         if(IrBuf.rxlen == 3){  //20s自动超时返回
             if((IrBuf.rxbuf[0] == 0x88) && (IrBuf.rxbuf[1] == 0x99) && (IrBuf.rxbuf[2] == 0xAA)){
                 #if _IR_INFO_
-                PRINT("ir Matched timeout\r\n");
+                PRINT("ir Learn timeout\r\n");
                 #endif
                 Dev.errorCode.bit.irLearn = 1;
                 status = IR_MATCH_TIMEOUT;
             }
-        }else{
-
-            //学习数据校验? 
-            //只需要把通过发送 30 20 50 学习命令返回的 230 个字节学习数据第一个字节 00 改为 30 03 再发送给芯片即可控制设备
-            //@todo 方法待优化
-            Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].cmd[0] = 0x30;
-            Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].cmd[1] = 0x03;
-            memcpy(Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].cmd+2,IrBuf.rxbuf+1,229);
-            Dev.learnCode[Dev.learnNum%MAX_IR_LEARNNUM].type = 0;
-            Dev.learnNum++;
-            if(Dev.learnNum > MAX_IR_LEARNNUM){
-                Dev.learnNum = MAX_IR_LEARNNUM;
+        }else if(IrBuf.rxlen > 0 && ch < MAX_IR_LEARNNUM){
+            //学习数据: 首字节00改为30 03，后面229字节拷贝
+            Dev.learnCode[ch].cmd[0] = 0x30;
+            Dev.learnCode[ch].cmd[1] = 0x03;
+            memcpy(Dev.learnCode[ch].cmd + 2, IrBuf.rxbuf + 1, 229);
+            Dev.learnCode[ch].enable = 1;
+            if(ch >= Dev.learnNum){
+                Dev.learnNum = ch + 1;
+                if(Dev.learnNum > MAX_IR_LEARNNUM) Dev.learnNum = MAX_IR_LEARNNUM;
             }
-            #if _IR_INFO_
-                PRINT("dev learnNum=%d\r\n",Dev.learnNum);
-                // PrintHex("ir Learning rx",IrBuf.rxbuf,IrBuf.rxlen);
-            #endif
             Dev.errorCode.bit.irLearn = 0;
             status = IR_MATCH_OK;
+            #if _IR_INFO_
+                PRINT("ir Learn ch[%d] ok, learnNum=%d\r\n", ch, Dev.learnNum);
+            #endif
         }
-        uint8_t payload[5];
+        //发送学习结果通知: PID_IR_LEARN + channel + status
+        uint8_t payload[3];
         payload[0] = PID_IR_LEARN;
-        payload[1] = status;
-        payload[2] = irType & 0xFF;
-        payload[3] = (irType >> 8) & 0xFF;
-        payload[4] = Dev.irIdx;
-        SendBtResponse(BT_CMD_NOTIFY, payload, 5);
+        payload[1] = ch;
+        payload[2] = status;
+        SendBtResponse(BT_CMD_NOTIFY, payload, 3);
     }
     #elif (IR_MODULE == xx)
     #endif
@@ -206,6 +204,36 @@ void Ir_cmd(IR_CMD_t cmd){
         }
     #elif (IR_MODULE == xx)
     #endif
+    IrBuf.isFinish = 1;
+}
+
+//发送学习到的红外码
+//ch: 通道索引 (0-9)
+void Ir_LearnSend(uint8_t ch){
+    if(ch >= MAX_IR_LEARNNUM || !Dev.learnCode[ch].enable){
+        PRINT("Error: learnCode[%d] not ready\r\n", ch);
+        return;
+    }
+    int16_t timeout = 100, temp = 0;
+    IrBuf.isFinish = 0;
+    IrBuf.type = IR_TYPE_NORMAL;
+    IrBuf.rxlen = 0;
+    //直接发送学习到的码: cmd[0]=0x30, cmd[1]=0x03, 后面是229字节数据
+    UART3_SendString(Dev.learnCode[ch].cmd, 231);
+    #if _IR_INFO_
+        PrintHex("ir learn send", Dev.learnCode[ch].cmd, 10);
+    #endif
+    while(timeout > 0){
+        if(IrBuf.rxlen > 0){
+            if(IrBuf.rxlen == temp){
+                break;
+            }else{
+                temp = IrBuf.rxlen;
+            }
+        }
+        DelayMs(20);
+        timeout -= 20;
+    }
     IrBuf.isFinish = 1;
 }
 

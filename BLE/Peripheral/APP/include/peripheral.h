@@ -62,7 +62,8 @@ typedef enum {
     PID_SYS_PARAMS    = 0x13,
     PID_SYS_CTRL      = 0x14,
     PID_IR_MATCH      = 0x15, // 红外匹配结果 (u8: 0失败 1成功 2超时 + u16匹配到的类型 + u8索引)
-    PID_IR_LEARN      = 0x16, // 红外学习结果 (u8: 0失败 1成功 2超时 + u16学习到的类型 + u8索引)
+    PID_IR_LEARN      = 0x16, // 红外学习控制 WRITE: [ch(1)] NOTIFY: [ch(1), status(1)]
+    PID_IR_LEARN_LIST = 0x17, // 学习通道列表 READ → 返回10字节 [ch0~ch9的enable]
     PID_ALL_STATE     = 0xF0
 } BT_PID_Type;
 
@@ -70,9 +71,10 @@ typedef enum {
 typedef enum {
     ACT_RESET         = 0x01, // 复位设备
     ACT_IR_MATCH      = 0x02, // 红外匹配
-    ACT_IR_LEARN      = 0x03, // 红外学习
-    ACT_IR_CMD       = 0x04, // 红外指令发送
+    ACT_IR_LEARN      = 0x03, // 红外学习启动
+    ACT_IR_CMD       = 0x04, // 红外指令发送(内码)
     ACT_SAVE_PARAMS   = 0x05, // 保存参数到Flash
+    ACT_IR_LEARN_SEND = 0x06, // 红外学习码发送 [ch(1)]
 } BT_Action_Type;
 
 /*********************************************************************

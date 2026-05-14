@@ -128,11 +128,11 @@ typedef enum{
 #define MAX_RULES       10
 
 //红外学习结构体,一般空调红外控制包不超过230byte
+//通道固定含义: 0开机 1关机 2制冷 3制热 4除湿 5送风 6温度+ 7温度- 8风速 9自定义
 typedef struct{  
-    uint8_t enable:1; //该通道是否学习到数据
-    uint8_t type:7; //红外组合命令(0：无匹配操作 1:开机 2:关机 3:制冷开机 4:制热开机)
-    uint8_t cmd[256];
-}IR_LEARNING_t;
+    uint8_t enable; //是否有效 (0=空, 1=已学习)
+    uint8_t cmd[256]; //学习到的红外码数据
+}IR_LEARNING_t; //约257字节/通道, 10通道=2570字节
 extern IRBUF_t IrBuf;
 
 //本地规则引擎 - 触发类型(3bit, 8种)
@@ -334,6 +334,10 @@ extern void PrintHex(char *msg, uint8_t *buffer, uint16_t size);
 extern void AddCrc(uint8_t *buf, uint16_t len);
 
 extern int ChkCrc(uint8_t *buf, uint16_t len);
+
+//红外函数
+extern void Ir_LearnSend(uint8_t ch);
+extern uint8_t IrLearnChannel;
 
 #define BITGET(val, bit)      (((val) >> (bit)) & 1)              // 获取 val 的第 bit 位（0 或 1）
 #define BITSET(val, bit)      ((val) |= (1U << (bit)))            // 将 val 的第 bit 位置 1

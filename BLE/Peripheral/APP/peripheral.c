@@ -795,25 +795,15 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 break;
                             case PID_IR_CFG:
                                 Dev.irActType = pData[i+0];
-                                switch (Dev.irActType)
-                                {
-                                case ACT_TYPE_IR:
-                                    /* code */
+                                if(Dev.irActType == ACT_TYPE_IR) {
                                     if(i + 3 < dataLen) {
                                         Dev.irType = (pData[i+1] | (pData[i+2]<<8));
                                         Dev.irIdx = pData[i+3];
                                         i += 4;
                                     }
-                                case ACT_TYPE_LEARN:
-                                    if(i + 1 < dataLen) {
-                                        Dev.irType = (pData[i+1] | (pData[i+2]<<8));
-                                        Dev.irIdx = pData[i+3];
-                                        i += 4;
-                                    }
-                                    break;
-                                
-                                default:
-                                    break;
+                                }else if(Dev.irActType == ACT_TYPE_LEARN) {
+                                    //学习模式只需要irActType，通道由PID_IR_LEARN控制
+                                    i += 1;
                                 }
                                 SaveDevInfo(2);//2s后保存Dev数据
                                 break;
@@ -909,6 +899,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 rspBuf[rspLen++] = Dev.irType & 0xFF;
                                 rspBuf[rspLen++] = (Dev.irType >> 8) & 0xFF;
                                 rspBuf[rspLen++] = Dev.irIdx;
+                                rspBuf[rspLen++] = Dev.irActType;
                                 rspBuf[rspLen++] = Dev.mode;
                                 rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
                                 rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;
@@ -919,6 +910,12 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 rspBuf[rspLen++] = (Dev.runTime >> 8) & 0xFF;
                                 rspBuf[rspLen++] = Dev.loadPower & 0xFF;
                                 rspBuf[rspLen++] = (Dev.loadPower >> 8) & 0xFF;
+                                break;
+                            case PID_IR_LEARN_LIST:
+                                //返回10个学习通道的enable状态
+                                for(uint8_t ch = 0; ch < MAX_IR_LEARNNUM; ch++){
+                                    rspBuf[rspLen++] = Dev.learnCode[ch].enable;
+                                }
                                 break;
                         }
                     }
@@ -962,9 +959,10 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                             SendBtResponse(BT_CMD_ACK, NULL, 0);
                             break;
                         case ACT_IR_LEARN:
-                            // ... 逻辑同旧代码 ...
-                            Dev.errorCode.bit.irMatch = 0;
-                            tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
+                            //启动红外学习: [ACT][channel_idx]
+                            Dev.errorCode.bit.irLearn = 0;
+                            IrLearnChannel = (dataLen > 1) ? pData[1] : 0;
+                            if(IrLearnChannel >= MAX_IR_LEARNNUM) IrLearnChannel = 0;
                             IrBuf.rxlen = 0;
                             IrBuf.isFinish = 0;
                             IrBuf.type = IR_TYPE_LEARNing;
@@ -972,7 +970,19 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                             IrBuf.txbuf[1] = 0x20; 
                             IrBuf.txbuf[2] = 0x50;
                             UART3_SendString(IrBuf.txbuf, 3);
+                            #if _IR_INFO_
+                                PRINT("ir Learn start ch[%d]\r\n", IrLearnChannel);
+                            #endif
                             SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            break;
+                        case ACT_IR_LEARN_SEND:
+                            //发送学习码: [ACT][channel_idx]
+                            if(dataLen > 1 && pData[1] < MAX_IR_LEARNNUM){
+                                Ir_LearnSend(pData[1]);
+                                SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            }else{
+                                SendBtResponse(BT_CMD_ERROR, (uint8_t*)"INV_CH", 6);
+                            }
                             break;
                         case ACT_SAVE_PARAMS:
                             // SaveDevInfo(1); 
