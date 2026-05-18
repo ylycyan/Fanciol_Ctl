@@ -73,16 +73,16 @@ v7:故障码(u16-D0~15:通信模块故障,红外模块,状态检测,时间参数
 */ 
 
 /* Infrared */
-#define IRBUFSIZE 128
+#define IRBUFSIZE 256
 typedef enum{
     IR_TYPE_NORMAL = 0,
     IR_TYPE_MATCH  = 1,
     IR_TYPE_LEARNing  = 2
 }IR_CMD_TYPE_t;
 typedef struct{
-    uint8_t rxlen:7; 
+    uint8_t rxlen; 
     uint8_t isFinish:1;
-    IR_CMD_TYPE_t type;
+    IR_CMD_TYPE_t type:7;
     uint8_t rxbuf[IRBUFSIZE];
     uint8_t txbuf[IRBUFSIZE];
 }IRBUF_t; //uart3 红外通讯数据包
