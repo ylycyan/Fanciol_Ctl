@@ -124,9 +124,10 @@ void Check_IrBuf(void){ //
 }
 
 void IR_Init(void){ //uart3
-    GPIOA_SetBits(GPIO_Pin_5);
-    GPIOA_ModeCfg(GPIO_Pin_4, GPIO_ModeIN_PU);      // RXD-配置上拉输入
-    GPIOA_ModeCfg(GPIO_Pin_5, GPIO_ModeOut_PP_5mA); // TXD-配置推挽输出，注意先让IO口输出高电平
+    GPIOPinRemap(ENABLE,RB_PIN_UART3);
+    GPIOB_SetBits(bTXD3_);
+    GPIOB_ModeCfg(bRXD3_, GPIO_ModeIN_PU);      // RXD-配置上拉输入
+    GPIOB_ModeCfg(bTXD3_, GPIO_ModeOut_PP_5mA); // TXD-配置推挽输出，注意先让IO口输出高电平
     UART3_DefInit();
     UART3_INTCfg(ENABLE, RB_IER_RECV_RDY | RB_IER_LINE_STAT);
     PFIC_EnableIRQ(UART3_IRQn);

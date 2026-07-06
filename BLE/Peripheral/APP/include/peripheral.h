@@ -64,6 +64,7 @@ typedef enum {
     PID_IR_MATCH      = 0x15, // 红外匹配结果 (u8: 0失败 1成功 2超时 + u16匹配到的类型 + u8索引)
     PID_IR_LEARN      = 0x16, // 红外学习控制 WRITE: [ch(1)] NOTIFY: [ch(1), status(1)]
     PID_IR_LEARN_LIST = 0x17, // 学习通道列表 READ → 返回10字节 [ch0~ch9的enable]
+    PID_RELAY_CFG     = 0x18, // 中继配置 R/W [isRelay(1)][hopCount(1)][parentRelayId(2)][childCount(1)][childBitmap(2)]
     PID_ALL_STATE     = 0xF0
 } BT_PID_Type;
 

@@ -46,14 +46,12 @@ void Lora_Spi_Init(void)
     // GPIOA_ModeCfg(GPIO_Pin_15, GPIO_ModeIN_PU); // PA2:MISO - Removed to match official example
     SPI1_MasterDefInit();
     R8_SPI1_CLOCK_DIV = 8; // Reduce SPI speed to safe margin (60MHz/8 = 7.5MHz)
-    //PB17 BUSY PB8 RESET PB9 POWEN
-    GPIOB_ModeCfg(GPIO_Pin_17,GPIO_ModeIN_PU);
-    GPIOB_ModeCfg(GPIO_Pin_8 | GPIO_Pin_9 ,GPIO_ModeOut_PP_5mA);
-    GPIOB_SetBits(GPIO_Pin_8); //rst
-    GPIOB_SetBits(GPIO_Pin_9); //power
+    //PB12 BUSY PB17 RESET PB13 POWEN
+    GPIOB_ModeCfg(GPIO_Pin_12,GPIO_ModeIN_PU);
+    GPIOB_ModeCfg(GPIO_Pin_17 | GPIO_Pin_13 ,GPIO_ModeOut_PP_5mA);
+    GPIOB_SetBits(GPIO_Pin_17); //rst
+    GPIOB_SetBits(GPIO_Pin_13); //power
 }
-
-#define Rtc_GetTimestamp() 0
 
 static int8_t Rssi = 0;
 static SX126x_t SX126x;
@@ -68,7 +66,7 @@ void Lora_WaitOnBusy( void ) //高电平表示忙
     if(Dev.errorCode.bit.lora){ //存在busy情况,视为异常,防止长时间堵塞阻碍其他功能运行.
         return;
     }
-    while( (GPIOB_ReadPortPin(GPIO_Pin_17) != 0) && (timeout > 0) ){
+    while( (GPIOB_ReadPortPin(GPIO_Pin_12) != 0) && (timeout > 0) ){
         timeout--;
         mDelaymS(1);
     }
@@ -88,9 +86,9 @@ void Lora_Reset( ) {
     // GPIOA_SetBits(Lora_Enable_Pin);
     // mDelaymS(50);
     //通过引脚复位Lora
-    GPIOB_ResetBits(GPIO_Pin_8);
+    GPIOB_ResetBits(GPIO_Pin_17);
     mDelaymS(20); //Delay_Ms(20);
-    GPIOB_SetBits(GPIO_Pin_8);
+    GPIOB_SetBits(GPIO_Pin_17);
     Lora_WaitOnBusy();
 }
 /**
@@ -625,7 +623,6 @@ void Lora_ClearIrqStatus( uint16_t irq )
  * @param bw 带宽。
  */
 uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
-    uint8_t buf[8] = {0};
     Dev.errorCode.bit.lora = 0;
 	Lora_Spi_Init();
 	Lora_Reset( );
@@ -699,7 +696,7 @@ uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
         PRINT("Error: LoRa module not responding (Status=0x%02x). Check wiring.\n", status.Value);
         return 1;
     } else {
-        PRINT("LoRa Init Verified. Status=0x%02x\n", status.Value);
+        PRINT("LoRa Init Verified. Status = 0x%02x\n", status.Value);
         return 0;
     }
 }
@@ -711,8 +708,7 @@ uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
   *  @param ms   发送超时检测
   *  @retval 1:发送失败 0：发送成功
   */
-bool Lora_Tx(uint8_t *data, uint8_t len){
-	uint16_t irqRegs = 0;
+void Lora_Tx(uint8_t *data, uint8_t len){
 	Lora_ClearIrqStatus(IRQ_RADIO_ALL);
 	Lora_SetDioIrqParams( IRQ_TX_DONE);
 	SX126x.PacketParams.Params.LoRa.PayloadLength = len;
@@ -757,11 +753,11 @@ bool Lora_TxRequest(uint8_t *data, uint8_t len, uint32_t ms){
 		mDelaymS(20);
 	}
 	if(timeoutMs <= 0){
-		PRINT("\t#Tx timeout(%ld ms) for %d bytes @ %ld.\n", ms, len, Rtc_GetTimestamp());
+		PRINT("\t#Tx timeout(%ld ms) for %d bytes .\n", ms, len);
 		Lora_Listening();
 		return false;
 	}else{
-		//PRINT("\tTx(in %ld ms) for %d bytes @ %ld.\n",(ms-timeoutMs), len, Rtc_GetTimestamp());
+		//PRINT("\tTx(in %ld ms) for %d bytes .\n",(ms-timeoutMs), len);
 		Lora_Listening();
 		return true;
 	}
@@ -795,10 +791,10 @@ void Lora_Rx(uint8_t *data, uint8_t *len, uint32_t ms){
 		mDelaymS(20);
 	}
 	if (*len == 0) {
-		PRINT("\tRx timeout(%ld ms) @ %ld.\n", ms, Rtc_GetTimestamp());
+		PRINT("\tRx timeout(%ld ms).\n", ms);
 		Lora_Listening();
 	} else {
-		//PRINT("\tRx(%d bytes in %ld ms) @ %ld.\n", *len, (ms-timeoutMs), Rtc_GetTimestamp());
+		//PRINT("\tRx(%d bytes in %ld ms).\n", *len, (ms-timeoutMs));
 		Lora_Listening();
 	}
 }
@@ -832,9 +828,9 @@ void Lora_RxRequest(uint8_t *data, uint8_t *len, uint32_t ms){
 		mDelaymS(20);
 	}
 	if (*len == 0) {
-		PRINT("\tRx timeout(%ld ms) @ %ld.\n", ms, Rtc_GetTimestamp());
+		PRINT("\tRx timeout(%ld ms).\n", ms);
 	} else {
-		//PRINT("\tRx(%d bytes in %ld ms) @ %ld.\n", *len, (ms-timeoutMs), Rtc_GetTimestamp());
+		//PRINT("\tRx(%d bytes in %ld ms).\n", *len, (ms-timeoutMs));
 	}
 	Lora_Listening();
 }

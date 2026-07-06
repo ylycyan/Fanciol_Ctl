@@ -60,7 +60,6 @@ uint8_t TestBuf[1024];
 int main(void)
 {
     uint16_t i;
-    uint8_t  s;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
     //timer0 init
     TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 ?10ms???????

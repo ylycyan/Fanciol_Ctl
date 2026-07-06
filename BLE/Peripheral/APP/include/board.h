@@ -102,6 +102,13 @@ typedef enum{
     Status_CheckData = 5, // 检查数据是否发送完成
 }LoraStatus_t;
 
+// LoRa 多跳中继角色
+typedef enum {
+    LINK_DIRECT = 0,   // 直连节点 (与网关直接通信)
+    LINK_RELAY   = 1,  // 中继节点 (管理自己的空调 + 转发子节点)
+    LINK_CHILD   = 2,  // 中继子节点 (通过中继与网关通信)
+} tLinkRole;
+
 typedef enum{
     Mode_Auto = 0, // 自动
     Mode_Cool = 1, // 制冷
@@ -126,6 +133,15 @@ typedef enum{
 
 #define MAX_IR_LEARNNUM 10
 #define MAX_RULES       10
+#define MAX_CHILD_NODES 8  // 中继节点最大子节点数
+
+// 中继子节点信息
+typedef struct {
+    uint16_t nodeId;
+    uint8_t  online;       // 1=本周期有响应, 0=超时
+    uint8_t  lastRssi;
+    uint32_t lastSeenTs;
+} child_info_t;
 
 //红外学习结构体,一般空调红外控制包不超过230byte
 //通道固定含义: 0开机 1关机 2制冷 3制热 4除湿 5送风 6温度+ 7温度- 8风速 9自定义
@@ -254,6 +270,9 @@ typedef struct{
     uint16_t runTime; // 空调运行时间,单位:分钟
     uint16_t loadPower; // 负载功率,单位:W*10
     uint8_t mode; // 控制模式(0:本地 1:远程)
+    // LoRa 多跳中继角色 (BLE写入, 掉电保存)
+    uint8_t linkRole;       // tLinkRole, 默认 0=直连
+    uint16_t parentRelayId; // 上级中继节点ID (仅 LINK_CHILD 有效, 其他为 0)
     union{  // 故障码(0:正常 \\ 异常>> bit 0:lora离线 1:红外学习异常 2：红外匹配异常(未匹配设备或找不到索引或索引错误[或无反馈?]) 3:ad转换异常 4:功率转换异常 5:flash操作异常)
         uint16_t u16Val; 
         struct{
@@ -272,10 +291,10 @@ extern t_dev Dev;
 extern uint32_t LocalTimestamp;
 //led 
 // #define LED_PORT GPIOB
-#define LED_RED_PIN     GPIO_Pin_3
-#define LED_GREEN_PIN   GPIO_Pin_2
-#define LED_BLUE_PIN    GPIO_Pin_1
-#define LED_WHITE_PIN   GPIO_Pin_0
+#define LED_RED_PIN     GPIO_Pin_6
+#define LED_GREEN_PIN   GPIO_Pin_15
+#define LED_BLUE_PIN    GPIO_Pin_0
+#define LED_WHITE_PIN   GPIO_Pin_16
 static inline void Led_Init(void){
     GPIOB_ResetBits(LED_RED_PIN | LED_GREEN_PIN | LED_WHITE_PIN | LED_BLUE_PIN);
     GPIOB_ModeCfg(LED_RED_PIN | LED_GREEN_PIN | LED_WHITE_PIN | LED_BLUE_PIN,GPIO_ModeOut_PP_5mA);
@@ -294,7 +313,7 @@ static inline void Led_Init(void){
 #define BT_DEFAULT_DESIRED_SLAVE_LATENCY        0
 #define BT_DEFAULT_DESIRED_CONN_TIMEOUT         1000
 #define BT_COMPANY_ID                           0x07D7  //蓝牙厂商 ID
-#define BT_DEVICE_NAME                          "matter lights" //设备名
+#define BT_DEVICE_NAME                          "ClimaSync" //设备名
 // #define BT_DEFAULT_MAC_ADDR                     {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02} //BLE MAC 地址 默认由芯片地址随机生成
 
 //蓝牙协议
@@ -318,14 +337,14 @@ typedef enum{
     eBtGet = 1, //查询指令
 }BT_SET_GET_t;
 
-//ble帧结构
-typedef struct{
-    uint8_t len; //数据长度
-    uint8_t cmd; 
-    uint8_t dat[128];
-    uint8_t checksum; 
-}BT_FRAME_T;
-static BT_FRAME_T BTFrame;
+// //ble帧结构
+// typedef struct{
+//     uint8_t len; //数据长度
+//     uint8_t cmd; 
+//     uint8_t dat[128];
+//     uint8_t checksum; 
+// }BT_FRAME_T;
+// static BT_FRAME_T BTFrame;
 
 //uilt functions
 extern void PrintHex(char *msg, uint8_t *buffer, uint16_t size);
@@ -344,6 +363,8 @@ extern uint8_t IrLearnChannel;
 #define BITCLR(val, bit)      ((val) &= ~(1U << (bit)))           // 将 val 的第 bit 位清 0
 #define BITTOG(val, bit)   ((val) ^= (1U << (bit)))            // 将 val 的第 bit 位取反
 extern void Lora_Pro(void);
+extern uint8_t Relay_GetChildCount(void);
+extern uint16_t Relay_GetChildBitmap(void);
 extern void ADC_Pro(void);
 extern void LED_Pro(void);
 extern void Rule_Pro(void);

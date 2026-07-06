@@ -1,13 +1,12 @@
 #include "CH58x_common.h"
 #include "board.h"
 #include <math.h>
-#define _DEBUG_AD 0
+#define _DEBUG_AD 1
 const float Rp=10000.0f; //10K
-const float T2 = (273.15f+25.0f);;//T2
+const float T2 = (273.15f+25.0f);//T2
 const float Bx = 3950.0f;//B
 const float Ka = 273.15f;
 void ADC_Init(void){
-
 }
 void ADC_Pro(void){
     static u_int32_t lastSampStamp = 0;
@@ -16,19 +15,19 @@ void ADC_Pro(void){
     }
     WWDG_SetCounter(0);//喂狗
     lastSampStamp = LocalTimestamp;
-    uint16_t caliVal,temp,maxVal,minVal,i;
+    uint16_t caliVal,temp,maxVal = 0,minVal = 0xffff,i;
     uint32_t sum = 0;
     float vol,res,tem;
     #if _DEBUG_AD
-    PRINT("adc start sampling ,@%d\n",LocalTimestamp);
+    PRINT("adc start sampling ,@%ld\n",LocalTimestamp);
     #endif
-    GPIOA_ModeCfg(GPIO_Pin_7, GPIO_ModeIN_Floating);
+    GPIOA_ModeCfg(GPIO_Pin_4, GPIO_ModeIN_Floating);
     ADC_ExtSingleChSampInit(SampleFreq_3_2, ADC_PGA_0);
     caliVal = ADC_DataCalib_Rough(); //获取内部校准值
     #if _DEBUG_AD
     PRINT("Calibration Val:%d\n",caliVal);
     #endif
-    ADC_ChannelCfg(11);
+    ADC_ChannelCfg(0);
     for(i = 0;i < 20;i++){
         WWDG_SetCounter(0);//喂狗
         temp =  ADC_ExcutSingleConver() + caliVal;
@@ -55,6 +54,6 @@ void ADC_Pro(void){
 	tem-=Ka;
     Dev.tem = tem;
     #if _DEBUG_AD
-    PRINT("meanVal = %d ,vol = %d,res = %d,tem = %d\n",sum,(int)(vol*100),(int)res,(int)(tem*100));
+    PRINT("meanVal = %ld ,vol = %ld,res = %ld,tem = %ld\n",sum,(long)(vol*100),(long)res,(long)(tem*100));
     #endif
 }

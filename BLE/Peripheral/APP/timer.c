@@ -39,7 +39,7 @@ void RTC_SetTimestamp(uint32_t timestamp)
     uint16_t min;
     uint16_t sec;
     if ((timestamp < 1672531200u) || (timestamp > 2147483000u)) { //2023-01-01 00:00:00 ~ 2038-01-19 11:03:20
-        PRINT("RTC_SetTimestamp: invalid timestamp %u\r\n", timestamp);
+        PRINT("RTC_SetTimestamp: invalid timestamp %lu\r\n", timestamp);
         return;
     }
     days = timestamp / 86400u;
@@ -79,7 +79,7 @@ void RTC_SetTimestamp(uint32_t timestamp)
     // R8_SAFE_ACCESS_SIG = SAFE_ACCESS_SIG2;
     // R8_CK32K_CONFIG |= RB_CLK_XT32K_PON;
     // R8_SAFE_ACCESS_SIG = 0;
-    PRINT("set ts:%u -> %04u-%02u-%02u %02u:%02u:%02u\r\n",
+    PRINT("set ts:%lu -> %04u-%02u-%02u %02u:%02u:%02u\r\n",
           timestamp, year, mon, day, hour, min, sec);
 
     CH58X_BLEInit();

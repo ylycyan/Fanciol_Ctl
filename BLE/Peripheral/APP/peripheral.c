@@ -818,6 +818,28 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 Timer_Lora = 30000;
                                 SaveDevInfo(2);//2s后保存Dev数据
                                 break;
+                            case PID_RELAY_CFG: // 中继配置
+                                if(i + 2 < dataLen) {
+                                    uint8_t role = pData[i];
+                                    Dev.parentRelayId = (pData[i+1] | (pData[i+2]<<8));
+                                    i += 3;
+                                    // linkRole 直接由上位机写入: 0=直连, 1=中继, 2=子节点
+                                    // 兼容旧 isRelay 协议: 收到 0/1 时按旧逻辑, 其他按新逻辑
+                                    if(role == 0 && Dev.parentRelayId != 0) {
+                                        Dev.linkRole = 2; // 子节点
+                                    } else if(role == 1) {
+                                        Dev.linkRole = 1; // 中继
+                                    } else {
+                                        Dev.linkRole = 0; // 直连
+                                    }
+                                    PRINT("Relay cfg: role=%d parent=%04x\n",
+                                          Dev.linkRole, Dev.parentRelayId);
+                                }
+                                // 触发重新注册
+                                Dev.loraStatus = 1;
+                                Timer_Lora = 30000;
+                                SaveDevInfo(2);
+                                break;
                             default:
                                 break;
                         }
@@ -917,6 +939,18 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                     rspBuf[rspLen++] = Dev.learnCode[ch].enable;
                                 }
                                 break;
+                            case PID_RELAY_CFG: // 中继配置读取
+                                rspBuf[rspLen++] = Dev.linkRole;
+                                rspBuf[rspLen++] = Dev.linkRole; // hopCount = (linkRole==CHILD)?1:0
+                                rspBuf[rspLen++] = Dev.parentRelayId & 0xFF;
+                                rspBuf[rspLen++] = (Dev.parentRelayId >> 8) & 0xFF;
+                                rspBuf[rspLen++] = Relay_GetChildCount();
+                                {
+                                    uint16_t bmp = Relay_GetChildBitmap();
+                                    rspBuf[rspLen++] = bmp & 0xFF;
+                                    rspBuf[rspLen++] = (bmp >> 8) & 0xFF;
+                                }
+                                break;
                         }
                     }
                     SendBtResponse(BT_CMD_NOTIFY, rspBuf, rspLen);
@@ -957,6 +991,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                             IrBuf.txbuf[2] = 0xa0;
                             UART3_SendString(IrBuf.txbuf, 3);
                             SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            PrintHex("ir match ",IrBuf.txbuf,3);
                             break;
                         case ACT_IR_LEARN:
                             //启动红外学习: [ACT][channel_idx]
