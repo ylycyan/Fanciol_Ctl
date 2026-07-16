@@ -26,7 +26,7 @@
 */
 
 #define DATAFLASH_ADDR_OTA      0x7000
-#define DATAFLASH_ADDR_DEV      0x0       
+#define DATAFLASH_ADDR_DEV      0x0000
 // bool Flash_Init(void);
 int Flash_Erase(void);
 int Flash_Write(uint8_t *data, uint32_t len);

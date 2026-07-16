@@ -5,6 +5,8 @@
 #include "include/flash.h"
 #include "gattprofile.h"
 #include "peripheral.h"
+#include "health_v2.h"
+#include "splitac_service_v2.h"
 static volatile uint8_t Flag_20ms = 0;
 static volatile uint8_t Flag_100ms = 0;
 static volatile uint8_t Flag_1s = 0;
@@ -115,6 +117,7 @@ void Period_20ms(void){
     if(Flag_20ms){
         Flag_20ms = 0;
         Lora_Pro();
+        HealthV2_Mark(HEALTH_V2_LORA);
     }
 }
 
@@ -123,15 +126,22 @@ void Period_100ms(void){
     if(Flag_100ms){
         //100ms????
         Flag_100ms = 0;
-        WWDG_Refresh(); //??
         Check_IrBuf();
         Ir_Pro();
+        HealthV2_Mark(HEALTH_V2_IR);
+        if(HealthV2_Tick100ms()) WWDG_Refresh();
         LED_Pro();
         LocalTimestamp = Rtc_GetTimestamp();
         // LED_GREEN(LocalTimestamp % 2);
-        LED_GREEN_BLINK(TRUE, 1000);
-        LED_BLUE_BLINK(TRUE, 500);
-        LED_WHITE_BLINK(TRUE, 200);
+        if(SplitAcV2_IdentifyActive()){
+            LED_GREEN_BLINK(FALSE, 0);
+            LED_BLUE_BLINK(FALSE, 0);
+            LED_WHITE_BLINK(TRUE, 100);
+        }else{
+            LED_GREEN_BLINK(TRUE, 1000);
+            LED_BLUE_BLINK(TRUE, 500);
+            LED_WHITE_BLINK(TRUE, 200);
+        }
         if((Dev.loraStatus >= 4) && (Timer_Lora < LORA_SEC_TO_TICKS(Dev.scanCycle))){
             LED_RED_BLINK(TRUE,300);
         }else{
@@ -146,8 +156,8 @@ void Period_1s(void){
         //1s????
         Flag_1s = 0;
 
-        WWDG_Refresh(); //??
         Flash_Poll();
+        HealthV2_Mark(HEALTH_V2_FLASH | HEALTH_V2_PERIODIC);
         ADC_Pro();
         Rule_Pro();       //规则引擎: 每秒评估一次触发条件
         Meter_Update(1);  //计量更新: 累计运行时间和电量

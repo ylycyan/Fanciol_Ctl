@@ -27,6 +27,8 @@
 #include "ota.h"
 #include "OTAprofile.h"
 #include "timer.h"
+#include "protocol_v2.h"
+#include "splitac_service_v2.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -102,6 +104,9 @@ uint32_t EraseBlockNum = 0;
 uint32_t EraseBlockCnt = 0;
 
 uint8_t VerifyStatus = 0;
+static v2_ble_reassembler_t v2Reassembler;
+static uint8_t v2Request[V2_MAX_FRAME_SIZE];
+static uint8_t v2Response[V2_MAX_FRAME_SIZE];
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
@@ -174,6 +179,8 @@ static OTAProfileCBs_t Peripheral_OTA_IAPProfileCBs = {
 void Peripheral_Init()
 {
     Peripheral_TaskID = TMOS_ProcessEventRegister(Peripheral_ProcessEvent);
+    V2_ReassemblerReset(&v2Reassembler);
+    SplitAcV2_Init();
 
     {
         uint8_t advLen = peripheralBuildAdvData();
@@ -202,9 +209,9 @@ void Peripheral_Init()
 
     // Setup the GAP Bond Manager
     {
-        uint32_t passkey = 0; // passkey "000000"
+        uint32_t passkey = 0;
         uint8_t  pairMode = GAPBOND_PAIRING_MODE_WAIT_FOR_REQ;
-        uint8_t  mitm = TRUE;
+        uint8_t  mitm = FALSE;
         uint8_t  bonding = TRUE;
         uint8_t  ioCap = GAPBOND_IO_CAP_DISPLAY_ONLY;
         GAPBondMgr_SetParameter(GAPBOND_PERI_DEFAULT_PASSCODE, sizeof(uint32_t), &passkey);
@@ -495,6 +502,8 @@ static void Peripheral_LinkTerminated(gapRoleEvent_t *pEvent)
         peripheralConnList.connTimeout = 0;
         tmos_stop_task(Peripheral_TaskID, SBP_PERIODIC_EVT);
         tmos_stop_task(Peripheral_TaskID, SBP_READ_RSSI_EVT);
+        V2_ReassemblerReset(&v2Reassembler);
+        SplitAcV2_ResetSession();
 
         // Restart advertising
         {
@@ -687,10 +696,36 @@ void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len)
     }
 }
 
+static void SendV2LogicalFrame(const uint8_t *frame, uint16_t frameLen)
+{
+    uint8_t fragment[V2_MAX_FRAGMENT_CHUNK + V2_FRAGMENT_HEADER_SIZE];
+    uint16_t chunkSize = (peripheralMTU > 8u) ? (uint16_t)(peripheralMTU - 8u) : 15u;
+    uint8_t count;
+    uint8_t index;
+    uint16_t seq;
+    if(chunkSize > V2_MAX_FRAGMENT_CHUNK) chunkSize = V2_MAX_FRAGMENT_CHUNK;
+    count = (uint8_t)((frameLen + chunkSize - 1u) / chunkSize);
+    seq = (frameLen >= 5u) ? ((uint16_t)frame[3] | ((uint16_t)frame[4] << 8)) : 0;
+    for(index = 0; index < count; ++index) {
+        uint16_t offset = (uint16_t)index * chunkSize;
+        uint16_t length = (uint16_t)(frameLen - offset);
+        if(length > chunkSize) length = chunkSize;
+        fragment[0] = (index == 0u ? 0x80u : 0u) | (index + 1u == count ? 0x40u : 0u);
+        fragment[1] = index; fragment[2] = count; fragment[3] = (uint8_t)seq; fragment[4] = (uint8_t)(seq >> 8);
+        tmos_memcpy(fragment + 5, frame + offset, length);
+        peripheralCharNotify(SIMPLEPROFILE_CHAR1, fragment, (uint16_t)(length + 5u));
+        if(index + 1u < count) DelayMs(6);
+    }
+}
+
 static uint8_t peripheralBuildAdvData(void)
 {
     uint8_t p = 0;
+    uint8_t uid[8] __attribute__((aligned(4)));
+    uint8_t localName[23];
+    static const char hex[]="0123456789ABCDEF";
     uint8_t nameLen = (uint8_t)strlen(BT_DEVICE_NAME);
+    GET_UNIQUE_ID(uid);
     if(nameLen > 22)
     {
         nameLen = 22;
@@ -705,9 +740,11 @@ static uint8_t peripheralBuildAdvData(void)
     advertData[p++] = LO_UINT16(SIMPLEPROFILE_SERV_UUID);
     advertData[p++] = HI_UINT16(SIMPLEPROFILE_SERV_UUID);
 
+    memcpy(localName,BT_DEVICE_NAME,nameLen);
+    if(nameLen<=17u){localName[nameLen++]='-';localName[nameLen++]=hex[uid[4]>>4];localName[nameLen++]=hex[uid[4]&0x0Fu];localName[nameLen++]=hex[uid[5]>>4];localName[nameLen++]=hex[uid[5]&0x0Fu];}
     advertData[p++] = (uint8_t)(nameLen + 1);
     advertData[p++] = GAP_ADTYPE_LOCAL_NAME_COMPLETE;
-    memcpy(&advertData[p], BT_DEVICE_NAME, nameLen);
+    memcpy(&advertData[p], localName, nameLen);
     p = (uint8_t)(p + nameLen);
 
     return p;
@@ -735,6 +772,19 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
     {
         case SIMPLEPROFILE_CHAR1:
         {
+            if((len >= V2_FRAGMENT_HEADER_SIZE) && ((pValue[0] & 0x80u) || v2Reassembler.active)) {
+                uint16_t requestLen = 0;
+                uint16_t responseLen = 0;
+                uint8_t v2Status = V2_ReassemblerPush(&v2Reassembler, pValue, len, v2Request, sizeof(v2Request), &requestLen);
+                if(v2Status == V2_STATUS_BUSY) break;
+                if(v2Status == V2_STATUS_OK && SplitAcV2_HandleFrame(v2Request, requestLen, v2Response, sizeof(v2Response), &responseLen) == V2_STATUS_OK) {
+                    SendV2LogicalFrame(v2Response, responseLen);
+                } else {
+                    V2_ReassemblerReset(&v2Reassembler);
+                    PRINT("BLE V2 frame rejected: %u\r\n", v2Status);
+                }
+                break;
+            }
             uint8_t rxbuf[64];
             if(len > 64) len = 64;
             tmos_memcpy(rxbuf, pValue, len);
@@ -754,7 +804,6 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
             
             uint8_t rspBuf[60];
             uint8_t rspLen = 0;
-            uint16_t tmpU16;
             int16_t tmpS16;
 
             switch(cmd)
@@ -1072,9 +1121,6 @@ void OTA_IAP_CMDErrDeal(void)
 
 void SwitchImageFlag(uint8_t new_flag)
 {
-    uint16_t i;
-    uint32_t ver_flag;
-
     EEPROM_READ(DATAFLASH_ADDR_OTA, (uint32_t *)&block_buf[0], 4);
 
     EEPROM_ERASE(DATAFLASH_ADDR_OTA, EEPROM_PAGE_SIZE);
@@ -1095,7 +1141,6 @@ void Rec_OTA_IAP_DataDeal(void)
     {
         case CMD_IAP_PROM:
         {
-            uint32_t i;
             uint8_t status;
 
             OpParaDataLen = iap_rec_data.program.len;
@@ -1141,7 +1186,6 @@ void Rec_OTA_IAP_DataDeal(void)
         }
         case CMD_IAP_VERIFY:
         {
-            uint32_t i;
             uint8_t status = 0;
 
             OpParaDataLen = iap_rec_data.verify.len;

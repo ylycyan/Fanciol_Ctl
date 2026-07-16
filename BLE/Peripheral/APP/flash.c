@@ -1,65 +1,53 @@
 #include "board.h"
 #include "CH58x_common.h"
-#include "include/board.h"
-//EEPROM_BLOCK_SIZE 4096
-//@return 0:success !0:fail
-static volatile uint16_t Flash_Delay = 0;
+#include "config_store_v2.h"
+#include "protocol_v2.h"
 
-int Flash_Erase(void){
-    return EEPROM_ERASE(DATAFLASH_ADDR_DEV, EEPROM_BLOCK_SIZE);
-}
-int Flash_Write(uint8_t *data, uint32_t len){
-    return EEPROM_WRITE(DATAFLASH_ADDR_DEV, data, len);
-}
-int Flash_Read(uint8_t *data, uint32_t len){
-    return EEPROM_READ(DATAFLASH_ADDR_DEV, data, len);
-}
+static volatile uint16_t Flash_Delay;
 
-void SaveDevInfo(uint16_t delay){
-    Flash_Delay = delay ? delay : 1; //默认1s后保存Dev数据
-}
+/* Compatibility facade for existing modules. New data is partitioned by concern. */
+int Flash_Erase(void) { return EEPROM_ERASE(V2_CONFIG_SLOT_A, EEPROM_BLOCK_SIZE); }
+int Flash_Write(uint8_t *data, uint32_t len) { return EEPROM_WRITE(V2_CONFIG_SLOT_A, data, len); }
+int Flash_Read(uint8_t *data, uint32_t len) { return EEPROM_READ(V2_CONFIG_SLOT_A, data, len); }
 
-//1s事件处理,主循环中轮询处理
-void Flash_Poll(void){
-    if(Flash_Delay && --Flash_Delay == 0){
-        if(Flash_Erase() || Flash_Write((uint8_t*)&Dev,sizeof(Dev))){
-            Dev.errorCode.bit.flash = 1;
-        }
-        PRINT("SaveDevInfo success.\r\n");
+/* Legacy callers express delay in 10 ms ticks; Flash_Poll runs once per second. */
+void SaveDevInfo(uint16_t delay) { Flash_Delay = delay ? (uint16_t)((delay + 99u) / 100u) : 1u; }
+
+void Flash_Poll(void)
+{
+    uint8_t status;
+    if(!Flash_Delay || --Flash_Delay) return;
+    status = ConfigV2_CommitIfChanged();
+    if(status == V2_STATUS_OK) status = IrStoreV2_SaveIfChanged();
+    if(status == V2_STATUS_OK) status = RuntimeV2_Append();
+    if(status != V2_STATUS_OK) {
+        Dev.errorCode.bit.flash = 1;
+        PRINT("V2 flash save failed: %u\r\n", status);
+    } else {
+        Dev.errorCode.bit.flash = 0;
+        PRINT("V2 flash save complete, revision=%lu\r\n", ConfigV2_GetRevision());
     }
 }
 
-void LoadDevInfo(void){
-    Flash_Read((uint8_t*)&Dev,sizeof(Dev));
-    //打印Dev数据
-    PRINT("Dev.magicCode:0x%04x,Dev.errorCode:0x%04x,Dev.onOff:%d,Dev.mode:%d,Dev.wind:%d,Dev.irIdx:%d,Dev.irType:%d,Dev.setTemp:%d.\r\n",
-        Dev.magicCode,Dev.errorCode.u16Val,Dev.onOff,Dev.mode,Dev.wind,Dev.irIdx,Dev.irType,Dev.temSet);
-    if(Dev.magicCode != MAGIC_CODE){ //首次上电，清空所有设备数据
-        memset(&Dev,0,sizeof(Dev));
-        Dev.magicCode = MAGIC_CODE;
-        Dev.errorCode.bit.irMatch = 1;
-        Dev.irIdx = 0xff;
-        Dev.nodeId = Default_DevId;
-        Dev.channel = Default_Channel;
-        BITSET(Dev.mode,0);
-        SaveDevInfo(1); //首次上电，1s后保存Dev数据
-        PRINT("Dev mode = %d\n",Dev.mode);
-        PRINT("First Power,Init Dev Info.\r\n");
+void LoadDevInfo(void)
+{
+    uint8_t status = ConfigV2_Load();
+    if(status != V2_STATUS_OK) {
+        ConfigV2_FactoryDefaults();
+        if(ConfigV2_Commit(0) != V2_STATUS_OK) Dev.errorCode.bit.flash = 1;
     }
-    //上电默认初始化
-    Dev.onOff = PowerOff; //默认关
-    Dev.ctlMode = Mode_Auto; //上电模式:自动
-    Dev.wind = Wind_Auto; //上电风速:自动
+    RuntimeV2_Load();
+    IrStoreV2_Load();
+    Dev.magicCode = MAGIC_CODE;
+    Dev.onOff = PowerOff;
+    Dev.ctlMode = Mode_Auto;
+    Dev.wind = Wind_Auto;
     Dev.lastOnTime = 0;
     Dev.lastReportTime = 0;
-    Dev.runTime = 0;
     Dev.loadPower = 0;
     Dev.irPendingCmd = 0;
-    Dev.loraStatus = 1; //上电lora需重新注册
+    Dev.loraStatus = Status_Uninit;
     Timer_Lora = LORA_SEC_TO_TICKS(300);
-    // Dev.
-    // Dev.setTemp = 25;
-    if(Dev.irIdx >= (sizeof(g_arc_info)/sizeof(t_arc))){
-        Dev.errorCode.bit.irMatch = 1;
-    }
+    if(Dev.irActType == ACT_TYPE_IR && (Dev.irIdx >= IR_BRAND_COUNT || !Dev.irType || Dev.irType == 0xFFFFu)) Dev.errorCode.bit.irMatch = 1;
+    PRINT("V2 config loaded: node=%04x channel=%u revision=%lu\r\n", Dev.nodeId, Dev.channel, ConfigV2_GetRevision());
 }

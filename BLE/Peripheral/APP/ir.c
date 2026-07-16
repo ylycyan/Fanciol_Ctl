@@ -16,6 +16,7 @@ static uint8_t irCmdQueue[IR_CMD_QUEUE_SIZE];
 static uint8_t irCmdQueueHead = 0;
 static uint8_t irCmdQueueTail = 0;
 static uint8_t irCmdQueueCount = 0;
+static uint16_t irLastRxLen = 0;
 
 static uint8_t Ir_DequeueCmd(uint8_t *cmd)
 {
@@ -64,15 +65,14 @@ void Ir_Pro(void)
 //检测红外模块接收缓冲区数据
 //蓝牙连接状态下，可通过FFE2直接透传测试
 void Check_IrBuf(void){ //
-    static uint16_t lastRxLen = 0;
     uint8_t state;
     if(!IrBuf.isFinish){ //未接收完成
         if(IrBuf.rxlen > 0){
-            if(IrBuf.rxlen == lastRxLen){ //100ms没收到新数据,接收完毕
+            if(IrBuf.rxlen == irLastRxLen){ //100ms没收到新数据,接收完毕
                 IrBuf.isFinish = 1;
-                lastRxLen = 0;
+                irLastRxLen = 0;
             }else{
-                lastRxLen = IrBuf.rxlen; //未接收完毕
+                irLastRxLen = IrBuf.rxlen; //未接收完毕
                 return;   
             }
         }else{
@@ -158,6 +158,7 @@ void Check_IrBuf(void){ //
             }
             Dev.errorCode.bit.irLearn = 0;
             status = IR_MATCH_OK;
+            SaveDevInfo(0);
             #if _IR_INFO_
                 PRINT("ir Learn ch[%d] ok, learnNum=%d\r\n", ch, Dev.learnNum);
             #endif
@@ -218,15 +219,17 @@ void Ir_cmd(IR_CMD_t cmd){
     IrBuf.type = IR_TYPE_NORMAL;
     #if(IR_MODULE == HXD039B)
         //构造cmd包 30 06+(2B)+(1B)
-        if(Dev.irIdx >= (sizeof(g_arc_info)/sizeof(t_arc))){
-            PRINT("Error: file:%s,line:%d,irIdx:%d out of range.\r\n",__FILE__,__LINE__,Dev.irIdx);
+        if(Dev.irIdx >= IR_BRAND_COUNT || !Dev.irType || Dev.irType == 0xFFFFu){
+            PRINT("Error: file:%s,line:%d,invalid ir config idx:%d type:%d.\r\n",__FILE__,__LINE__,Dev.irIdx,Dev.irType);
             Dev.errorCode.bit.irMatch = 1;
             return;
         }
         IrBuf.txbuf[0] = 0x30;
         IrBuf.txbuf[1] = 0x06;
-        IrBuf.txbuf[2] = g_arc_info[Dev.irIdx].cmd[Dev.irType]>>8;
-        IrBuf.txbuf[3] = g_arc_info[Dev.irIdx].cmd[Dev.irType]&0xff;
+        // HXD039B matching returns the module code directly. irIdx is retained
+        // as user-facing brand metadata and is not an index into a flash table.
+        IrBuf.txbuf[2] = Dev.irType>>8;
+        IrBuf.txbuf[3] = Dev.irType&0xff;
         IrBuf.txbuf[4] = cmd;
         IrBuf.rxlen = temp = 0;
         UART3_SendString(IrBuf.txbuf,5);
@@ -258,6 +261,102 @@ void Ir_cmd(IR_CMD_t cmd){
     IrBuf.isFinish = 1;
 }
 
+uint8_t Ir_ExecuteVerified(IR_CMD_t cmd)
+{
+    if(Dev.errorCode.bit.irMatch) return 0;
+    Ir_cmd(cmd);
+    return IrBuf.rxlen > 0;
+}
+
+uint8_t Ir_StartMatch(void)
+{
+    if(!IrBuf.isFinish && IrBuf.type != IR_TYPE_NORMAL) return 0;
+    Dev.errorCode.bit.irMatch = 0;
+    IrBuf.rxlen = 0;
+    irLastRxLen = 0;
+    IrBuf.isFinish = 0;
+    IrBuf.type = IR_TYPE_MATCH;
+    IrBuf.txbuf[0] = 0x30;
+    IrBuf.txbuf[1] = 0x70;
+    IrBuf.txbuf[2] = 0xA0;
+    UART3_SendString(IrBuf.txbuf, 3);
+    return 1;
+}
+
+uint8_t Ir_StartLearning(uint8_t ch)
+{
+    if(ch >= MAX_IR_LEARNNUM || (!IrBuf.isFinish && IrBuf.type != IR_TYPE_NORMAL)) return 0;
+    Dev.errorCode.bit.irLearn = 0;
+    IrLearnChannel = ch;
+    IrBuf.rxlen = 0;
+    irLastRxLen = 0;
+    IrBuf.isFinish = 0;
+    IrBuf.type = IR_TYPE_LEARNing;
+    IrBuf.txbuf[0] = 0x30;
+    IrBuf.txbuf[1] = 0x20;
+    IrBuf.txbuf[2] = 0x50;
+    UART3_SendString(IrBuf.txbuf, 3);
+    return 1;
+}
+
+uint8_t Ir_SendLearnedVerified(uint8_t ch)
+{
+    if(ch >= MAX_IR_LEARNNUM || !Dev.learnCode[ch].enable) return 0;
+    Ir_LearnSend(ch);
+    // Some HXD039B revisions do not acknowledge replay. Successful UART
+    // submission is followed by a physical confirmation in the host UI.
+    return 1;
+}
+
+uint8_t Ir_CancelOperation(void)
+{
+    if(IrBuf.type != IR_TYPE_MATCH && IrBuf.type != IR_TYPE_LEARNing) return 1;
+    IrBuf.type = IR_TYPE_NORMAL;
+    IrBuf.isFinish = 1;
+    IrBuf.rxlen = 0;
+    irLastRxLen = 0;
+    Dev.errorCode.bit.irMatch = 0;
+    Dev.errorCode.bit.irLearn = 0;
+    return 1;
+}
+
+static void Ir_RecalculateLearnNum(void)
+{
+    uint8_t i;
+    Dev.learnNum = 0;
+    for(i = 0; i < MAX_IR_LEARNNUM; ++i) {
+        if(Dev.learnCode[i].enable) Dev.learnNum = (uint8_t)(i + 1u);
+    }
+}
+
+uint8_t Ir_ResetLearned(uint8_t ch)
+{
+    if(ch >= MAX_IR_LEARNNUM || (!IrBuf.isFinish && IrBuf.type != IR_TYPE_NORMAL)) return 0;
+    memset(&Dev.learnCode[ch], 0, sizeof(Dev.learnCode[ch]));
+    Ir_RecalculateLearnNum();
+    SaveDevInfo(0);
+    return 1;
+}
+
+uint8_t Ir_ResetAllLearned(void)
+{
+    if(!IrBuf.isFinish && IrBuf.type != IR_TYPE_NORMAL) return 0;
+    memset(Dev.learnCode, 0, sizeof(Dev.learnCode));
+    Dev.learnNum = 0;
+    SaveDevInfo(0);
+    return 1;
+}
+
+uint16_t Ir_GetLearnedMask(void)
+{
+    uint8_t i;
+    uint16_t mask = 0;
+    for(i = 0; i < MAX_IR_LEARNNUM; ++i) {
+        if(Dev.learnCode[i].enable) mask |= (uint16_t)(1u << i);
+    }
+    return mask;
+}
+
 //发送学习到的红外码
 //ch: 通道索引 (0-9)
 void Ir_LearnSend(uint8_t ch){
@@ -269,6 +368,7 @@ void Ir_LearnSend(uint8_t ch){
     IrBuf.isFinish = 0;
     IrBuf.type = IR_TYPE_NORMAL;
     IrBuf.rxlen = 0;
+    irLastRxLen = 0;
     //直接发送学习到的码: cmd[0]=0x30, cmd[1]=0x03, 后面是229字节数据
     UART3_SendString(Dev.learnCode[ch].cmd, 231);
     #if _IR_INFO_

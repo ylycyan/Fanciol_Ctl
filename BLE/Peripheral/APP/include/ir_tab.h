@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #define IR_MODULE HXD039B
+#define IR_BRAND_COUNT 82u
 typedef struct {
   uint8_t num;
   char name[16];

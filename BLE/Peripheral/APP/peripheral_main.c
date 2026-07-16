@@ -23,6 +23,7 @@
 #include "lora.h"
 #include "board.h"
 #include "timer.h"
+#include "health_v2.h"
 /*********************************************************************
  * GLOBAL TYPEDEFS
  */
@@ -48,6 +49,7 @@ void Main_Circulation()
         Period_100ms();
         Period_1s();
         TMOS_SystemProcess();
+        HealthV2_Mark(HEALTH_V2_BLE_STACK);
     }
 }
 uint8_t TestBuf[1024];
@@ -60,14 +62,11 @@ uint8_t TestBuf[1024];
  */
 int main(void)
 {
-    uint16_t i;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
     //timer0 init
     TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 ?10ms???????
     TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);        //enable peripheral interrupt
     PFIC_EnableIRQ(TMR0_IRQn);                    //enable timer0 core interrupt
-    //wwdg init
-    WWDG_Init();
     Led_Init();
     IR_Init();
     //debug init
@@ -86,6 +85,7 @@ int main(void)
 #endif 
 
     #if 0 // Data-Flash ??
+    uint16_t i;
 
     PRINT("EEPROM_READ...\n");
     EEPROM_READ(0, TestBuf, 500);
@@ -126,13 +126,11 @@ int main(void)
 
     RTC_SetTimestamp(1767240000);
     LoadDevInfo();
+    HealthV2_Init(Dev.errorCode.u16Val);
+    WWDG_Init();
     
 
-    int arc_num = sizeof(g_arc_info)/sizeof(t_arc);
-    const t_arc *i_ptr = g_arc_info;
-    for(i = 0;i<arc_num;i++){
-        PRINT("name[%s],ir_num = %d\r\n",i_ptr[i].name,i_ptr[i].num);
-    }
+    PRINT("IR catalog brands: %u\r\n", IR_BRAND_COUNT);
     //lora test    
     Main_Circulation();
 }

@@ -1,0 +1,81 @@
+#include "protocol_v2.h"
+#include <string.h>
+
+static uint16_t get_u16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
+static void put_u16(uint8_t *p, uint16_t value) { p[0] = (uint8_t)value; p[1] = (uint8_t)(value >> 8); }
+
+uint16_t V2_Crc16(const uint8_t *data, uint16_t len)
+{
+    uint16_t crc = 0xFFFFu;
+    uint16_t i;
+    uint8_t bit;
+    for(i = 0; i < len; ++i) {
+        crc ^= (uint16_t)data[i] << 8;
+        for(bit = 0; bit < 8; ++bit) crc = (crc & 0x8000u) ? (uint16_t)((crc << 1) ^ 0x1021u) : (uint16_t)(crc << 1);
+    }
+    return crc;
+}
+
+uint8_t V2_BleEncode(const v2_ble_frame_t *f, uint8_t *out, uint16_t cap, uint16_t *out_len)
+{
+    uint16_t total;
+    uint16_t crc;
+    if(!f || !out || !out_len || f->payload_len > V2_MAX_PAYLOAD || (f->payload_len && !f->payload)) return V2_STATUS_INVALID_ARG;
+    total = (uint16_t)(V2_BLE_OVERHEAD + f->payload_len);
+    if(cap < total) return V2_STATUS_INVALID_ARG;
+    out[0] = V2_BLE_MAGIC; out[1] = V2_PROTOCOL_VERSION; out[2] = f->type;
+    put_u16(out + 3, f->seq); out[5] = f->opcode; out[6] = f->status;
+    put_u16(out + 7, f->payload_len);
+    if(f->payload_len) memcpy(out + 9, f->payload, f->payload_len);
+    crc = V2_Crc16(out, (uint16_t)(total - 2));
+    put_u16(out + total - 2, crc); *out_len = total;
+    return V2_STATUS_OK;
+}
+
+uint8_t V2_BleDecode(const uint8_t *data, uint16_t len, v2_ble_frame_t *f)
+{
+    uint16_t payload_len;
+    if(!data || !f || len < V2_BLE_OVERHEAD) return V2_STATUS_INVALID_ARG;
+    if(data[0] != V2_BLE_MAGIC || data[1] != V2_PROTOCOL_VERSION) return V2_STATUS_INVALID_ARG;
+    payload_len = get_u16(data + 7);
+    if(payload_len > V2_MAX_PAYLOAD || len != (uint16_t)(V2_BLE_OVERHEAD + payload_len)) return V2_STATUS_INVALID_ARG;
+    if(V2_Crc16(data, (uint16_t)(len - 2)) != get_u16(data + len - 2)) return V2_STATUS_VERIFY_FAILED;
+    f->type = data[2]; f->seq = get_u16(data + 3); f->opcode = data[5]; f->status = data[6];
+    f->payload_len = payload_len; f->payload = data + 9;
+    return V2_STATUS_OK;
+}
+
+void V2_ReassemblerReset(v2_ble_reassembler_t *ctx) { if(ctx) memset(ctx, 0, sizeof(*ctx)); }
+
+uint8_t V2_ReassemblerPush(v2_ble_reassembler_t *ctx, const uint8_t *frag, uint16_t len,
+                           uint8_t *frame, uint16_t cap, uint16_t *frame_len)
+{
+    uint8_t index;
+    uint8_t count;
+    uint16_t seq;
+    uint16_t chunk_len;
+    uint16_t total = 0;
+    uint8_t i;
+    if(!ctx || !frag || !frame || !frame_len || len < V2_FRAGMENT_HEADER_SIZE) return V2_STATUS_INVALID_ARG;
+    index = frag[1]; count = frag[2]; seq = get_u16(frag + 3); chunk_len = (uint16_t)(len - 5);
+    if(!count || count > V2_MAX_FRAGMENTS || index >= count || chunk_len > V2_MAX_FRAGMENT_CHUNK) return V2_STATUS_INVALID_ARG;
+    if((frag[0] & 0x3Fu) != 0u || ((frag[0] & 0x80u) != 0u) != (index == 0u) ||
+       ((frag[0] & 0x40u) != 0u) != (index == (uint8_t)(count - 1u))) return V2_STATUS_INVALID_ARG;
+    if(!ctx->active || ctx->seq != seq || ctx->fragment_count != count) {
+        V2_ReassemblerReset(ctx); ctx->active = 1; ctx->seq = seq; ctx->fragment_count = count;
+    }
+    if(!(ctx->received_mask & (1UL << index))) {
+        if((uint16_t)(ctx->stored_len + chunk_len) > sizeof(ctx->data)) { V2_ReassemblerReset(ctx); return V2_STATUS_INVALID_ARG; }
+        ctx->part_offset[index] = ctx->stored_len;
+        memcpy(ctx->data + ctx->stored_len, frag + 5, chunk_len);
+        ctx->stored_len = (uint16_t)(ctx->stored_len + chunk_len);
+        ctx->part_len[index] = chunk_len;
+        ctx->received_mask |= 1UL << index;
+    }
+    for(i = 0; i < count; ++i) if(!(ctx->received_mask & (1UL << i))) return V2_STATUS_BUSY;
+    for(i = 0; i < count; ++i) {
+        if((uint16_t)(total + ctx->part_len[i]) > cap) { V2_ReassemblerReset(ctx); return V2_STATUS_INVALID_ARG; }
+        memcpy(frame + total, ctx->data + ctx->part_offset[i], ctx->part_len[i]); total = (uint16_t)(total + ctx->part_len[i]);
+    }
+    *frame_len = total; V2_ReassemblerReset(ctx); return V2_STATUS_OK;
+}

@@ -261,8 +261,8 @@ typedef struct{
     uint8_t scanCycle; //数据上报周期
 
     ActType_t irActType; // 动作类型(0~2) 0:红外控制 1:红外学习控制 //2:上报数据
-    uint8_t irIdx; // 空调号索引(83),对应g_arc_info中的空调品牌
-    uint16_t irType; // 空调类型(<200),对应g_arc_info中各品牌的指令下标
+    uint8_t irIdx; // 空调品牌索引，仅用于上位机目录显示
+    uint16_t irType; // HXD039B 红外模块适配码
     uint8_t irPendingCmd; // 0=无待执行红外命令, 非0=IR_CMD_t
     uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
@@ -364,6 +364,14 @@ extern int ChkCrc(uint8_t *buf, uint16_t len);
 //红外函数
 extern void Ir_LearnSend(uint8_t ch);
 extern void Ir_RequestCmd(IR_CMD_t cmd);
+extern uint8_t Ir_ExecuteVerified(IR_CMD_t cmd);
+extern uint8_t Ir_StartMatch(void);
+extern uint8_t Ir_StartLearning(uint8_t ch);
+extern uint8_t Ir_SendLearnedVerified(uint8_t ch);
+extern uint8_t Ir_CancelOperation(void);
+extern uint8_t Ir_ResetLearned(uint8_t ch);
+extern uint8_t Ir_ResetAllLearned(void);
+extern uint16_t Ir_GetLearnedMask(void);
 extern void Ir_Pro(void);
 extern uint8_t IrLearnChannel;
 

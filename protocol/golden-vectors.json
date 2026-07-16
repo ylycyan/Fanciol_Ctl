@@ -1,0 +1,1 @@
+{"schema":2,"crc16":{"ascii":"123456789","ccittFalse":"29B1"},"ble":{"request":{"type":1,"seq":4660,"opcode":16,"status":0,"payloadHex":"010203","frameHex":"A50201341210000300010203C8E3"},"mtu23Fragments":["C000013412A50201341210000300010203C8E3"]}}

@@ -141,7 +141,7 @@ static void rule_exec_ir(const DEV_RULE_T *r)
     }
 
     /* 更新设备状态 */
-    Dev.onOff = (OnOff_t)onOff;
+    Dev.onOff = onOff ? PowerOn : PowerOff;
     Dev.ctlMode = (Mode_t)mode;
     Dev.wind = (Wind_t)wind;
     Dev.temSet = tem;
@@ -169,29 +169,46 @@ static void rule_exec_learn(const DEV_RULE_T *r)
 }
 
 /**
- * @brief 立即上报数据
- */
-static void rule_exec_report(void)
-{
-    /* 触发一次 LoRa 数据上报 (设置标志, 由 Lora_Pro 处理) */
-    Dev.loraStatus = Status_CheckData;
-}
-
-/**
  * @brief 执行规则动作
  */
-static void Rule_Execute(DEV_RULE_T *r)
+static uint32_t lastRulePowerChange;
+
+static uint16_t rule_minimum_interval(const DEV_RULE_T *r)
 {
+    return (uint16_t)r->act.raw[2] | ((uint16_t)r->act.raw[3] << 8);
+}
+
+static bool Rule_Execute(DEV_RULE_T *r)
+{
+    uint16_t minimum = rule_minimum_interval(r);
+    uint8_t requested = r->act.ir.onOff ? PowerOn : PowerOff;
+    bool changesPower = requested != Dev.onOff;
+    if(changesPower && lastRulePowerChange != 0u &&
+       (uint32_t)(LocalTimestamp - lastRulePowerChange) < (uint32_t)minimum * 60u) {
+        PRINT("[Rule] defer power change, minimum=%u min\r\n", minimum);
+        return false;
+    }
 
     switch (Dev.irActType) {
     case ACT_TYPE_IR:     rule_exec_ir(r);     break;
     case ACT_TYPE_LEARN:  rule_exec_learn(r);  break;
     // case ACT_REPORT: rule_exec_report();  break;
-    default: break;
+    default: return false;
     }
+
+    if(changesPower) lastRulePowerChange = LocalTimestamp;
 
     PRINT("[Rule] exec rule trig=%d act=%d\r\n",
           r->ctrl.trig_type, Dev.irActType);
+    return true;
+}
+
+static bool Rule_ExecuteInverse(DEV_RULE_T *r)
+{
+    r->act.ir.onOff = r->act.ir.onOff ? 0u : 1u;
+    bool result = Rule_Execute(r);
+    r->act.ir.onOff = r->act.ir.onOff ? 0u : 1u;
+    return result;
 }
 
 /* ------------------------------------------------------------------ */
@@ -229,9 +246,11 @@ static bool trig_check_time(const DEV_RULE_T *r)
     } else if (r->trig_val2 == 0) {
         /* 无停止时间: 只要 >= 起始时间就触发 (每天一次) */
         return (now_min == r->trig_val);
-    } else {
-        /* 区间触发: 起始 <= now < 停止 */
+    } else if(r->trig_val < r->trig_val2) {
         return (now_min >= r->trig_val && now_min < r->trig_val2);
+    } else {
+        /* 跨午夜窗口，例如 22:00-06:00。 */
+        return (now_min >= r->trig_val || now_min < r->trig_val2);
     }
 }
 
@@ -241,37 +260,6 @@ static bool trig_check_time(const DEV_RULE_T *r)
  *   trig_val2 = 回差×10 (防频繁动作)
  *   sched     = 上限×10 (0=单阈值, 非0=区间触发)
  */
-static bool trig_check_temp_above(const DEV_RULE_T *r)
-{
-    int16_t temp = rule_get_temp_x10();
-    int16_t thresh = (int16_t)r->trig_val;
-    int16_t hyst  = (int16_t)r->trig_val2;
-
-    if (r->sched != 0) {
-        /* 区间触发: temp 在 [trig_val, sched] 范围内 */
-        return (temp >= thresh && temp <= (int16_t)r->sched);
-    }
-
-    /* 单阈值: temp > thresh (带回差: 降到 thresh-hyst 才释放) */
-    return (temp > thresh);
-}
-
-/**
- * @brief 温度低于阈值判断
- *   trig_val  = 阈值×10
- *   trig_val2 = 回差×10
- */
-static bool trig_check_temp_below(const DEV_RULE_T *r)
-{
-    int16_t temp = rule_get_temp_x10();
-    int16_t thresh = (int16_t)r->trig_val;
-    int16_t hyst  = (int16_t)r->trig_val2;
-
-    (void)hyst; /* 回差通过反向动作实现 */
-
-    return (temp < thresh);
-}
-
 /**
  * @brief 功率高于阈值判断
  *   trig_val  = 阈值 (W*10, 直接与 loadPower 比较)
@@ -359,8 +347,10 @@ void Rule_Pro(void)
 {
     uint8_t i;
     bool triggered;
-    bool last_state;
+    int16_t temp;
 
+    /* Remote mode delegates to the gateway while connected. Local mode is always autonomous. */
+    if (BITGET(Dev.mode, 0) && Dev.loraStatus >= Status_Connected) return;
     for (i = 0; i < MAX_RULES; i++) {
         DEV_RULE_T *r = &Dev.rules[i];
 
@@ -369,62 +359,28 @@ void Rule_Pro(void)
             continue;
         }
 
-        /* 单次执行检查: 已执行过的规则不再触发 (除非时间触发, 每天自动重置) */
-        if (r->ctrl.executed) {
-            TrigType_t t = (TrigType_t)r->ctrl.trig_type;
-            if (t == TRIG_TIME) {
-                /* 时间触发: 当前时间不在区间内时自动清除 executed */
-                if (!trig_check_time(r)) {
-                    r->ctrl.executed = 0;
-                }
-                /* 时间在区间内但已执行过, 跳过 */
-                if (r->ctrl.executed) {
-                    continue;
-                }
-            } else {
-                /* 非时间触发: 单次规则跳过 */
-                continue;
-            }
-        }
-
-        /* 评估触发条件 */
-        triggered = false;
-        last_state = r->ctrl.executed;
-
         switch ((TrigType_t)r->ctrl.trig_type) {
-        case TRIG_NONE:        break;
-        case TRIG_TIME:        triggered = trig_check_time(r);        break;
-        case TRIG_TEMP_ABOVE:  triggered = trig_check_temp_above(r);  break;
-        case TRIG_TEMP_BELOW:  triggered = trig_check_temp_below(r);  break;
-        case TRIG_POWER_ABOVE: triggered = trig_check_power_above(r); break;
-        case TRIG_RUNTIME:     triggered = trig_check_runtime(r);     break;
-        case TRIG_ENERGY:      triggered = trig_check_energy(r);      break;
-        case TRIG_COMBINED:    triggered = trig_check_combined(r);    break;
+        case TRIG_TIME:
+            triggered = trig_check_time(r);
+            if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed = 1;
+            if(!triggered && r->ctrl.executed && r->trig_val2 != 0u &&
+               r->trig_val2 != 0xFFFFu && Rule_ExecuteInverse(r)) r->ctrl.executed = 0;
+            break;
+        case TRIG_TEMP_ABOVE:
+            temp = rule_get_temp_x10();
+            if(!r->ctrl.executed && temp > (int16_t)r->trig_val && Rule_Execute(r)) r->ctrl.executed = 1;
+            if(r->ctrl.executed && temp <= (int16_t)r->trig_val - (int16_t)r->trig_val2) r->ctrl.executed = 0;
+            break;
+        case TRIG_TEMP_BELOW:
+            temp = rule_get_temp_x10();
+            if(!r->ctrl.executed && temp < (int16_t)r->trig_val && Rule_Execute(r)) r->ctrl.executed = 1;
+            if(r->ctrl.executed && temp >= (int16_t)r->trig_val + (int16_t)r->trig_val2) r->ctrl.executed = 0;
+            break;
+        case TRIG_POWER_ABOVE: triggered = trig_check_power_above(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
+        case TRIG_RUNTIME: triggered = trig_check_runtime(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
+        case TRIG_ENERGY: triggered = trig_check_energy(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
+        case TRIG_COMBINED: triggered = trig_check_combined(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
         default: break;
-        }
-
-        /* 锁存模式处理 */
-        if (r->flags & 0x01) {
-            /* bit0=1: 锁存模式 */
-            if (r->flags & 0x02) {
-                /* bit1=1: 反向动作 (条件不满足时执行恢复) */
-                if (!triggered && last_state) {
-                    Rule_Execute(r);
-                    r->ctrl.executed = 0;
-                }
-            } else {
-                /* bit1=0: 正向锁存 (条件满足时触发一次, 保持) */
-                if (triggered && !last_state) {
-                    Rule_Execute(r);
-                    r->ctrl.executed = 1;
-                }
-            }
-        } else {
-            /* 非锁存模式: 条件满足就执行 */
-            if (triggered) {
-                Rule_Execute(r);
-                r->ctrl.executed = 1;
-            }
         }
     }
 }
