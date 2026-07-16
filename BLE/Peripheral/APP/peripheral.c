@@ -790,7 +790,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                     i += 3;
                                 }
                                 Dev.loraStatus = 1;
-                                Timer_Lora = 30000;
+                                Timer_Lora = LORA_SEC_TO_TICKS(600);
                                 SaveDevInfo(2);//2s后保存Dev数据
                                 break;
                             case PID_IR_CFG:
@@ -815,29 +815,30 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                     i += 4;
                                 }
                                 Dev.loraStatus = 1;
-                                Timer_Lora = 30000;
+                                Timer_Lora = LORA_SEC_TO_TICKS(600);
                                 SaveDevInfo(2);//2s后保存Dev数据
                                 break;
                             case PID_RELAY_CFG: // 中继配置
                                 if(i + 2 < dataLen) {
                                     uint8_t role = pData[i];
-                                    Dev.parentRelayId = (pData[i+1] | (pData[i+2]<<8));
+                                    uint16_t parentId = (pData[i+1] | (pData[i+2]<<8));
                                     i += 3;
-                                    // linkRole 直接由上位机写入: 0=直连, 1=中继, 2=子节点
-                                    // 兼容旧 isRelay 协议: 收到 0/1 时按旧逻辑, 其他按新逻辑
-                                    if(role == 0 && Dev.parentRelayId != 0) {
-                                        Dev.linkRole = 2; // 子节点
-                                    } else if(role == 1) {
-                                        Dev.linkRole = 1; // 中继
+                                    if(role == LINK_RELAY) {
+                                        Dev.linkRole = LINK_RELAY;
+                                        Dev.parentRelayId = 0;
+                                    } else if(role == LINK_CHILD && parentId != 0 && parentId != Dev.nodeId) {
+                                        Dev.linkRole = LINK_CHILD;
+                                        Dev.parentRelayId = parentId;
                                     } else {
-                                        Dev.linkRole = 0; // 直连
+                                        Dev.linkRole = LINK_DIRECT;
+                                        Dev.parentRelayId = 0;
                                     }
                                     PRINT("Relay cfg: role=%d parent=%04x\n",
                                           Dev.linkRole, Dev.parentRelayId);
                                 }
                                 // 触发重新注册
                                 Dev.loraStatus = 1;
-                                Timer_Lora = 30000;
+                                Timer_Lora = LORA_SEC_TO_TICKS(600);
                                 SaveDevInfo(2);
                                 break;
                             default:
@@ -882,6 +883,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 rspBuf[rspLen++] = Dev.channel & 0xFF;
                                 break;
                             case PID_IR_CFG:
+                                rspBuf[rspLen++] = Dev.irActType;
                                 rspBuf[rspLen++] = Dev.irType & 0xFF;
                                 rspBuf[rspLen++] = (Dev.irType >> 8) & 0xFF;
                                 rspBuf[rspLen++] = Dev.irIdx;
@@ -941,7 +943,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 break;
                             case PID_RELAY_CFG: // 中继配置读取
                                 rspBuf[rspLen++] = Dev.linkRole;
-                                rspBuf[rspLen++] = Dev.linkRole; // hopCount = (linkRole==CHILD)?1:0
+                                rspBuf[rspLen++] = (Dev.linkRole == LINK_CHILD) ? 1 : 0;
                                 rspBuf[rspLen++] = Dev.parentRelayId & 0xFF;
                                 rspBuf[rspLen++] = (Dev.parentRelayId >> 8) & 0xFF;
                                 rspBuf[rspLen++] = Relay_GetChildCount();

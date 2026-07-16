@@ -10,6 +10,56 @@ uint8_t IrLearnChannel = 0; //当前正在学习的通道索引 (0-9)
 #define IR_MATCH_FAIL 0x01
 #define IR_MATCH_TIMEOUT 0x02
 #define IR_MATCH_ERROR 0x03
+#define IR_CMD_QUEUE_SIZE 8
+
+static uint8_t irCmdQueue[IR_CMD_QUEUE_SIZE];
+static uint8_t irCmdQueueHead = 0;
+static uint8_t irCmdQueueTail = 0;
+static uint8_t irCmdQueueCount = 0;
+
+static uint8_t Ir_DequeueCmd(uint8_t *cmd)
+{
+    if(irCmdQueueCount == 0) return 0;
+    *cmd = irCmdQueue[irCmdQueueTail];
+    irCmdQueueTail = (uint8_t)((irCmdQueueTail + 1) % IR_CMD_QUEUE_SIZE);
+    irCmdQueueCount--;
+    return 1;
+}
+
+void Ir_RequestCmd(IR_CMD_t cmd)
+{
+    if(cmd == 0) return;
+
+    if(Dev.irPendingCmd == 0) {
+        Dev.irPendingCmd = (uint8_t)cmd;
+        return;
+    }
+
+    if(irCmdQueueCount >= IR_CMD_QUEUE_SIZE) {
+        PRINT("IR cmd queue full, drop %02x\r\n", (uint8_t)cmd);
+        return;
+    }
+
+    irCmdQueue[irCmdQueueHead] = (uint8_t)cmd;
+    irCmdQueueHead = (uint8_t)((irCmdQueueHead + 1) % IR_CMD_QUEUE_SIZE);
+    irCmdQueueCount++;
+}
+
+void Ir_Pro(void)
+{
+    uint8_t cmd;
+
+    if(Dev.irPendingCmd == 0) return;
+    if(!IrBuf.isFinish && IrBuf.rxlen > 0) return;
+
+    cmd = Dev.irPendingCmd;
+    Dev.irPendingCmd = 0;
+    Ir_cmd((IR_CMD_t)cmd);
+
+    if(Ir_DequeueCmd(&cmd)) {
+        Dev.irPendingCmd = cmd;
+    }
+}
 
 //检测红外模块接收缓冲区数据
 //蓝牙连接状态下，可通过FFE2直接透传测试

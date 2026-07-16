@@ -5,8 +5,9 @@
 #include "include/flash.h"
 #include "gattprofile.h"
 #include "peripheral.h"
-static uint8_t Flag_100ms = 0;
-static uint8_t Flag_1s = 0;
+static volatile uint8_t Flag_20ms = 0;
+static volatile uint8_t Flag_100ms = 0;
+static volatile uint8_t Flag_1s = 0;
 volatile uint32_t CurTick = 0;  //??tick ,??10ms
 //??60M????????????? 131072/60000000*255=0.557056s?
 void WWDG_Init(void){
@@ -109,6 +110,14 @@ uint32_t Rtc_GetTimestamp(void){
     return mktime(&t);
 }
 
+//20ms????,????????LoRa
+void Period_20ms(void){
+    if(Flag_20ms){
+        Flag_20ms = 0;
+        Lora_Pro();
+    }
+}
+
 //100ms????,????????
 void Period_100ms(void){
     if(Flag_100ms){
@@ -116,14 +125,14 @@ void Period_100ms(void){
         Flag_100ms = 0;
         WWDG_Refresh(); //??
         Check_IrBuf();
-        Lora_Pro();
+        Ir_Pro();
         LED_Pro();
         LocalTimestamp = Rtc_GetTimestamp();
         // LED_GREEN(LocalTimestamp % 2);
         LED_GREEN_BLINK(TRUE, 1000);
         LED_BLUE_BLINK(TRUE, 500);
         LED_WHITE_BLINK(TRUE, 200);
-        if((Dev.loraStatus >= 4) && (Timer_Lora < Dev.scanCycle * 10)){ 
+        if((Dev.loraStatus >= 4) && (Timer_Lora < LORA_SEC_TO_TICKS(Dev.scanCycle))){
             LED_RED_BLINK(TRUE,300);
         }else{
             LED_RED_BLINK(TRUE,3000);
@@ -172,6 +181,9 @@ void TMR0_IRQHandler(void)  {                 //timer0 ?10ms??
         TMR0_ClearITFlag(TMR0_3_IT_CYC_END);  //clear flag
         tick++;
         CurTick = SysTick->CNT / (FREQ_SYS / 1000);
+        if(tick % 2 == 0){ //20ms
+            Flag_20ms = 1;
+        }
         if(tick % 10 == 0){ //100ms
             Flag_100ms = 1;
         }

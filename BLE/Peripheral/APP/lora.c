@@ -453,7 +453,6 @@ void Lora_SetPacketType( RadioPacketTypes_t packetType )
     Lora_WriteCommand( RADIO_SET_PACKETTYPE, ( uint8_t* )&packetType, 1 );
 }
 
-
 /**
  * @brief 设置LoRa发送参数
  *
@@ -482,7 +481,6 @@ void Lora_SetTxParams( int8_t power, RadioRampTimes_t rampTime )
         paDutyCycle = 0x04;
         hpMax = 0x07;
     }
-
     Lora_SetPaConfig( paDutyCycle, hpMax, 0x00, 0x01 );
 
     Lora_WriteRegister( REG_OCP, 0x38 ); 
@@ -491,7 +489,6 @@ void Lora_SetTxParams( int8_t power, RadioRampTimes_t rampTime )
     buf[1] = ( uint8_t )rampTime;
     Lora_WriteCommand( RADIO_SET_TXPARAMS, buf, 2 );
 }
-
 
 //101////////////////////////////////////////////////////////////////////
 void Lora_SetModulationParams( ModulationParams_t *modulationParams )
@@ -538,16 +535,13 @@ void Lora_SetModulationParams( ModulationParams_t *modulationParams )
 //    }
 	uint8_t n = 4;
     uint8_t buf[4] = { 0x00 };
-
 	buf[0] = modulationParams->Params.LoRa.SpreadingFactor;
 	buf[1] = modulationParams->Params.LoRa.Bandwidth;
 	buf[2] = modulationParams->Params.LoRa.CodingRate;
 	buf[3] = modulationParams->Params.LoRa.LowDatarateOptimize;
-
 	Lora_WriteCommand( RADIO_SET_MODULATIONPARAMS, buf, n );
 
 }
-
 
 /**
  * @brief 设置LoRa数据包参数
@@ -557,22 +551,18 @@ void Lora_SetPacketParams( PacketParams_t *packetParams )
 {
     uint8_t n = 6;
     uint8_t buf[6] = { 0x00 };
-
     buf[0] = ( packetParams->Params.LoRa.PreambleLength >> 8 ) & 0xFF;
     buf[1] = packetParams->Params.LoRa.PreambleLength;
     buf[2] = packetParams->Params.LoRa.HeaderType;
     buf[3] = packetParams->Params.LoRa.PayloadLength;
     buf[4] = packetParams->Params.LoRa.CrcMode;
     buf[5] = packetParams->Params.LoRa.InvertIQ;
-
     Lora_WriteCommand( RADIO_SET_PACKETPARAMS, buf, n );
 }
-
 
 void Lora_SetBufferBaseAddress( uint8_t txBaseAddress, uint8_t rxBaseAddress )
 {
     uint8_t buf[2];
-
     buf[0] = txBaseAddress;
     buf[1] = rxBaseAddress;
     Lora_WriteCommand( RADIO_SET_BUFFERBASEADDRESS, buf, 2 );
@@ -582,36 +572,29 @@ RadioStatus_t Lora_GetStatus( void )
 {
     uint8_t stat = 0;
     RadioStatus_t status;
-
     Lora_ReadCommand( RADIO_GET_STATUS, ( uint8_t * )&stat, 1 );
     status.Value = stat;
     return status;
 }
 
-
 //读取获取rssi Snr值,
 void Lora_GetPacketStatus( PacketStatus_t *pktStatus )
 {
     uint8_t status[3];
-
     Lora_ReadCommand( RADIO_GET_PACKETSTATUS, status, 3 );
-
     pktStatus->Params.LoRa.RssiPkt = -status[0] >> 1;
     ( status[1] < 128 ) ? ( pktStatus->Params.LoRa.SnrPkt = status[1] >> 2 ) : ( pktStatus->Params.LoRa.SnrPkt = ( ( status[1] - 256 ) >> 2 ) );
     pktStatus->Params.LoRa.SignalRssiPkt = -status[2] >> 1;
 }
 
-
 //清除Irq中断寄存器状态
 void Lora_ClearIrqStatus( uint16_t irq )
 {
     uint8_t buf[2];
-
     buf[0] = ( uint8_t )( ( ( uint16_t )irq >> 8 ) & 0x00FF );
     buf[1] = ( uint8_t )( ( uint16_t )irq & 0x00FF );
     Lora_WriteCommand( RADIO_CLR_IRQSTATUS, buf, 2 );
 }
-
 
 //Init lora
 /**

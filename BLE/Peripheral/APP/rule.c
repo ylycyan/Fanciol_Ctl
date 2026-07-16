@@ -99,44 +99,44 @@ static void rule_exec_ir(const DEV_RULE_T *r)
 
     /* 通过红外发送对应指令 */
     if (onOff) {
-        Ir_cmd(IR_CMD_POWER_ON);
+        Ir_RequestCmd(IR_CMD_POWER_ON);
     } else {
-        Ir_cmd(IR_CMD_POWER_OFF);
+        Ir_RequestCmd(IR_CMD_POWER_OFF);
     }
 
     /* 模式 (开机后再设置, 或者关机时只关机) */
     if (onOff) {
         switch (mode) {
-        case Mode_Auto: Ir_cmd(IR_CMD_MODE_AUTO); break;
-        case Mode_Cool: Ir_cmd(IR_CMD_MODE_COOL); break;
-        case Mode_Dry:  Ir_cmd(IR_CMD_MODE_DRY);  break;
-        case Mode_Fan:  Ir_cmd(IR_CMD_MODE_FAN);  break;
-        case Mode_Heat: Ir_cmd(IR_CMD_MODE_HEAT); break;
+        case Mode_Auto: Ir_RequestCmd(IR_CMD_MODE_AUTO); break;
+        case Mode_Cool: Ir_RequestCmd(IR_CMD_MODE_COOL); break;
+        case Mode_Dry:  Ir_RequestCmd(IR_CMD_MODE_DRY);  break;
+        case Mode_Fan:  Ir_RequestCmd(IR_CMD_MODE_FAN);  break;
+        case Mode_Heat: Ir_RequestCmd(IR_CMD_MODE_HEAT); break;
         default: break;
         }
 
         /* 风速 */
         switch (wind) {
-        case Wind_Auto: Ir_cmd(IR_CMD_FAN_AUTO); break;
-        case Wind_Low:  Ir_cmd(IR_CMD_FAN_LOW);  break;
-        case Wind_Mid:  Ir_cmd(IR_CMD_FAN_MID);  break;
-        case Wind_High: Ir_cmd(IR_CMD_FAN_HIGH); break;
+        case Wind_Auto: Ir_RequestCmd(IR_CMD_FAN_AUTO); break;
+        case Wind_Low:  Ir_RequestCmd(IR_CMD_FAN_LOW);  break;
+        case Wind_Mid:  Ir_RequestCmd(IR_CMD_FAN_MID);  break;
+        case Wind_High: Ir_RequestCmd(IR_CMD_FAN_HIGH); break;
         default: break;
         }
 
         /* 温度 (16~31) */
         if (tem >= 16 && tem <= 31) {
-            Ir_cmd((IR_CMD_t)(IR_CMD_TEMP_16 + (tem - 16)));
+            Ir_RequestCmd((IR_CMD_t)(IR_CMD_TEMP_16 + (tem - 16)));
         }
 
         /* 扫风 */
         if (r->act.ir.sweep) {
-            Ir_cmd(IR_CMD_WIND_AUTO_ON);
+            Ir_RequestCmd(IR_CMD_WIND_AUTO_ON);
         }
 
         /* 睡眠 */
         if (r->act.ir.sleep) {
-            Ir_cmd(IR_CMD_SLEEP_ON);
+            Ir_RequestCmd(IR_CMD_SLEEP_ON);
         }
     }
 

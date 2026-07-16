@@ -134,6 +134,12 @@ typedef enum{
 #define MAX_IR_LEARNNUM 10
 #define MAX_RULES       10
 #define MAX_CHILD_NODES 8  // 中继节点最大子节点数
+#define RELAY_TRIAL_MAX_CHILD_NODES 4
+#define RELAY_RELEASE_MAX_CHILD_NODES 8
+#define RELAY_MAX_ACTIVE_CHILD_NODES RELAY_TRIAL_MAX_CHILD_NODES  // 试点阶段限制4个/中继, 正式发布改为8
+#define LORA_POLL_INTERVAL_MS 20
+#define LORA_MS_TO_TICKS(ms) ((((uint32_t)(ms) + LORA_POLL_INTERVAL_MS - 1) / LORA_POLL_INTERVAL_MS))
+#define LORA_SEC_TO_TICKS(sec) ((((uint32_t)(sec) * 1000U) / LORA_POLL_INTERVAL_MS))
 
 // 中继子节点信息
 typedef struct {
@@ -257,6 +263,7 @@ typedef struct{
     ActType_t irActType; // 动作类型(0~2) 0:红外控制 1:红外学习控制 //2:上报数据
     uint8_t irIdx; // 空调号索引(83),对应g_arc_info中的空调品牌
     uint16_t irType; // 空调类型(<200),对应g_arc_info中各品牌的指令下标
+    uint8_t irPendingCmd; // 0=无待执行红外命令, 非0=IR_CMD_t
     uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
     DEV_RULE_T    rules[MAX_RULES];       //本地规则引擎(定时/条件触发/计量,不上云, 160字节)
@@ -356,6 +363,8 @@ extern int ChkCrc(uint8_t *buf, uint16_t len);
 
 //红外函数
 extern void Ir_LearnSend(uint8_t ch);
+extern void Ir_RequestCmd(IR_CMD_t cmd);
+extern void Ir_Pro(void);
 extern uint8_t IrLearnChannel;
 
 #define BITGET(val, bit)      (((val) >> (bit)) & 1)              // 获取 val 的第 bit 位（0 或 1）
@@ -382,5 +391,5 @@ void LED_RED_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 void LED_BLUE_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 void LED_WHITE_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 extern volatile uint32_t CurTick;
-extern volatile uint16_t Timer_Lora;
+extern volatile uint32_t Timer_Lora;
 #endif

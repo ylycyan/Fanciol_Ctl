@@ -44,6 +44,7 @@ void Main_Circulation()
 {
     while(1)
     {   
+        Period_20ms();
         Period_100ms();
         Period_1s();
         TMOS_SystemProcess();
