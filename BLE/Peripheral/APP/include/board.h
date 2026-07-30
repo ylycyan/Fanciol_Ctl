@@ -21,6 +21,9 @@
 #define LORA_SF_SCAN 10					//扫描LORA的扩频因子:8 //Sf8+Bw5: 71b-660ms(4台冷机上报数据) 43b-450ms(4台变频器上报数据) 15b-235ms(4路电流上报)
 #define LORA_BW_SCAN 0x05				//扫描LORA的带宽:41.7 sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
 
+#define LORA_SF_MIN 5u
+#define LORA_SF_MAX 12u
+
 //旧版本(分体空调&三速开关)固定频点(0~31),基于场景普遍安装较分散,兼容普通节点统一改为Radio(0~4)*channel(0~9)版本
 //节点以内置的频道 431.1/432.8/434.5/436.2/437.9 为参考，按不同的频点进行扫描注册。如果收到修改频道指令，则更新至 FLASH/EEPROM，重启后以新的频道扫描注册
 typedef enum { //LORA频道定义
@@ -280,6 +283,11 @@ typedef struct{
     // LoRa 多跳中继角色 (BLE写入, 掉电保存)
     uint8_t linkRole;       // tLinkRole, 默认 0=直连
     uint16_t parentRelayId; // 上级中继节点ID (仅 LINK_CHILD 有效, 其他为 0)
+    /* 开发者可调的射频参数，仅占 4 字节；无动态分配，不进入轮询热路径。 */
+    uint8_t loraRegisterSf;
+    uint8_t loraRegisterBw;
+    uint8_t loraListenSf;
+    uint8_t loraListenBw;
     union{  // 故障码(0:正常 \\ 异常>> bit 0:lora离线 1:红外学习异常 2：红外匹配异常(未匹配设备或找不到索引或索引错误[或无反馈?]) 3:ad转换异常 4:功率转换异常 5:flash操作异常)
         uint16_t u16Val; 
         struct{

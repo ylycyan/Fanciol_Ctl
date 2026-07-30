@@ -66,13 +66,13 @@ static float Lora_WorkFreq(void)
 static void Lora_SwitchRegisterFreq(void)
 {
     Dev.loraFrequency = Lora_RegisterFreq();
-    Lora_Init(Dev.loraFrequency, LORA_POWER, LORA_SF_LISTEN, LORA_BW_LISTEN);
+    Lora_Init(Dev.loraFrequency, LORA_POWER, Dev.loraRegisterSf, Dev.loraRegisterBw);
 }
 
 static void Lora_SwitchWorkFreq(void)
 {
     Dev.loraFrequency = Lora_WorkFreq();
-    Lora_Init(Dev.loraFrequency, LORA_POWER, LORA_SF_SCAN, LORA_BW_SCAN);
+    Lora_Init(Dev.loraFrequency, LORA_POWER, Dev.loraListenSf, Dev.loraListenBw);
 }
 
 static void Relay_ResetState(void)

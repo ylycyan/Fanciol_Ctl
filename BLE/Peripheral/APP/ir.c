@@ -158,7 +158,7 @@ void Check_IrBuf(void){ //
             }
             Dev.errorCode.bit.irLearn = 0;
             status = IR_MATCH_OK;
-            SaveDevInfo(0);
+            SaveIrInfo();
             #if _IR_INFO_
                 PRINT("ir Learn ch[%d] ok, learnNum=%d\r\n", ch, Dev.learnNum);
             #endif
@@ -214,7 +214,6 @@ void Ir_cmd(IR_CMD_t cmd){
         PRINT("Error: file:%s,line:%d,unMatched ir device .",__FILE__,__LINE__);
         return;
     }
-    int16_t timeout = 100,temp = 0; //100ms超时
     IrBuf.isFinish = 0;
     IrBuf.type = IR_TYPE_NORMAL;
     #if(IR_MODULE == HXD039B)
@@ -231,31 +230,13 @@ void Ir_cmd(IR_CMD_t cmd){
         IrBuf.txbuf[2] = Dev.irType>>8;
         IrBuf.txbuf[3] = Dev.irType&0xff;
         IrBuf.txbuf[4] = cmd;
-        IrBuf.rxlen = temp = 0;
+        IrBuf.rxlen = 0;
         UART3_SendString(IrBuf.txbuf,5);
         #if _IR_INFO_
             PrintHex("ir tx",IrBuf.txbuf,5);
         #endif
-        while(timeout > 0){
-            if(IrBuf.rxlen > 0){
-                if(IrBuf.rxlen == temp){ //连续20ms无接收数据，认为接收完毕
-                    break;
-                }else{
-                    temp = IrBuf.rxlen;
-                }
-            }
-            DelayMs(20);
-            timeout -= 20;
-        }
-        if(IrBuf.rxlen > 0){
-            #if _IR_INFO_
-                PrintHex("ir rx",IrBuf.rxbuf,IrBuf.rxlen);
-            #endif
-        }else{
-            #if _IR_INFO_
-                PRINT("ir recv timeout\r\n");;
-            #endif
-        }
+        /* 普通命令的模块回执在不同 HXD039B 版本上不一致，且结果未被业务使用。
+         * UART 提交后立即返回，避免阻塞 20 ms LoRa 轮询和 BLE 协议栈。 */
     #elif (IR_MODULE == xx)
     #endif
     IrBuf.isFinish = 1;
@@ -265,7 +246,10 @@ uint8_t Ir_ExecuteVerified(IR_CMD_t cmd)
 {
     if(Dev.errorCode.bit.irMatch) return 0;
     Ir_cmd(cmd);
-    return IrBuf.rxlen > 0;
+    // HXD039B firmware variants do not consistently acknowledge normal
+    // commands. Validate the selected profile and UART submission here; the
+    // commissioning UI performs the authoritative physical-response check.
+    return Dev.errorCode.bit.irMatch ? 0 : 1;
 }
 
 uint8_t Ir_StartMatch(void)
@@ -334,7 +318,7 @@ uint8_t Ir_ResetLearned(uint8_t ch)
     if(ch >= MAX_IR_LEARNNUM || (!IrBuf.isFinish && IrBuf.type != IR_TYPE_NORMAL)) return 0;
     memset(&Dev.learnCode[ch], 0, sizeof(Dev.learnCode[ch]));
     Ir_RecalculateLearnNum();
-    SaveDevInfo(0);
+    SaveIrInfo();
     return 1;
 }
 
@@ -343,7 +327,7 @@ uint8_t Ir_ResetAllLearned(void)
     if(!IrBuf.isFinish && IrBuf.type != IR_TYPE_NORMAL) return 0;
     memset(Dev.learnCode, 0, sizeof(Dev.learnCode));
     Dev.learnNum = 0;
-    SaveDevInfo(0);
+    SaveIrInfo();
     return 1;
 }
 

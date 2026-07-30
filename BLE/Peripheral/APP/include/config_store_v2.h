@@ -21,5 +21,10 @@ uint8_t RuntimeV2_Load(void);
 uint8_t RuntimeV2_Append(void);
 uint8_t IrStoreV2_Load(void);
 uint8_t IrStoreV2_SaveIfChanged(void);
+uint8_t LoraParamsV2_Load(void);
+uint8_t LoraParamsV2_Save(uint8_t register_sf, uint8_t register_bw,
+                          uint8_t listen_sf, uint8_t listen_bw);
+uint8_t LoraParamsV2_Validate(uint8_t register_sf, uint8_t register_bw,
+                              uint8_t listen_sf, uint8_t listen_bw);
 
 #endif

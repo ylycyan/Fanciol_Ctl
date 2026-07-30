@@ -6,9 +6,9 @@
 #include "health_v2.h"
 #include <string.h>
 
-#define CAPABILITY_BITMAP 0x000002FFUL
+#define CAPABILITY_BITMAP 0x000006FFUL
 
-typedef struct {
+typedef struct __attribute__((packed)) {
     uint16_t node_id;
     uint8_t channel;
     uint8_t link_role;
@@ -50,9 +50,10 @@ static uint8_t maintenance_active(void){if(!maintenance_until)return 0;if(!befor
 static uint8_t parse_config(const uint8_t *p,uint16_t len,staged_config_t *cfg)
 {
     if(len!=15u)return V2_STATUS_INVALID_ARG;
+    memset(cfg,0,sizeof(*cfg));
     cfg->node_id=get16(p);cfg->channel=p[2];cfg->link_role=p[3];cfg->parent_id=get16(p+4);cfg->work_mode=p[6];
     cfg->ir_action_type=p[7];cfg->ir_type=get16(p+8);cfg->ir_index=p[10];cfg->expected_revision=get32(p+11);
-    if(!cfg->node_id||cfg->channel>31u||cfg->link_role>LINK_CHILD||cfg->work_mode>1u||cfg->ir_action_type>ACT_TYPE_LEARN)return V2_STATUS_INVALID_ARG;
+    if(!cfg->node_id||cfg->channel>32u||cfg->link_role>LINK_CHILD||cfg->work_mode>1u||cfg->ir_action_type>ACT_TYPE_LEARN)return V2_STATUS_INVALID_ARG;
     if(cfg->link_role==LINK_CHILD&&(!cfg->parent_id||cfg->parent_id==cfg->node_id))return V2_STATUS_INVALID_ARG;
     if(cfg->link_role!=LINK_CHILD)cfg->parent_id=0;
     if(cfg->ir_index!=0xFFu&&cfg->ir_index>=IR_BRAND_COUNT)return V2_STATUS_INVALID_ARG;
@@ -88,14 +89,28 @@ static uint8_t execute_control(const uint8_t *p,uint16_t len)
     if(len!=3u)return V2_STATUS_INVALID_ARG;
     control=p[0];value=get16(p+1);
     switch(control){
-    case 1: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_POWER_ON:IR_CMD_POWER_OFF;break;
-    case 2: if(value>Mode_Heat)return V2_STATUS_INVALID_ARG;cmd=(IR_CMD_t)(IR_CMD_MODE_AUTO+value);break;
-    case 3: if(value<160u||value>310u||value%10u)return V2_STATUS_INVALID_ARG;cmd=(IR_CMD_t)(IR_CMD_TEMP_16+(value/10u)-16u);break;
-    case 4: if(value>Wind_High)return V2_STATUS_INVALID_ARG;cmd=(IR_CMD_t)(IR_CMD_FAN_AUTO+value);break;
+    case V2_CONTROL_POWER: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_POWER_ON:IR_CMD_POWER_OFF;break;
+    case V2_CONTROL_MODE: if(value>Mode_Heat)return V2_STATUS_INVALID_ARG;cmd=(IR_CMD_t)(IR_CMD_MODE_AUTO+value);break;
+    case V2_CONTROL_TEMPERATURE: if(value<160u||value>310u||value%10u)return V2_STATUS_INVALID_ARG;cmd=(IR_CMD_t)(IR_CMD_TEMP_16+(value/10u)-16u);break;
+    case V2_CONTROL_FAN: if(value>Wind_High)return V2_STATUS_INVALID_ARG;cmd=(IR_CMD_t)(IR_CMD_FAN_AUTO+value);break;
+    case V2_CONTROL_WIND_DIRECTION: if(value>2u)return V2_STATUS_INVALID_ARG;cmd=(IR_CMD_t)(IR_CMD_WIND_UP+value);break;
+    case V2_CONTROL_WIND_AUTO: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_WIND_AUTO_ON:IR_CMD_WIND_AUTO_OFF;break;
+    case V2_CONTROL_SLEEP: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_SLEEP_ON:IR_CMD_SLEEP_OFF;break;
+    case V2_CONTROL_AUX_HEAT: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_AUX_HEAT_ON:IR_CMD_AUX_HEAT_OFF;break;
+    case V2_CONTROL_LIGHT: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_LIGHT_ON:IR_CMD_LIGHT_OFF;break;
+    case V2_CONTROL_ENERGY: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_SLEEP_ENERGY_ON:IR_CMD_SLEEP_ENERGY_OFF;break;
+    case V2_CONTROL_FAST_MODE: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_FAST_HEAT:IR_CMD_FAST_COOL;break;
+    case V2_CONTROL_MUTE: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_MUTE_ON:IR_CMD_MUTE_OFF;break;
+    case V2_CONTROL_TEMP_STEP: if(value>1u)return V2_STATUS_INVALID_ARG;cmd=value?IR_CMD_TEMP_UP:IR_CMD_TEMP_DOWN;break;
     default:return V2_STATUS_NOT_SUPPORTED;
     }
     if(!Ir_ExecuteVerified(cmd))return Dev.errorCode.bit.irMatch?V2_STATUS_NOT_SUPPORTED:V2_STATUS_TIMEOUT;
-    if(control==1)Dev.onOff=value?PowerOn:PowerOff;else if(control==2)Dev.ctlMode=(Mode_t)value;else if(control==3)Dev.temSet=value/10u;else Dev.wind=(Wind_t)value;
+    if(control==V2_CONTROL_POWER)Dev.onOff=value?PowerOn:PowerOff;
+    else if(control==V2_CONTROL_MODE)Dev.ctlMode=(Mode_t)value;
+    else if(control==V2_CONTROL_TEMPERATURE)Dev.temSet=value/10u;
+    else if(control==V2_CONTROL_FAN)Dev.wind=(Wind_t)value;
+    else if(control==V2_CONTROL_TEMP_STEP){if(Dev.temSet<16u||Dev.temSet>31u)Dev.temSet=25u;if(value&&Dev.temSet<31u)Dev.temSet++;else if(!value&&Dev.temSet>16u)Dev.temSet--;}
+    else if(control==V2_CONTROL_FAST_MODE){Dev.onOff=PowerOn;Dev.ctlMode=value?Mode_Heat:Mode_Cool;}
     return V2_STATUS_OK;
 }
 
@@ -105,7 +120,7 @@ static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *pay
     *payload_len=0;
     switch(req->opcode){
     case V2_OP_GET_CAPABILITIES:
-        put32(payload,CAPABILITY_BITMAP);payload[4]=V2_PROTOCOL_VERSION;payload[5]=2;payload[6]=2;payload[7]=1;*payload_len=8;break;
+        put32(payload,CAPABILITY_BITMAP);payload[4]=V2_PROTOCOL_VERSION;payload[5]=2;payload[6]=6;payload[7]=1;*payload_len=8;break;
     case V2_OP_GET_DEVICE_INFO:{
         payload[0]=1;payload[1]=device_identity_len;memcpy(payload+2,device_identity,device_identity_len);*payload_len=(uint16_t)(2u+device_identity_len);break;}
     case V2_OP_AUTH_BEGIN:
@@ -131,7 +146,7 @@ static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *pay
         memcpy(rollback_rules,Dev.rules,sizeof(rollback_rules));
         Dev.nodeId=cfg.node_id;Dev.channel=cfg.channel;Dev.linkRole=cfg.link_role;Dev.parentRelayId=cfg.parent_id;Dev.mode=cfg.work_mode;
         Dev.irActType=(ActType_t)cfg.ir_action_type;Dev.irType=cfg.ir_type;Dev.irIdx=cfg.ir_index;if(staged_rules_valid)memcpy(Dev.rules,staged_rules,sizeof(staged_rules));
-        status=ConfigV2_Commit(cfg.expected_revision);if(status==V2_STATUS_OK){revision=ConfigV2_GetRevision();put32(payload,revision);*payload_len=4;staged_config_valid=0;staged_rules_valid=0;Dev.loraStatus=Status_Uninit;}
+        status=ConfigV2_Commit(cfg.expected_revision);if(status==V2_STATUS_OK){revision=ConfigV2_GetRevision();put32(payload,revision);*payload_len=4;staged_config_valid=0;staged_rules_valid=0;Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
         else {Dev.nodeId=previous.node_id;Dev.channel=previous.channel;Dev.linkRole=previous.link_role;Dev.parentRelayId=previous.parent_id;Dev.mode=previous.work_mode;Dev.irActType=(ActType_t)previous.ir_action_type;Dev.irType=previous.ir_type;Dev.irIdx=previous.ir_index;memcpy(Dev.rules,rollback_rules,sizeof(rollback_rules));}
         break;
     case V2_OP_EXEC_CONTROL:
@@ -165,9 +180,19 @@ static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *pay
         payload[0]=Dev.errorCode.bit.flash?1u:0u;payload[1]=(uint8_t)SYS_GetLastResetSta();
         put16(payload+2,Dev.errorCode.u16Val);payload[4]=0;payload[5]=Dev.loraStatus;payload[6]=HealthV2_ConsecutiveResets();payload[7]=HealthV2_LastResetReason();
         put32(payload+8,LocalTimestamp);put32(payload+12,Dev.lastReportTime);put16(payload+16,Dev.loadPower);*payload_len=18;break;
+    case V2_OP_GET_LORA_PARAMS:
+        if(!maintenance_active()){status=V2_STATUS_UNAUTHORIZED;break;}
+        payload[0]=Dev.loraRegisterSf;payload[1]=Dev.loraRegisterBw;
+        payload[2]=Dev.loraListenSf;payload[3]=Dev.loraListenBw;*payload_len=4;break;
+    case V2_OP_SET_LORA_PARAMS:
+        if(!maintenance_active()){status=V2_STATUS_UNAUTHORIZED;break;}
+        if(req->payload_len!=4u){status=V2_STATUS_INVALID_ARG;break;}
+        status=LoraParamsV2_Save(req->payload[0],req->payload[1],req->payload[2],req->payload[3]);
+        if(status==V2_STATUS_OK){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
+        break;
     case V2_OP_FACTORY_RESET:
         if(!maintenance_active()){status=V2_STATUS_UNAUTHORIZED;break;}EEPROM_ERASE(V2_CONFIG_SLOT_A,EEPROM_BLOCK_SIZE);EEPROM_ERASE(V2_CONFIG_SLOT_B,EEPROM_BLOCK_SIZE);
-        EEPROM_ERASE(V2_RUNTIME_PAGE,EEPROM_BLOCK_SIZE);EEPROM_ERASE(V2_IR_PAGE,EEPROM_BLOCK_SIZE);ConfigV2_FactoryDefaults();status=ConfigV2_Commit(0);break;
+        EEPROM_ERASE(V2_RESERVED_PAGE,EEPROM_BLOCK_SIZE);EEPROM_ERASE(V2_RUNTIME_PAGE,EEPROM_BLOCK_SIZE);EEPROM_ERASE(V2_IR_PAGE,EEPROM_BLOCK_SIZE);ConfigV2_FactoryDefaults();status=ConfigV2_Commit(0);break;
     case V2_OP_OTA_BEGIN:
     case V2_OP_OTA_CHUNK:
     case V2_OP_OTA_FINISH:
