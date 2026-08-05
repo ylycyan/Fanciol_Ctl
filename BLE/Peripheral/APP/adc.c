@@ -1,23 +1,28 @@
 #include "CH58x_common.h"
 #include "board.h"
-#include <math.h>
+#include "ntc_b3950.h"
 #define _DEBUG_AD 0
-const float Rp=10000.0f; //10K
-const float T2 = (273.15f+25.0f);//T2
-const float Bx = 3950.0f;//B
-const float Ka = 273.15f;
+static uint8_t adcValid;
 void ADC_Init(void){
+    adcValid = 0;
+    Dev.errorCode.bit.ad = 1;
 }
+uint8_t ADC_IsValid(void){ return adcValid; }
 void ADC_Pro(void){
     static u_int32_t lastSampStamp = 0;
-    if(abs((int)(lastSampStamp - LocalTimestamp)) < AD_INTERVAL){
+    /*
+     * RTC 可能被网关向前或向后校时，不能把无符号差值强转 int 后再 abs：
+     * 大跨度校时会溢出。回拨时立即重新采样，正常情况下按间隔限频。
+     */
+    if(lastSampStamp != 0u && LocalTimestamp >= lastSampStamp &&
+       (LocalTimestamp - lastSampStamp) < AD_INTERVAL){
         return;
     }
-    WWDG_SetCounter(0);//喂狗
     lastSampStamp = LocalTimestamp;
     uint16_t caliVal,temp,maxVal = 0,minVal = 0xffff,i;
     uint32_t sum = 0;
-    float vol,res,tem;
+    uint16_t meanValue;
+    int16_t temperatureX10;
     #if _DEBUG_AD
     PRINT("adc start sampling ,@%ld\n",LocalTimestamp);
     #endif
@@ -29,7 +34,6 @@ void ADC_Pro(void){
     #endif
     ADC_ChannelCfg(0);
     for(i = 0;i < 20;i++){
-        WWDG_SetCounter(0);//喂狗
         temp =  ADC_ExcutSingleConver() + caliVal;
         if(temp > maxVal) maxVal = temp;
         if(temp < minVal) minVal = temp;
@@ -41,19 +45,16 @@ void ADC_Pro(void){
     // -6dB(1/2 倍)	    (ADC/1024-1)*Vref	3*Vref	    -0.2V ～ 3.15V	    1.9V ～ 3V
     // 0db(1倍)	        (ADC/2048)*Vref	    2*Vref	    0V ～ 2.1V	        0V ～ 2V
     // 6db(2倍)	        (ADC/4096+0.5)*Vref	1.5*Vref	0.525V ～ 1.575V	0.6V ～ 1.5V
-    vol = ((sum/18.0f)*1.050)/2048;// 0db： v = val*1.05/2048
-    if(vol <= 0.001f){
+    meanValue = (uint16_t)(sum / 18U);
+    if(!NtcB3950_AdcToTempX10(meanValue, &temperatureX10)){
+        adcValid = 0;
+        Dev.errorCode.bit.ad = 1;
         return;
     }
-    res = 10000 * vol / (3.3 - vol);
-    tem = res/Rp;
-	tem = log(tem);//ln(Rt/Rp)
-	tem/=Bx;//ln(Rt/Rp)/B
-	tem+=(1/T2);
-	tem = 1/(tem);
-	tem-=Ka;
-    Dev.tem = tem;
+    Dev.roomTempX10 = temperatureX10;
+    adcValid = 1;
+    Dev.errorCode.bit.ad = 0;
     #if _DEBUG_AD
-    PRINT("meanVal = %ld ,vol = %ld,res = %ld,tem = %ld\n",sum,(long)(vol*100),(long)res,(long)(tem*100));
+    PRINT("meanVal=%u, tempX10=%d\n", meanValue, temperatureX10);
     #endif
 }

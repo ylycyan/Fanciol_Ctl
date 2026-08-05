@@ -50,6 +50,7 @@ typedef enum {
     V2_OP_FACTORY_RESET = 0x51,
     V2_OP_GET_LORA_PARAMS = 0x52,
     V2_OP_SET_LORA_PARAMS = 0x53,
+    V2_OP_GET_HEALTH_HISTORY = 0x54,
     V2_OP_OTA_BEGIN = 0x60,
     V2_OP_OTA_CHUNK = 0x61,
     V2_OP_OTA_FINISH = 0x62,
@@ -72,7 +73,9 @@ typedef enum {
     V2_CONTROL_ENERGY = 10,
     V2_CONTROL_FAST_MODE = 11,
     V2_CONTROL_MUTE = 12,
-    V2_CONTROL_TEMP_STEP = 13
+    V2_CONTROL_TEMP_STEP = 13,
+    /* 仅 BLE 现场控制使用：value 为已学习通道 0~9。 */
+    V2_CONTROL_LEARNED_CHANNEL = 14
 } v2_control_t;
 
 typedef struct {

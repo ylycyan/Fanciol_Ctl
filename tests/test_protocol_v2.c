@@ -11,6 +11,7 @@ int main(void)
     uint8_t out[256],copy[256],payload_big[64],assembled[256],fragment[20]; uint16_t len,assembled_len; uint8_t i;
     const uint8_t payload[]={1,2,3};
     v2_ble_frame_t b={V2_FRAME_REQUEST,0x1234,V2_OP_GET_STATE,V2_STATUS_OK,sizeof(payload),payload};
+    assert(V2_OP_GET_HEALTH_HISTORY==0x54);
     assert(V2_Crc16((const uint8_t*)"123456789",9)==0x29B1);
     assert(V2_BleEncode(&b,out,sizeof(out),&len)==V2_STATUS_OK);assert(len==sizeof(BLE_GOLDEN));assert(memcmp(out,BLE_GOLDEN,len)==0);
     memcpy(copy,out,len);copy[9]^=1;{v2_ble_frame_t decoded;assert(V2_BleDecode(copy,len,&decoded)==V2_STATUS_VERIFY_FAILED);}

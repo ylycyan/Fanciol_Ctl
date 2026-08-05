@@ -29,6 +29,7 @@
 #include "timer.h"
 #include "protocol_v2.h"
 #include "splitac_service_v2.h"
+#include "ota_guard.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -104,6 +105,7 @@ uint32_t EraseBlockNum = 0;
 uint32_t EraseBlockCnt = 0;
 
 uint8_t VerifyStatus = 0;
+static ota_guard_t otaGuard;
 static v2_ble_reassembler_t v2Reassembler;
 static uint8_t v2Request[V2_MAX_FRAME_SIZE];
 static uint8_t v2Response[V2_MAX_FRAME_SIZE];
@@ -120,6 +122,7 @@ static void peripheralInitConnItem(peripheralConnItem_t *peripheralConnList);
 static void peripheralRssiCB(uint16_t connHandle, int8_t rssi);
 void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len);
 static uint8_t peripheralBuildAdvData(void);
+static void peripheralEnableAdvertising(const char *reason);
 void OTA_IAPReadDataComplete(unsigned char index);
 void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char w_len);
 void Rec_OTA_IAP_DataDeal(void);
@@ -158,6 +161,18 @@ static OTAProfileCBs_t Peripheral_OTA_IAPProfileCBs = {
     OTA_IAPReadDataComplete,
     OTA_IAPWriteData
 };
+
+static void peripheralEnableAdvertising(const char *reason)
+{
+    uint8_t enable = TRUE;
+    uint8_t status = GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED,
+                                          sizeof(enable), &enable);
+    if(status != SUCCESS) {
+        PRINT("BLE advertising restart failed: %s status=%02x\n", reason, status);
+    } else {
+        PRINT("BLE advertising restart requested: %s\n", reason);
+    }
+}
 /*********************************************************************
  * PUBLIC FUNCTIONS
  */
@@ -181,6 +196,7 @@ void Peripheral_Init()
     Peripheral_TaskID = TMOS_ProcessEventRegister(Peripheral_ProcessEvent);
     V2_ReassemblerReset(&v2Reassembler);
     SplitAcV2_Init();
+    OtaGuard_Reset(&otaGuard);
 
     {
         uint8_t advLen = peripheralBuildAdvData();
@@ -351,6 +367,7 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
 
         if(status != SUCCESS)
         {
+            OtaGuard_EndErase(&otaGuard, 0);
             OTA_IAP_SendCMDDealSta(status);
             return (events ^ OTA_FLASH_ERASE_EVT);
         }
@@ -360,11 +377,14 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
         if(EraseBlockCnt >= EraseBlockNum)
         {
             PRINT("ERASE Complete\r\n");
+            OtaGuard_EndErase(&otaGuard, 1);
             OTA_IAP_SendCMDDealSta(status);
             return (events ^ OTA_FLASH_ERASE_EVT);
         }
 
-        return events;
+        /* 每次只擦一个 4 KB 块，把调度权还给 BLE/LoRa，避免长时间独占主循环。 */
+        tmos_start_task(Peripheral_TaskID, OTA_FLASH_ERASE_EVT, MS1_TO_SYSTEM_TIME(2));
+        return (events ^ OTA_FLASH_ERASE_EVT);
     }
 
     // Discard unknown events
@@ -502,13 +522,14 @@ static void Peripheral_LinkTerminated(gapRoleEvent_t *pEvent)
         peripheralConnList.connTimeout = 0;
         tmos_stop_task(Peripheral_TaskID, SBP_PERIODIC_EVT);
         tmos_stop_task(Peripheral_TaskID, SBP_READ_RSSI_EVT);
+        tmos_stop_task(Peripheral_TaskID, OTA_FLASH_ERASE_EVT);
         V2_ReassemblerReset(&v2Reassembler);
         SplitAcV2_ResetSession();
+        OtaGuard_Reset(&otaGuard);
 
         // Restart advertising
         {
-            uint8_t advertising_enable = TRUE;
-            GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &advertising_enable);
+            peripheralEnableAdvertising("link terminated");
         }
     }
     else
@@ -612,6 +633,7 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
             if(pEvent->gap.opcode == GAP_END_DISCOVERABLE_DONE_EVENT)
             {
                 PRINT("Waiting for advertising..\n");
+                peripheralEnableAdvertising("discoverable ended");
             }
             else if(pEvent->gap.opcode == GAP_LINK_TERMINATED_EVENT)
             {
@@ -623,6 +645,7 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
                 if(pEvent->gap.hdr.status != SUCCESS)
                 {
                     PRINT("Waiting for advertising..\n");
+                    peripheralEnableAdvertising("connection attempt failed");
                 }
                 else
                 {
@@ -696,7 +719,7 @@ void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len)
     }
 }
 
-static void SendV2LogicalFrame(const uint8_t *frame, uint16_t frameLen)
+static void __attribute__((noinline)) SendV2LogicalFrame(const uint8_t *frame, uint16_t frameLen)
 {
     uint8_t fragment[V2_MAX_FRAGMENT_CHUNK + V2_FRAGMENT_HEADER_SIZE];
     uint16_t chunkSize = (peripheralMTU > 8u) ? (uint16_t)(peripheralMTU - 8u) : 15u;
@@ -785,6 +808,15 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                 }
                 break;
             }
+            /*
+             * 量产固件只接受 BLE V2。旧协议可以绕过配置版本、范围校验和原子提交，
+             * 因而不能继续作为隐藏写入口保留。以下旧实现暂留源码供迁移核对，
+             * 但该分支在编译后不可达，并会被 --gc-sections 清除。
+             */
+            V2_ReassemblerReset(&v2Reassembler);
+            PRINT("BLE legacy frame rejected\r\n");
+            break;
+#if 0
             uint8_t rxbuf[64];
             if(len > 64) len = 64;
             tmos_memcpy(rxbuf, pValue, len);
@@ -915,7 +947,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 rspBuf[rspLen++] = (Dev.temSet >> 8) & 0xFF;
                                 break;
                             case PID_TEMP_ROOM:
-                                tmpS16 = (int16_t)(Dev.tem * 10);
+                                tmpS16 = Dev.roomTempX10;
                                 rspBuf[rspLen++] = tmpS16 & 0xFF;
                                 rspBuf[rspLen++] = (tmpS16 >> 8) & 0xFF;
                                 break;
@@ -946,7 +978,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 rspBuf[rspLen++] = Dev.temSet & 0xFF;
                                 rspBuf[rspLen++] = (Dev.temSet >> 8) & 0xFF;
                                 // TempRoom(2)
-                                tmpS16 = (int16_t)(Dev.tem * 10);
+                                tmpS16 = Dev.roomTempX10;
                                 rspBuf[rspLen++] = tmpS16 & 0xFF;
                                 rspBuf[rspLen++] = (tmpS16 >> 8) & 0xFF;
                                 // Fan(1)
@@ -976,7 +1008,7 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                                 rspBuf[rspLen++] = Dev.mode;
                                 rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
                                 rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;
-                                tmpS16 = (int16_t)(Dev.tem * 10);
+                                tmpS16 = Dev.roomTempX10;
                                 rspBuf[rspLen++] = tmpS16 & 0xFF;
                                 rspBuf[rspLen++] = (tmpS16 >> 8) & 0xFF;
                                 rspBuf[rspLen++] = Dev.runTime & 0xFF;
@@ -1017,55 +1049,34 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                             SYS_ResetExecute();
                             break;
                         case ACT_IR_CMD: // 红外控制指令: [ACT][CMD]
-                            Dev.errorCode.bit.irMatch = 0;
-                            // tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
-                            IrBuf.rxlen = 0;
-                            IrBuf.isFinish = 0;
-                            IrBuf.txbuf[0] = 0x30;
-                            IrBuf.txbuf[1] = 0x06;
-                            IrBuf.txbuf[2] = Dev.irType>>8;
-                            IrBuf.txbuf[3] = Dev.irType&0xff;
-                            IrBuf.txbuf[4] = pData[1];
-                            UART3_SendString(IrBuf.txbuf, 5);
-                            PrintHex("ir ctl ",IrBuf.txbuf,5);
-                            SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            if(dataLen > 1 && Ir_ExecuteVerified((IR_CMD_t)pData[1])) {
+                                SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            } else {
+                                SendBtResponse(BT_CMD_ERROR, (uint8_t*)"IR_BUSY", 7);
+                            }
                             break;
                         case ACT_IR_MATCH:
-                            // ... 逻辑同旧代码 ...
-                            Dev.errorCode.bit.irMatch = 0;
-                            // tmos_memcpy(IrBuf.txbuf, pData + 1, dataLen - 1);
-                            IrBuf.rxlen = 0;
-                            IrBuf.isFinish = 0;
-                            IrBuf.type = IR_TYPE_MATCH;
-                            IrBuf.txbuf[0] = 0x30; 
-                            IrBuf.txbuf[1] = 0x70; 
-                            IrBuf.txbuf[2] = 0xa0;
-                            UART3_SendString(IrBuf.txbuf, 3);
-                            SendBtResponse(BT_CMD_ACK, NULL, 0);
-                            PrintHex("ir match ",IrBuf.txbuf,3);
+                            if(Ir_StartMatch()) SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            else SendBtResponse(BT_CMD_ERROR, (uint8_t*)"IR_BUSY", 7);
                             break;
                         case ACT_IR_LEARN:
                             //启动红外学习: [ACT][channel_idx]
-                            Dev.errorCode.bit.irLearn = 0;
                             IrLearnChannel = (dataLen > 1) ? pData[1] : 0;
                             if(IrLearnChannel >= MAX_IR_LEARNNUM) IrLearnChannel = 0;
-                            IrBuf.rxlen = 0;
-                            IrBuf.isFinish = 0;
-                            IrBuf.type = IR_TYPE_LEARNing;
-                            IrBuf.txbuf[0] = 0x30;  //模块进入红外学习模式指令
-                            IrBuf.txbuf[1] = 0x20; 
-                            IrBuf.txbuf[2] = 0x50;
-                            UART3_SendString(IrBuf.txbuf, 3);
-                            #if _IR_INFO_
-                                PRINT("ir Learn start ch[%d]\r\n", IrLearnChannel);
-                            #endif
-                            SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            if(Ir_StartLearning(IrLearnChannel)) {
+                                SendBtResponse(BT_CMD_ACK, NULL, 0);
+                            } else {
+                                SendBtResponse(BT_CMD_ERROR, (uint8_t*)"IR_BUSY", 7);
+                            }
                             break;
                         case ACT_IR_LEARN_SEND:
                             //发送学习码: [ACT][channel_idx]
                             if(dataLen > 1 && pData[1] < MAX_IR_LEARNNUM){
-                                Ir_LearnSend(pData[1]);
-                                SendBtResponse(BT_CMD_ACK, NULL, 0);
+                                if(Ir_SendLearnedVerified(pData[1])) {
+                                    SendBtResponse(BT_CMD_ACK, NULL, 0);
+                                } else {
+                                    SendBtResponse(BT_CMD_ERROR, (uint8_t*)"IR_BUSY", 7);
+                                }
                             }else{
                                 SendBtResponse(BT_CMD_ERROR, (uint8_t*)"INV_CH", 6);
                             }
@@ -1082,16 +1093,20 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                     break;
             }
             break;
+#endif
         }
 
         case SIMPLEPROFILE_CHAR2:
         {
-            uint8_t rxbuf[SIMPLEPROFILE_CHAR2_LEN];
-            tmos_memcpy(rxbuf, pValue, len);
-            PrintHex("char2 rx",rxbuf,len);
-            IrBuf.rxlen = 0;
-            IrBuf.isFinish = 0;
-            UART3_SendString(rxbuf,len);
+            if(!SplitAcV2_MaintenanceActive() || len == 0u || len > SIMPLEPROFILE_CHAR2_LEN) {
+                PRINT("IR passthrough rejected: maintenance=%u len=%u\r\n",
+                       SplitAcV2_MaintenanceActive(), len);
+                break;
+            }
+            PrintHex("char2 rx",pValue,len);
+            if(!Ir_TransmitRawAsync(pValue, len)) {
+                PRINT("IR passthrough busy\r\n");
+            }
             break;
         }
 
@@ -1119,15 +1134,18 @@ void OTA_IAP_CMDErrDeal(void)
     OTA_IAP_SendCMDDealSta(0xfe);
 }
 
-void SwitchImageFlag(uint8_t new_flag)
+uint8_t SwitchImageFlag(uint8_t new_flag)
 {
-    EEPROM_READ(DATAFLASH_ADDR_OTA, (uint32_t *)&block_buf[0], 4);
+    uint8_t verify[4];
+    if(EEPROM_READ(DATAFLASH_ADDR_OTA, (uint32_t *)&block_buf[0], 4)) return 0;
 
-    EEPROM_ERASE(DATAFLASH_ADDR_OTA, EEPROM_PAGE_SIZE);
+    if(EEPROM_ERASE(DATAFLASH_ADDR_OTA, EEPROM_PAGE_SIZE)) return 0;
 
     block_buf[0] = new_flag;
 
-    EEPROM_WRITE(DATAFLASH_ADDR_OTA, (uint32_t *)&block_buf[0], 4);
+    if(EEPROM_WRITE(DATAFLASH_ADDR_OTA, (uint32_t *)&block_buf[0], 4)) return 0;
+    if(EEPROM_READ(DATAFLASH_ADDR_OTA, verify, sizeof(verify))) return 0;
+    return memcmp(block_buf, verify, sizeof(verify)) == 0;
 }
 
 void DisableAllIRQ(void)
@@ -1152,7 +1170,13 @@ void Rec_OTA_IAP_DataDeal(void)
 
             PRINT("IAP_PROM: %08x len:%d \r\n", (int)OpAdd, (int)OpParaDataLen);
 
+            if(!OtaGuard_CanProgram(&otaGuard, OpAdd, (uint16_t)OpParaDataLen)) {
+                PRINT("IAP_PROM rejected: state/range/order\r\n");
+                OTA_IAP_SendCMDDealSta(0xFF);
+                break;
+            }
             status = FLASH_ROM_WRITE(OpAdd, iap_rec_data.program.buf, (uint16_t)OpParaDataLen);
+            OtaGuard_EndProgram(&otaGuard, (uint16_t)OpParaDataLen, status == SUCCESS);
             if(status) PRINT("IAP_PROM err \r\n");
             OTA_IAP_SendCMDDealSta(status);
             break;
@@ -1174,8 +1198,11 @@ void Rec_OTA_IAP_DataDeal(void)
 
             PRINT("IAP_ERASE start:%08x num:%d\r\n", (int)OpAdd, (int)EraseBlockNum);
 
-            if(EraseAdd < IMAGE_B_START_ADD || (EraseAdd + (EraseBlockNum - 1) * FLASH_BLOCK_SIZE) > IMAGE_IAP_START_ADD)
+            if(!OtaGuard_BeginErase(&otaGuard, EraseAdd, EraseBlockNum,
+                                    FLASH_BLOCK_SIZE, IMAGE_B_START_ADD,
+                                    IMAGE_IAP_START_ADD))
             {
+                OtaGuard_Reset(&otaGuard);
                 OTA_IAP_SendCMDDealSta(0xFF);
             }
             else
@@ -1197,23 +1224,38 @@ void Rec_OTA_IAP_DataDeal(void)
             OpAdd += IMAGE_A_SIZE;
             PRINT("IAP_VERIFY: %08x len:%d \r\n", (int)OpAdd, (int)OpParaDataLen);
 
+            if(!OtaGuard_CanVerify(&otaGuard, OpAdd, (uint16_t)OpParaDataLen)) {
+                PRINT("IAP_VERIFY rejected: state/range/order\r\n");
+                OTA_IAP_SendCMDDealSta(0xFF);
+                break;
+            }
             status = FLASH_ROM_VERIFY(OpAdd, iap_rec_data.verify.buf, OpParaDataLen);
+            OtaGuard_EndVerify(&otaGuard, (uint16_t)OpParaDataLen, status == SUCCESS);
             if(status)
             {
                 PRINT("IAP_VERIFY err \r\n");
             }
-            VerifyStatus |= status;
-            OTA_IAP_SendCMDDealSta(VerifyStatus);
+            VerifyStatus = status;
+            OTA_IAP_SendCMDDealSta(status);
             break;
         }
         case CMD_IAP_END:
         {
             PRINT("IAP_END \r\n");
 
+            if(!OtaGuard_CanFinish(&otaGuard)) {
+                PRINT("IAP_END rejected: image not fully verified\r\n");
+                OTA_IAP_SendCMDDealSta(0xFF);
+                break;
+            }
+
+            if(!SwitchImageFlag(IMAGE_IAP_FLAG)) {
+                PRINT("IAP_END rejected: image flag verify failed\r\n");
+                OTA_IAP_SendCMDDealSta(0xFF);
+                break;
+            }
+
             DisableAllIRQ();
-
-            SwitchImageFlag(IMAGE_IAP_FLAG);
-
             mDelaymS(10);
             SYS_ResetExecute();
 
@@ -1263,6 +1305,17 @@ void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char 
 
     rec_len = w_len;
     rec_data = p_data;
+    if(!SplitAcV2_MaintenanceActive() || rec_data == NULL || rec_len == 0 || rec_len > sizeof(iap_rec_data)) {
+        OTA_IAP_CMDErrDeal();
+        return;
+    }
+    if((rec_data[0] == CMD_IAP_ERASE && rec_len != 6u) ||
+       ((rec_data[0] == CMD_IAP_PROM || rec_data[0] == CMD_IAP_VERIFY) &&
+        (rec_len < 4u || rec_len != (unsigned char)(rec_data[1] + 4u))) ||
+       ((rec_data[0] == CMD_IAP_END || rec_data[0] == CMD_IAP_INFO) && rec_len != 1u)) {
+        OTA_IAP_CMDErrDeal();
+        return;
+    }
     tmos_memcpy((unsigned char *)&iap_rec_data, rec_data, rec_len);
     Rec_OTA_IAP_DataDeal();
 }

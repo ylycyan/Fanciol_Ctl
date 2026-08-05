@@ -1,5 +1,4 @@
 #include "HAL.h"
-#include <time.h>
 #include "board.h"
 #include "lora.h"
 #include "include/flash.h"
@@ -7,10 +6,14 @@
 #include "peripheral.h"
 #include "health_v2.h"
 #include "splitac_service_v2.h"
+#include "hlw8110.h"
+#include "time_v2.h"
+#include "config_store_v2.h"
 static volatile uint8_t Flag_20ms = 0;
 static volatile uint8_t Flag_100ms = 0;
 static volatile uint8_t Flag_1s = 0;
 volatile uint32_t CurTick = 0;  //??tick ,??10ms
+static uint8_t rtcTimeValid = 0;
 //??60M????????????? 131072/60000000*255=0.557056s?
 void WWDG_Init(void){
     WWDG_SetCounter(0);//??
@@ -22,59 +25,18 @@ void WWDG_Refresh(void){
     WWDG_SetCounter(0);//??
 }
 
-static uint8_t is_leap_year(uint16_t y){
-    if((y % 4) != 0) return 0;
-    if((y % 100) != 0) return 1;
-    if((y % 400) != 0) return 0;
-    return 1;
-}
-
 // ***??!!! ???????????,????tmos?????RTC_InitTime()??????. 
 void RTC_SetTimestamp(uint32_t timestamp)
 {
-    static const uint8_t mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
-    uint32_t days;
-    uint32_t sod;
-    uint16_t year;
-    uint16_t mon;
-    uint16_t day;
-    uint16_t hour;
-    uint16_t min;
-    uint16_t sec;
+    time_v2_fields_t fields;
     if ((timestamp < 1672531200u) || (timestamp > 2147483000u)) { //2023-01-01 00:00:00 ~ 2038-01-19 11:03:20
         PRINT("RTC_SetTimestamp: invalid timestamp %lu\r\n", timestamp);
         return;
     }
-    days = timestamp / 86400u;
-    sod = timestamp % 86400u;
-    year = 1970;
-    for(;;){
-        uint16_t dy = is_leap_year(year) ? 366u : 365u;
-        if(days >= dy){
-            days -= dy;
-            year++;
-        }else{
-            break;
-        }
+    if(!TimeV2_FromUnix(timestamp, &fields)) {
+        PRINT("RTC_SetTimestamp: conversion failed %lu\r\n", timestamp);
+        return;
     }
-    mon = 1;
-    for(;;){
-        uint8_t dim = mdays[mon - 1];
-        if(mon == 2 && is_leap_year(year)){
-            dim++;
-        }
-        if(days >= dim){
-            days -= dim;
-            mon++;
-        }else{
-            break;
-        }
-    }
-    day = (uint16_t)(days + 1u);
-    hour = (uint16_t)(sod / 3600u);
-    sod %= 3600u;
-    min = (uint16_t)(sod / 60u);
-    sec = (uint16_t)(sod % 60u);
 
     //lse ?? ?HAL_TimeInit()??,???????,lse???????
     // LClk32K_Select(Clk32K_LSE);
@@ -83,33 +45,54 @@ void RTC_SetTimestamp(uint32_t timestamp)
     // R8_CK32K_CONFIG |= RB_CLK_XT32K_PON;
     // R8_SAFE_ACCESS_SIG = 0;
     PRINT("set ts:%lu -> %04u-%02u-%02u %02u:%02u:%02u\r\n",
-          timestamp, year, mon, day, hour, min, sec);
+          timestamp, fields.year, fields.month, fields.day,
+          fields.hour, fields.minute, fields.second);
 
-    CH58X_BLEInit();
-    HAL_Init();
-        //lse test
+    // 这里只校准 RTC。BLE/TMOS 只能在启动时初始化一次，运行中对时不得重置协议栈。
     sys_safe_access_enable();
     R8_CK32K_CONFIG |= RB_CLK_OSC32K_XT | RB_CLK_INT32K_PON | RB_CLK_XT32K_PON;
     sys_safe_access_disable();
-    RTC_InitTime(year, mon, day, hour, min, sec);
+    RTC_InitTime(fields.year, fields.month, fields.day,
+                 fields.hour, fields.minute, fields.second);
+    rtcTimeValid = 1;
 
-    TMOS_TimerInit(0);
-    GAPRole_PeripheralInit();
-    Peripheral_Init();
+}
+
+void RTC_ProductInit(uint8_t resetReason, uint32_t retainedTimestamp)
+{
+    if(resetReason != RST_STATUS_RPOR &&
+       retainedTimestamp >= 1672531200u && retainedTimestamp <= 2147483000u) {
+        RTC_SetTimestamp(retainedTimestamp);
+        rtcTimeValid = 1;
+        PRINT("RTC retained after reset: %lu\r\n", retainedTimestamp);
+        return;
+    }
+
+    /* 真正掉电后没有可信时钟，先给 RTC 安全基准，但禁止定时规则直到网关对时。 */
+    RTC_SetTimestamp(1767225600u); /* 2026-01-01 00:00:00 */
+    rtcTimeValid = 0;
+    PRINT("RTC waiting for gateway time sync\r\n");
+}
+
+uint8_t RTC_IsTimeValid(void)
+{
+    return rtcTimeValid;
 }
 
 //???????
 uint32_t Rtc_GetTimestamp(void){
-    struct tm t = {0};
+    time_v2_fields_t fields;
+    uint32_t timestamp;
     uint16_t year, mon, day, hour, min, sec;
     RTC_GetTime(&year, &mon, &day, &hour, &min, &sec);
-    t.tm_year = year - 1900;
-    t.tm_mon = mon - 1;
-    t.tm_mday = day;
-    t.tm_hour = hour;
-    t.tm_min = min;
-    t.tm_sec = sec;
-    return mktime(&t);
+    fields.year = year;
+    fields.month = (uint8_t)mon;
+    fields.day = (uint8_t)day;
+    fields.hour = (uint8_t)hour;
+    fields.minute = (uint8_t)min;
+    fields.second = (uint8_t)sec;
+    if(!TimeV2_ToUnix(&fields, &timestamp)) return LocalTimestamp;
+    return timestamp;
 }
 
 //20ms????,????????LoRa
@@ -117,6 +100,7 @@ void Period_20ms(void){
     if(Flag_20ms){
         Flag_20ms = 0;
         Lora_Pro();
+        HLW8110_Poll();
         HealthV2_Mark(HEALTH_V2_LORA);
     }
 }
@@ -129,9 +113,8 @@ void Period_100ms(void){
         Check_IrBuf();
         Ir_Pro();
         HealthV2_Mark(HEALTH_V2_IR);
-        if(HealthV2_Tick100ms()) WWDG_Refresh();
+        if(HealthV2_Tick100ms(Dev.errorCode.u16Val)) WWDG_Refresh();
         LED_Pro();
-        LocalTimestamp = Rtc_GetTimestamp();
         // LED_GREEN(LocalTimestamp % 2);
         if(SplitAcV2_IdentifyActive()){
             LED_GREEN_BLINK(FALSE, 0);
@@ -156,21 +139,54 @@ void Period_1s(void){
         //1s????
         Flag_1s = 0;
 
+        /* RTC 只有秒级精度，每秒换算一次即可，避免在 60 MHz MCU 上每 100 ms 调用 mktime。 */
+        LocalTimestamp = Rtc_GetTimestamp();
         Flash_Poll();
         HealthV2_Mark(HEALTH_V2_FLASH | HEALTH_V2_PERIODIC);
         ADC_Pro();
         Rule_Pro();       //规则引擎: 每秒评估一次触发条件
         Meter_Update(1);  //计量更新: 累计运行时间和电量
 
+        /*
+         * 每分钟输出一条机器可解析的健康心跳，供 7 天实验室工具判断
+         * 重启、配置漂移、队列滞留、控制成功率和外设恢复情况。
+         * 单行输出不会进入网关协议，也不增加 Flash 擦写。
+         */
+        {
+            static uint8_t health_log_seconds = 0U;
+            if(++health_log_seconds >= 60U) {
+                const HLW8110_Status_t *meter = HLW8110_GetStatus();
+                health_log_seconds = 0U;
+                PRINT("#HEALTH up=%lu rev=%lu reset=%u fault=%04x lora=%u loraTick=%lu irQ=%u/%u irTx=%u/%u/%u meterErr=%u meterFail=%u/%u/%02x\r\n",
+                      (unsigned long)(CurTick / 1000U),
+                      (unsigned long)ConfigV2_GetRevision(),
+                      HealthV2_ConsecutiveResets(),
+                      Dev.errorCode.u16Val,
+                      Dev.loraStatus,
+                      (unsigned long)Timer_Lora,
+                      Ir_GetQueueDepth(),
+                      Ir_GetQueueHighWater(),
+                      Ir_GetSubmittedCount(),
+                      Ir_GetRepeatedCount(),
+                      Ir_GetBusyRejectedCount(),
+                      meter->communication_errors,
+                      meter->last_error_reason,
+                      meter->last_error_state,
+                      meter->last_error_register);
+            }
+        }
+
         // 每天00:00重置规则的executed标志
         {
             static uint8_t last_day = 0;
             uint16_t y, m, d, h, mi, s;
             RTC_GetTime(&y, &m, &d, &h, &mi, &s);
-            if (d != last_day && h == 0 && mi == 0 && s < 2) {
-                Rule_DailyReset();
+            if (!RTC_IsTimeValid()) {
+                last_day = 0;
+            } else if (last_day == 0) {
                 last_day = d;
             } else if (d != last_day) {
+                Rule_DailyReset();
                 last_day = d;
             }
         }
@@ -190,7 +206,11 @@ void TMR0_IRQHandler(void)  {                 //timer0 ?10ms??
     if(TMR0_GetITFlag(TMR0_3_IT_CYC_END)){    //check flag
         TMR0_ClearITFlag(TMR0_3_IT_CYC_END);  //clear flag
         tick++;
-        CurTick = SysTick->CNT / (FREQ_SYS / 1000);
+        /*
+         * SysTick->CNT 在 60 MHz 下约 71.6 秒回卷，不能直接换算为毫秒时钟；
+         * 否则健康监督器会在每次回卷时误判全部任务超时并触发看门狗复位。
+         */
+        CurTick += 10U;
         if(tick % 2 == 0){ //20ms
             Flag_20ms = 1;
         }

@@ -12,75 +12,68 @@
 #include "CH58x_common.h"
 #include "flash.h"
 #include "ir_tab.h"
+#include "gateway_lora_codec.h"
 #define Default_DevId 0xBB01 //默认的设备编号
 #define Default_Channel 5 
 /* Lora */
 #define LORA_POWER 22				//lora发送功率：22
-#define LORA_SF_LISTEN 9				//监听LORA的扩频因子:10 //Sf10+Bw7:  128b-1210ms, 112b-1050ms, 104b-1000ms(6只热量计上报数据:16*6+7),88b-880ms(5只热量计上报数据:16*5+7),72b-760ms(4只热量计上报数据),56b-600ms,27b-400ms(配置下发)
-#define LORA_BW_LISTEN 0x04				//监听LORA的带宽:125K sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
-#define LORA_SF_SCAN 10					//扫描LORA的扩频因子:8 //Sf8+Bw5: 71b-660ms(4台冷机上报数据) 43b-450ms(4台变频器上报数据) 15b-235ms(4路电流上报)
-#define LORA_BW_SCAN 0x05				//扫描LORA的带宽:41.7 sx1268: 0x02-31.25k,0x0a-41.67k,0x03-62.5k,0x04-125k
+#define LORA_SF_LISTEN GATEWAY_LORA_REGISTER_SF //固定网关注册参数：SF9 + BW125K
+#define LORA_BW_LISTEN GATEWAY_LORA_REGISTER_BW
+#define LORA_SF_SCAN GATEWAY_LORA_WORK_SF       //固定网关轮询参数：SF10 + BW250K
+#define LORA_BW_SCAN GATEWAY_LORA_WORK_BW
 
 #define LORA_SF_MIN 5u
 #define LORA_SF_MAX 12u
 
-//旧版本(分体空调&三速开关)固定频点(0~31),基于场景普遍安装较分散,兼容普通节点统一改为Radio(0~4)*channel(0~9)版本
-//节点以内置的频道 431.1/432.8/434.5/436.2/437.9 为参考，按不同的频点进行扫描注册。如果收到修改频道指令，则更新至 FLASH/EEPROM，重启后以新的频道扫描注册
-typedef enum { //LORA频道定义
-    eRadioCh0			= 0,	//Lora通信基础频率 431.1M eRadio431_1
-    eRadioCh1			= 1,	//Lora通信基础频率 432.8M eRadio432_8
-    eRadioCh2			= 2,	//Lora通信基础频率 434.5M eRadio434_5
-    eRadioCh3			= 3,	//Lora通信基础频率 436.2M eRadio436_2
-    eRadioCh4			= 4,	//Lora通信基础频率 437.9M eRadio437_9
-    eRadioIllegal		= 5		//非法的LORA频道
+/*
+ * 固定网关频道使用合并编号 channel = Radio * 10 + Frequency，范围 0~32。
+ * 注册频率：420.05 MHz + channel * 0.3 MHz。
+ * 工作频率：channel <= 22 时为注册频率 + 3.1375 MHz；否则为
+ * 420.1875 MHz + (channel - 23) * 0.3 MHz。
+ * 以下枚举仅保留两级编号语义，实际频率统一由 gateway_lora_codec 计算。
+ */
+typedef enum {
+    eRadioCh0 = 0,
+    eRadioCh1 = 1,
+    eRadioCh2 = 2,
+    eRadioCh3 = 3,
+    eRadioCh4 = 4,
+    eRadioIllegal = 5
 } tRadio;
-//LORA频点定义
-//	监听频率: Radio+Frequency*0.170       (Radio+Frequency*0.170-0.0625  ~ Radio+Frequency*0.170+0.0625) SF10+BW7
-    //Sf10+Bw7: 128b-1210ms, 112b-1050ms, 104b-1000ms(6只热量计上报数据:16*6+7),88b-880ms(5只热量计上报数据:16*5+7),72b-760ms(4只热量计上报数据),56b-600ms,27b-400ms(配置下发)
-//	扫描频率: Radio+Frequency*0.170+0.085 (Radio+Frequency*0.170+0.06415 ~ Radio+Frequency*0.170+0.10585)SF8 +BW5
-    //Sf8+Bw5: 71b-660ms(4台冷机上报数据) 43b-450ms(4台变频器上报数据) 15b-235ms(4路电流上报数据)
-typedef enum { //LORA频点定义: 单位MHz 注册/监听频率 - 扫描频率
-    eFrequency0			= 0,	//0.00 - 0.935 (+431.1/432.8/434.5/436.2/437.9)
-    eFrequency1			= 1,	//0.17 - 1.105
-    eFrequency2			= 2,	//0.34 - 1.275
-    eFrequency3			= 3,	//0.51 - 1.445
-    eFrequency4			= 4, 	//0.68 - 1.615
-    eFrequency5			= 5,	//0.85 - 0.935
-    eFrequency6			= 6,	//1.02 - 1.105
-    eFrequency7			= 7,	//1.19 - 1.275
-    eFrequency8			= 8,	//1.36 - 1.445
-    eFrequency9			= 9, 	//1.53 - 1.615
-    eFrequencyIllegal	=10
+
+typedef enum {
+    eFrequency0 = 0,
+    eFrequency1 = 1,
+    eFrequency2 = 2,
+    eFrequency3 = 3,
+    eFrequency4 = 4,
+    eFrequency5 = 5,
+    eFrequency6 = 6,
+    eFrequency7 = 7,
+    eFrequency8 = 8,
+    eFrequency9 = 9,
+    eFrequencyIllegal = 10
 } tFrequency;
 
 /* Dev Info */
-#define DevType  20	// 20：Fancoil 54：eDeviceAirConditioner(分体空调)
+#define DevType  20 /* 产品编译期声明；旧登录包不携带该值，云端节点表也必须配置为 20。 */
+/* eDeviceFancoil=20: v0(sf),v1(u8),v2(sf),v3(sf),v4(sf),v5(u16)，只能有 6 个值。 */
 #define DevTag   50
 #define MAGIC_CODE 0x52AB //首次上电判断
 #define AD_INTERVAL 10 //adc采集间隔
 /*
-20：Fancoil [value0(u16),value1(u8)value2(u16)value3(u16)value4(u16)value5(u16)]
-
-
-54：eDeviceAirConditioner  [value0(tinyint),value1(tinyint),value2(smallint),value3(float),value4(float),value5(smallint),value6(smallint),value7(smallint)]
-v0:开关状态(u8:0-关,1-开)
-v1:运行模式(u8:0-自动 1-制冷 2-除湿 3-送风 4-制热)
-v2:风速(sf:0-自动 1-低 2-中 3-高)
-v3:用电量(U16)
-v4:设定温度(sf)
-v5:环境温度(sf)
-v6:运行时间(u16-0~1440分钟)
-v7:故障码(u16-D0~15:通信模块故障,红外模块,状态检测,时间参数...)
-
-
-*/ 
+ * 网关固定设备类型 20，数据区固定 11 字节：
+ * v0 设定温度(sf)，v1 高 4 位运行状态/低 4 位风速(u8)，v2 环境温度(sf)，
+ * v3 风机温差(sf)，v4 水阀温差(sf)，v5 状态码(u16)。
+ */
 
 /* Infrared */
 #define IRBUFSIZE 256
 typedef enum{
     IR_TYPE_NORMAL = 0,
     IR_TYPE_MATCH  = 1,
-    IR_TYPE_LEARNing  = 2
+    IR_TYPE_LEARNing  = 2,
+    IR_TYPE_RAW = 3
 }IR_CMD_TYPE_t;
 typedef struct{
     uint8_t rxlen; 
@@ -244,12 +237,15 @@ typedef struct {
 
 //本地规则引擎 - 计量数据结构体(12字节)
 typedef struct {
-    uint32_t energy_wh;      // 累计电量 (0.1kWh, 最大6553.5)
-    uint32_t run_minutes;    // 累计运行时间 (分钟, 最大~45天)
-    uint16_t onoff_count;    // 开关机次数 (0~65535)
-    uint16_t fault_count;    // 故障次数 (0~65535)
-    uint32_t last_save_ts;   // 上次保存时间戳(秒)
-} DEV_METER_T;              // 12字节
+    uint32_t energy_wh;                 // 累计电量，单位 0.1 kWh（保留旧字段名）
+    uint32_t energy_watt_tenth_seconds; // 未满 0.1 kWh 的余数，单位 0.1 W*s
+    uint32_t run_minutes;               // 累计运行时间，分钟
+    uint32_t last_save_ts;              // 上次保存时间戳，秒
+    uint16_t onoff_count;                // 开关机次数
+    uint16_t fault_count;                // 计量故障次数
+    uint16_t run_seconds_remainder;
+    uint16_t today_run_minutes;          // 当天运行分钟，固定网关 v2 使用，范围 0~1440
+} DEV_METER_T;                          // 24字节
 
 //设备结构体,存入DataFlash,掉电保存
 typedef struct{
@@ -259,21 +255,21 @@ typedef struct{
     LoraStatus_t loraStatus; // lora状态
     uint32_t lastReportTime; // 上次上报时间戳
     uint32_t lastOnTime; // 上次空调开机时间,用于计算运行时间(由负载进行计算)
-    float loraFrequency; //lora频率
+    uint32_t lastPowerChange; // 最近一次已提交开/关命令时间，用于跨复位保持最短启停间隔
+    uint32_t loraFrequencyHz; // LoRa 当前频率，单位 Hz
     uint16_t gatewayId; //网关Id
     uint8_t scanCycle; //数据上报周期
 
     ActType_t irActType; // 动作类型(0~2) 0:红外控制 1:红外学习控制 //2:上报数据
     uint8_t irIdx; // 空调品牌索引，仅用于上位机目录显示
     uint16_t irType; // HXD039B 红外模块适配码
-    uint8_t irPendingCmd; // 0=无待执行红外命令, 非0=IR_CMD_t
     uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
     DEV_RULE_T    rules[MAX_RULES];       //本地规则引擎(定时/条件触发/计量,不上云, 160字节)
-    DEV_METER_T   meter;                  //计量数据(12字节)
+    DEV_METER_T   meter;                  // 计量数据（24字节，运行区轮转保存）
     //上报数据
     OnOff_t onOff; // 空调开关状态,0:关 1:开
-    float tem; // 环境温度
+    int16_t roomTempX10; // 环境温度，单位 0.1℃
     Mode_t ctlMode; // 空调运行模式
     uint16_t temSet; // 设定温度
     Wind_t wind; // 风速
@@ -370,9 +366,9 @@ extern void AddCrc(uint8_t *buf, uint16_t len);
 extern int ChkCrc(uint8_t *buf, uint16_t len);
 
 //红外函数
-extern void Ir_LearnSend(uint8_t ch);
-extern void Ir_RequestCmd(IR_CMD_t cmd);
 extern uint8_t Ir_ExecuteVerified(IR_CMD_t cmd);
+extern uint8_t Ir_ConfiguredCommandSupported(IR_CMD_t cmd);
+extern uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t cmd);
 extern uint8_t Ir_StartMatch(void);
 extern uint8_t Ir_StartLearning(uint8_t ch);
 extern uint8_t Ir_SendLearnedVerified(uint8_t ch);
@@ -380,8 +376,23 @@ extern uint8_t Ir_CancelOperation(void);
 extern uint8_t Ir_ResetLearned(uint8_t ch);
 extern uint8_t Ir_ResetAllLearned(void);
 extern uint16_t Ir_GetLearnedMask(void);
+extern uint8_t Ir_PrepareConfigurationChange(void);
+extern uint8_t Ir_TransmitRawAsync(const uint8_t *data, uint16_t len);
+extern uint16_t Ir_GetSubmittedCount(void);
+extern uint16_t Ir_GetRepeatedCount(void);
+extern uint16_t Ir_GetBusyRejectedCount(void);
+extern uint8_t Ir_GetQueueDepth(void);
+extern uint8_t Ir_GetQueueHighWater(void);
 extern void Ir_Pro(void);
 extern uint8_t IrLearnChannel;
+
+// 固定网关云端控制诊断计数（RAM 内饱和计数，不增加 Flash 擦写）
+extern uint16_t Lora_GetControlExecutedCount(void);
+extern uint16_t Lora_GetControlDuplicateCount(void);
+extern uint16_t Lora_GetControlRejectedCount(void);
+extern uint16_t Lora_GetRecoveryAttemptCount(void);
+extern uint16_t Lora_GetRecoverySuccessCount(void);
+extern uint8_t Lora_GetRecoveryFailureCount(void);
 
 #define BITGET(val, bit)      (((val) >> (bit)) & 1)              // 获取 val 的第 bit 位（0 或 1）
 #define BITSET(val, bit)      ((val) |= (1U << (bit)))            // 将 val 的第 bit 位置 1
@@ -391,6 +402,8 @@ extern void Lora_Pro(void);
 extern uint8_t Relay_GetChildCount(void);
 extern uint16_t Relay_GetChildBitmap(void);
 extern void ADC_Pro(void);
+extern void ADC_Init(void);
+extern uint8_t ADC_IsValid(void);
 extern void LED_Pro(void);
 extern void Rule_Pro(void);
 extern void Rule_Init(void);
@@ -402,6 +415,7 @@ extern void Rule_Clear(uint8_t index);
 extern void Meter_Update(uint32_t dt_sec);
 extern void Meter_Save(void);
 extern void Meter_Reset(void);
+extern uint16_t Meter_GetTodayRunMinutes(void);
 void LED_GREEN_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 void LED_RED_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 void LED_BLUE_BLINK(bool IsBlinking, uint32_t BlinkInterval);

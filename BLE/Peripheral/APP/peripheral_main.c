@@ -24,6 +24,8 @@
 #include "board.h"
 #include "timer.h"
 #include "health_v2.h"
+#include "hlw8110.h"
+#include "config_store_v2.h"
 /*********************************************************************
  * GLOBAL TYPEDEFS
  */
@@ -31,7 +33,6 @@ __attribute__((aligned(4))) uint32_t MEM_BUF[BLE_MEMHEAP_SIZE / 4];
 t_dev Dev;
 uint32_t LocalTimestamp;
 
-uint8_t TxBuff[100] = "This is uart3 test .\r\n";
 /*********************************************************************
  * @fn      Main_Circulation
  *
@@ -52,7 +53,6 @@ void Main_Circulation()
         HealthV2_Mark(HEALTH_V2_BLE_STACK);
     }
 }
-uint8_t TestBuf[1024];
 /*********************************************************************
  * @fn      main
  *
@@ -62,7 +62,11 @@ uint8_t TestBuf[1024];
  */
 int main(void)
 {
+    uint8_t retainedResetReason;
+    uint32_t retainedTimestamp;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
+    retainedResetReason = (uint8_t)SYS_GetLastResetSta();
+    retainedTimestamp = Rtc_GetTimestamp();
     //timer0 init
     TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 ?10ms???????
     TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);        //enable peripheral interrupt
@@ -74,62 +78,31 @@ int main(void)
     GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);
     GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
     UART1_DefInit();
-
-    #if 1
-    PRINT("Lora Initing ...\n");
-    if(Lora_Init(421.34f,20,8,0xa) != 0){
-        PRINT("Lora Init Failed! Halting.\n");
-    }else{
-        PRINT("Lora Init OK.\n");
-    }
-#endif 
-
-    #if 0 // Data-Flash ??
-    uint16_t i;
-
-    PRINT("EEPROM_READ...\n");
-    EEPROM_READ(0, TestBuf, 500);
-    for(i = 0; i < 500; i++)
-    {
-        PRINT("%02x ", TestBuf[i]);
-    }
-    PRINT("\n");
-
-    s = EEPROM_ERASE(0, EEPROM_BLOCK_SIZE);
-    PRINT("EEPROM_ERASE=%02x\n", s);
-    PRINT("EEPROM_READ...\n");
-    EEPROM_READ(0, TestBuf, 500);
-    for(i = 0; i < 500; i++)
-    {
-        PRINT("%02x ", TestBuf[i]);
-    }
-    PRINT("\n");
-
-    for(i = 0; i < 500; i++)
-        TestBuf[i] = 0x0 + i;
-    s = EEPROM_WRITE(0, TestBuf, 500);
-    PRINT("EEPROM_WRITE=%02x\n", s);
-    PRINT("EEPROM_READ...\n");
-    EEPROM_READ(0, TestBuf, 500);
-    for(i = 0; i < 500; i++)
-    {
-        PRINT("%02x ", TestBuf[i]);
-    }
-    PRINT("\n");
-
-#endif
-
     // InitUSBDevice(); //usb-cdc??????? 
     PRINT("%s ,build in(%s:%s)\n", VER_LIB,__DATE__,__TIME__);
-
-
-
-    RTC_SetTimestamp(1767240000);
+    CH58X_BLEInit();
+    HAL_Init();
+    RTC_ProductInit(retainedResetReason, retainedTimestamp);
+    LocalTimestamp = Rtc_GetTimestamp();
+    GAPRole_PeripheralInit();
+    Peripheral_Init();
     LoadDevInfo();
-    HealthV2_Init(Dev.errorCode.u16Val);
+    ADC_Init();
+    HLW8110_Init();
+    /*
+     * 复位状态必须使用时钟初始化后的第一份快照。BLE/HAL 初始化可能读取
+     * 或清理相关寄存器，不能在健康模块内延迟重新读取。
+     */
+    HealthV2_Init(retainedResetReason, Dev.errorCode.u16Val);
+    /*
+     * 单槽自愈或双槽损坏后成功重建属于“已恢复历史事件”：
+     * 先写入启动健康快照，再清除当前故障；仍退化/读失败则保持告警。
+     */
+    if((StorageV2_GetStartupFlags() & STORAGE_V2_STARTUP_RECOVERED) != 0U &&
+       (StorageV2_GetStartupFlags() & STORAGE_V2_STARTUP_DEGRADED) == 0U) {
+        Dev.errorCode.bit.flash = 0;
+    }
     WWDG_Init();
-    
-
     PRINT("IR catalog brands: %u\r\n", IR_BRAND_COUNT);
     //lora test    
     Main_Circulation();

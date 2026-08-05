@@ -1,8 +1,10 @@
 #include "CH58x_common.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 #include "lora.h"
 #include "board.h"
+#include "fixed_math_v2.h"
 /*
 void Lora_Pio_Init(void)
 {
@@ -59,12 +61,11 @@ static RadioOperatingModes_t OperatingMode;
 static RadioPacketTypes_t PacketType;
 
 //通过LoraBusy引脚，判断状态是否正常(可用): 0-非Ready状态(即Busy)， 1-Ready
-void Lora_WaitOnBusy( void ) //高电平表示忙
+static uint8_t Lora_WaitOnBusy(void) //高电平表示忙
 {
-    WWDG_SetCounter(0);//喂狗
     uint32_t timeout = LORA_READY_TIMEOUT;
     if(Dev.errorCode.bit.lora){ //存在busy情况,视为异常,防止长时间堵塞阻碍其他功能运行.
-        return;
+        return 0;
     }
     while( (GPIOB_ReadPortPin(GPIO_Pin_12) != 0) && (timeout > 0) ){
         timeout--;
@@ -73,9 +74,9 @@ void Lora_WaitOnBusy( void ) //高电平表示忙
     if(timeout == 0){ // write/read 异常
         PRINT("Lora Busy Timeout.\n");
         Dev.errorCode.bit.lora = 1;
-        // mDelaymS(50);
+        return 0;
     }
-    // mDelaymS(50);
+    return 1;
 }
 
 //Reset Lora: 官方资料要求复位引脚拉低并维持100us，安全起见，这里使用20ms
@@ -89,30 +90,32 @@ void Lora_Reset( ) {
     GPIOB_ResetBits(GPIO_Pin_17);
     mDelaymS(20); //Delay_Ms(20);
     GPIOB_SetBits(GPIO_Pin_17);
-    Lora_WaitOnBusy();
+    (void)Lora_WaitOnBusy();
 }
 /**
  * @brief 唤醒Lora设备
  */
 void Lora_Wakeup()
 {
-    GPIOB_ResetBits(GPIO_Pin_3);
+    if(Dev.errorCode.bit.lora) return;
+    /* LoRa NSS 硬件连接在 PA3；旧代码误操作 PB3，模块只能依赖后续命令碰巧唤醒。 */
+    GPIOA_ResetBits(GPIO_Pin_3);
     SPI1_MasterSendByte(RADIO_GET_STATUS);
     SPI1_MasterSendByte(0x00);
-    GPIOB_SetBits(GPIO_Pin_3);
+    GPIOA_SetBits(GPIO_Pin_3);
 
-    Lora_WaitOnBusy();
+    (void)Lora_WaitOnBusy();
 }
 
-void Lora_CheckDeviceReady( void )
+static uint8_t Lora_CheckDeviceReady(void)
 {
-    Lora_WaitOnBusy( );
+    return Lora_WaitOnBusy();
 }
 
 //SPI写指令
 void Lora_WriteCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
 {
-    Lora_CheckDeviceReady( );
+    if((size > 0U && buffer == 0) || !Lora_CheckDeviceReady()) return;
     GPIOA_ResetBits(GPIO_Pin_3);
     SPI1_MasterSendByte((uint8_t)command);
 
@@ -123,14 +126,16 @@ void Lora_WriteCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
     GPIOA_SetBits(GPIO_Pin_3);
     if( command != RADIO_SET_SLEEP )
     {
-        Lora_WaitOnBusy( );
+        (void)Lora_WaitOnBusy();
     }
 }
 
 //SPI读指令
 void Lora_ReadCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
 {
-    Lora_CheckDeviceReady( );
+    if(size > 0U && buffer == 0) return;
+    if(size > 0U) memset(buffer, 0xFF, size);
+    if(!Lora_CheckDeviceReady()) return;
 
     GPIOA_ResetBits(GPIO_Pin_3);
     SPI1_MasterSendByte(command);
@@ -142,13 +147,13 @@ void Lora_ReadCommand( tLoraCmd command, uint8_t *buffer, uint16_t size )
 
     GPIOA_SetBits(GPIO_Pin_3);
 
-    Lora_WaitOnBusy( );
+    if(!Lora_WaitOnBusy() && size > 0U) memset(buffer, 0xFF, size);
 }
 
 //写寄存器
 void Lora_WriteRegisters( uint16_t address, uint8_t *buffer, uint16_t size )
 {
-    Lora_CheckDeviceReady( );
+    if((size > 0U && buffer == 0) || !Lora_CheckDeviceReady()) return;
 
     GPIOA_ResetBits(GPIO_Pin_3);
 
@@ -163,7 +168,7 @@ void Lora_WriteRegisters( uint16_t address, uint8_t *buffer, uint16_t size )
 
     GPIOA_SetBits(GPIO_Pin_3);
 
-    Lora_WaitOnBusy( );
+    (void)Lora_WaitOnBusy();
 }
 
 void Lora_WriteRegister( uint16_t address, uint8_t value )
@@ -173,7 +178,9 @@ void Lora_WriteRegister( uint16_t address, uint8_t value )
 
 void Lora_ReadRegisters( uint16_t address, uint8_t *buffer, uint16_t size )
 {
-    Lora_CheckDeviceReady( );
+    if(size > 0U && buffer == 0) return;
+    if(size > 0U) memset(buffer, 0xFF, size);
+    if(!Lora_CheckDeviceReady()) return;
 
     GPIOA_ResetBits(GPIO_Pin_3);
     SPI1_MasterSendByte(RADIO_READ_REGISTER);
@@ -185,7 +192,7 @@ void Lora_ReadRegisters( uint16_t address, uint8_t *buffer, uint16_t size )
     }
     GPIOA_SetBits(GPIO_Pin_3);
 
-    Lora_WaitOnBusy( );
+    if(!Lora_WaitOnBusy() && size > 0U) memset(buffer, 0xFF, size);
 }
 
 uint8_t Lora_ReadRegister( uint16_t address )
@@ -197,7 +204,7 @@ uint8_t Lora_ReadRegister( uint16_t address )
 
 void Lora_WriteBuffer( uint8_t offset, uint8_t *buffer, uint8_t size )
 {
-    Lora_CheckDeviceReady( );
+    if((size > 0U && buffer == 0) || !Lora_CheckDeviceReady()) return;
 
     GPIOA_ResetBits(GPIO_Pin_3);
 
@@ -208,13 +215,15 @@ void Lora_WriteBuffer( uint8_t offset, uint8_t *buffer, uint8_t size )
     }
     GPIOA_SetBits(GPIO_Pin_3);
 
-    Lora_WaitOnBusy( );
+    (void)Lora_WaitOnBusy();
 }
 
 //从数据缓冲区中读取数据
 void Lora_ReadBuffer( uint8_t offset, uint8_t *buffer, uint8_t size )
 {
-    Lora_CheckDeviceReady( );
+    if(size > 0U && buffer == 0) return;
+    if(size > 0U) memset(buffer, 0xFF, size);
+    if(!Lora_CheckDeviceReady()) return;
 
     GPIOA_ResetBits(GPIO_Pin_3);
 
@@ -226,7 +235,7 @@ void Lora_ReadBuffer( uint8_t offset, uint8_t *buffer, uint8_t size )
     }
     GPIOA_SetBits(GPIO_Pin_3);
 
-    Lora_WaitOnBusy( );
+    if(!Lora_WaitOnBusy() && size > 0U) memset(buffer, 0xFF, size);
 }
 
 
@@ -431,7 +440,7 @@ void Lora_SetRfFrequency( uint32_t frequency )
 
     Lora_CalibrateImage( frequency );
 
-    freq = ( uint32_t )( ( double )frequency / ( double )FREQ_STEP );
+    freq = FixedMathV2_FrequencyHzToPll(frequency);
 //	switch(frequency)
 //	{
 //		case 410000000: freq = 429916160; break;
@@ -600,12 +609,12 @@ void Lora_ClearIrqStatus( uint16_t irq )
 /**
  * @brief 初始化LoRa模块，并设置指定参数。
  * 
- * @param freq 频率（单位：MHz）。
+ * @param frequencyHz 频率（单位：Hz）。
  * @param power 功率级别。
  * @param sf 扩频因子。
  * @param bw 带宽。
  */
-uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
+uint8_t Lora_Init(uint32_t frequencyHz, uint8_t power, uint8_t sf, uint8_t bw) {
     Dev.errorCode.bit.lora = 0;
 	Lora_Spi_Init();
 	Lora_Reset( );
@@ -646,7 +655,7 @@ uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
     SX126x.ModulationParams.PacketType = PACKET_TYPE_LORA;
     SX126x.ModulationParams.Params.LoRa.SpreadingFactor = sf;
     SX126x.ModulationParams.Params.LoRa.Bandwidth =  bw;
-    SX126x.ModulationParams.Params.LoRa.CodingRate= 4;
+    SX126x.ModulationParams.Params.LoRa.CodingRate = LORA_CR_4_5;
     SX126x.ModulationParams.Params.LoRa.LowDatarateOptimize = 0x00;
 
     // 设置LoRa的数据包参数
@@ -671,11 +680,12 @@ uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
     Lora_SetTxParams(power,RADIO_RAMP_200_US);
     
     // 设置射频频率
-    Lora_SetRfFrequency( freq *1000000.0f );
+    Lora_SetRfFrequency(frequencyHz);
 
     // Verify SPI communication by reading status
     RadioStatus_t status = Lora_GetStatus();
     if (status.Value == 0x00 || status.Value == 0xFF) {
+        Dev.errorCode.bit.lora = 1;
         PRINT("Error: LoRa module not responding (Status=0x%02x). Check wiring.\n", status.Value);
         return 1;
     } else {
@@ -692,6 +702,7 @@ uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw) {
   *  @retval 1:发送失败 0：发送成功
   */
 void Lora_Tx(uint8_t *data, uint8_t len){
+    if(Dev.errorCode.bit.lora || data == 0 || len == 0U) return;
 	Lora_ClearIrqStatus(IRQ_RADIO_ALL);
 	Lora_SetDioIrqParams( IRQ_TX_DONE);
 	SX126x.PacketParams.Params.LoRa.PayloadLength = len;
@@ -819,14 +830,23 @@ void Lora_RxRequest(uint8_t *data, uint8_t *len, uint32_t ms){
 }
 
 void Lora_CheckData(uint8_t *data, uint8_t *len){
+    if(len == 0) return;
 	*len = 0;
+    if(Dev.errorCode.bit.lora || data == 0) return;
 	uint16_t irqRegs = 0;
 	PacketStatus_t pktStatus;
 	irqRegs = Lora_GetIrqStatus();
     if( irqRegs == 0xFFFF ) return;
 	if((irqRegs & IRQ_RX_DONE) == IRQ_RX_DONE){
-		Lora_GetPayload(data,len,0xFF);
+		if(Lora_GetPayload(data, len, 0xFF) != 0U || Dev.errorCode.bit.lora) {
+            *len = 0;
+            return;
+        }
 		Lora_GetPacketStatus( &pktStatus );
+        if(Dev.errorCode.bit.lora) {
+            *len = 0;
+            return;
+        }
 		Rssi = pktStatus.Params.LoRa.RssiPkt+20;
 		Lora_Listening();
 	}else if(irqRegs != 0){
@@ -842,6 +862,7 @@ int8_t Lora_GetRssi(){
 //监听模式: Single Rx, 无超时，收到信号后自动进入 STBY_RC 模式
 void Lora_Listening(){
 	uint8_t buf[3] = {0x00, 0x00, 0x00};
+    if(Dev.errorCode.bit.lora) return;
 	Lora_ClearIrqStatus(IRQ_RADIO_ALL);
  //天线切换至接收模式
 	Lora_SetDioIrqParams( IRQ_RX_DONE);

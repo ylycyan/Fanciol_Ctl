@@ -12,8 +12,7 @@
 	//#define XTAL_FREQ		52000000		//1280
 	//#define FREQ_STEP		198.3642578125	//((double)(XTAL_FREQ / pow(2.0, 19.0)))
 	#define XTAL_FREQ		32000000		//126x
-	#define FREQ_STEP		0.953674316		//((double)(XTAL_FREQ / pow(2.0, 25.0)))
-	#define PREAMBLE_LENGTH 8
+	#define PREAMBLE_LENGTH 6
 	#define LORA_BUFFER_LENGTH 256		//Lora数据包长度 256
 	#define LORA_ERR_CODING 1 //纠错码1 - 4/5
 	#define LORA_TX_TIMEOUT 1200
@@ -355,12 +354,11 @@
 	    ModulationParams_t ModulationParams;
 	}SX126x_t;
 
-    uint8_t Lora_Init(float freq, uint8_t power, uint8_t sf, uint8_t bw);
+    uint8_t Lora_Init(uint32_t frequencyHz, uint8_t power, uint8_t sf, uint8_t bw);
 	void Lora_Reset();
 	void Lora_Sleep();
 	void Lora_Standby(uint8_t xosc);
 	int8_t Lora_GetRssi();
-	void Lora_SetFrequency(float freq);
 	void Lora_Listening();
 	void Lora_Tx(uint8_t *data, uint8_t len);
 	uint16_t Lora_GetIrqStatus( void );

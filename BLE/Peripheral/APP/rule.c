@@ -18,7 +18,11 @@
  */
 
 #include "board.h"
-#include <time.h>
+#include "timer.h"
+#include "gateway_lora_codec.h"
+#include "hlw8110.h"
+
+#define METER_DAY_MAX_RUN_MINUTES 1440U
 
 extern t_dev Dev;
 extern uint32_t LocalTimestamp;
@@ -34,7 +38,7 @@ static void rule_get_time(uint16_t *hour, uint16_t *min, uint16_t *weekday,
                           uint16_t *month)
 {
     uint16_t year, mon, day, h, m, sec;
-    struct tm t;
+    static const uint8_t month_offset[12] = {0,3,2,5,0,3,5,1,4,6,2,4};
 
     RTC_GetTime(&year, &mon, &day, &h, &m, &sec);
 
@@ -43,15 +47,11 @@ static void rule_get_time(uint16_t *hour, uint16_t *min, uint16_t *weekday,
     if (month)  *month  = mon;
 
     if (weekday) {
-        /* mktime + gmtime 计算星期几 (0=周日) */
-        t.tm_year = year - 1900;
-        t.tm_mon  = mon - 1;
-        t.tm_mday = day;
-        t.tm_hour = h;
-        t.tm_min  = m;
-        t.tm_sec  = sec;
-        mktime(&t);
-        *weekday = t.tm_wday; /* 0=Sun, 1=Mon ... 6=Sat */
+        /* Sakamoto 算法：0=周日，避免规则热路径调用较重且依赖时区的 mktime。 */
+        uint16_t y = year;
+        if(mon < 3u) y--;
+        *weekday = (uint16_t)((y + y / 4u - y / 100u + y / 400u +
+                              month_offset[mon - 1u] + day) % 7u);
     }
 }
 
@@ -60,7 +60,7 @@ static void rule_get_time(uint16_t *hour, uint16_t *min, uint16_t *weekday,
  */
 static int16_t rule_get_temp_x10(void)
 {
-    return (int16_t)(Dev.tem * 10.0f);
+    return Dev.roomTempX10;
 }
 
 /**
@@ -90,67 +90,25 @@ static uint32_t rule_get_energy(void)
 /**
  * @brief 执行空调控制动作
  */
-static void rule_exec_ir(const DEV_RULE_T *r)
+static bool rule_exec_ir(const DEV_RULE_T *r)
 {
     const uint8_t onOff = r->act.ir.onOff;
-    const uint8_t mode  = r->act.ir.mode;
-    const uint8_t wind  = r->act.ir.wind;
-    const uint8_t tem   = r->act.ir.temSet;
+    uint8_t previous = Dev.onOff;
 
-    /* 通过红外发送对应指令 */
-    if (onOff) {
-        Ir_RequestCmd(IR_CMD_POWER_ON);
-    } else {
-        Ir_RequestCmd(IR_CMD_POWER_OFF);
-    }
+    /*
+     * 规则每秒都会重试，不能先塞入通用队列再乐观修改运行状态：
+     * 配置无效或红外忙碌时必须保持规则待执行。这里直接走已配置方案
+     * 校验和空闲互斥，只有命令真正提交到 UART
+     * 后才更新本机的期望状态；忙碌或配置错误均保持 executed=0。
+     */
+    if(!Ir_ExecuteVerified(onOff ? IR_CMD_POWER_ON : IR_CMD_POWER_OFF)) return false;
 
-    /* 模式 (开机后再设置, 或者关机时只关机) */
-    if (onOff) {
-        switch (mode) {
-        case Mode_Auto: Ir_RequestCmd(IR_CMD_MODE_AUTO); break;
-        case Mode_Cool: Ir_RequestCmd(IR_CMD_MODE_COOL); break;
-        case Mode_Dry:  Ir_RequestCmd(IR_CMD_MODE_DRY);  break;
-        case Mode_Fan:  Ir_RequestCmd(IR_CMD_MODE_FAN);  break;
-        case Mode_Heat: Ir_RequestCmd(IR_CMD_MODE_HEAT); break;
-        default: break;
-        }
-
-        /* 风速 */
-        switch (wind) {
-        case Wind_Auto: Ir_RequestCmd(IR_CMD_FAN_AUTO); break;
-        case Wind_Low:  Ir_RequestCmd(IR_CMD_FAN_LOW);  break;
-        case Wind_Mid:  Ir_RequestCmd(IR_CMD_FAN_MID);  break;
-        case Wind_High: Ir_RequestCmd(IR_CMD_FAN_HIGH); break;
-        default: break;
-        }
-
-        /* 温度 (16~31) */
-        if (tem >= 16 && tem <= 31) {
-            Ir_RequestCmd((IR_CMD_t)(IR_CMD_TEMP_16 + (tem - 16)));
-        }
-
-        /* 扫风 */
-        if (r->act.ir.sweep) {
-            Ir_RequestCmd(IR_CMD_WIND_AUTO_ON);
-        }
-
-        /* 睡眠 */
-        if (r->act.ir.sleep) {
-            Ir_RequestCmd(IR_CMD_SLEEP_ON);
-        }
-    }
-
-    /* 更新设备状态 */
     Dev.onOff = onOff ? PowerOn : PowerOff;
-    Dev.ctlMode = (Mode_t)mode;
-    Dev.wind = (Wind_t)wind;
-    Dev.temSet = tem;
-
-    /* 记录开关机 */
-    if (onOff) {
-        Dev.lastOnTime = LocalTimestamp;
-        Dev.meter.onoff_count++;
+    if(previous != Dev.onOff) {
+        if(Dev.meter.onoff_count != 0xFFFFu) Dev.meter.onoff_count++;
+        if(onOff) Dev.lastOnTime = LocalTimestamp;
     }
+    return true;
 }
 
 
@@ -158,21 +116,25 @@ static void rule_exec_ir(const DEV_RULE_T *r)
 /**
  * @brief 执行学习码动作
  */
-static void rule_exec_learn(const DEV_RULE_T *r)
+static bool rule_exec_learn(const DEV_RULE_T *r)
 {
-    uint8_t idx = r->act.learn.learnIdx;
+    /* 规则持久化始终保存绝对开/关语义；学习模式只在执行时映射到通道 0/1。 */
+    uint8_t idx = r->act.ir.onOff ? 0u : 1u;
     if (idx < Dev.learnNum && Dev.learnCode[idx].enable) {
-        /* 学习码的 cmd[] 通过红外模块直接发送 */
-        /* 具体实现需根据 IR 模块接口适配 */
-        (void)idx;
+        uint8_t previous = Dev.onOff;
+        if(!Ir_SendLearnedVerified(idx)) return false;
+        if(idx == 0u) Dev.onOff = PowerOn;
+        else if(idx == 1u) Dev.onOff = PowerOff;
+        if(previous != Dev.onOff && Dev.meter.onoff_count != 0xFFFFu) Dev.meter.onoff_count++;
+        if(previous != Dev.onOff && Dev.onOff == PowerOn) Dev.lastOnTime = LocalTimestamp;
+        return true;
     }
+    return false;
 }
 
 /**
  * @brief 执行规则动作
  */
-static uint32_t lastRulePowerChange;
-
 static uint16_t rule_minimum_interval(const DEV_RULE_T *r)
 {
     return (uint16_t)r->act.raw[2] | ((uint16_t)r->act.raw[3] << 8);
@@ -183,20 +145,27 @@ static bool Rule_Execute(DEV_RULE_T *r)
     uint16_t minimum = rule_minimum_interval(r);
     uint8_t requested = r->act.ir.onOff ? PowerOn : PowerOff;
     bool changesPower = requested != Dev.onOff;
-    if(changesPower && lastRulePowerChange != 0u &&
-       (uint32_t)(LocalTimestamp - lastRulePowerChange) < (uint32_t)minimum * 60u) {
+    bool executed;
+    if(changesPower && Dev.lastPowerChange != 0u &&
+       (uint32_t)(LocalTimestamp - Dev.lastPowerChange) < (uint32_t)minimum * 60u) {
         PRINT("[Rule] defer power change, minimum=%u min\r\n", minimum);
         return false;
     }
 
     switch (Dev.irActType) {
-    case ACT_TYPE_IR:     rule_exec_ir(r);     break;
-    case ACT_TYPE_LEARN:  rule_exec_learn(r);  break;
+    case ACT_TYPE_IR:     executed = rule_exec_ir(r);     break;
+    case ACT_TYPE_LEARN:  executed = rule_exec_learn(r);  break;
     // case ACT_REPORT: rule_exec_report();  break;
     default: return false;
     }
 
-    if(changesPower) lastRulePowerChange = LocalTimestamp;
+    if(!executed) return false;
+
+    if(changesPower) {
+        Dev.lastPowerChange = LocalTimestamp;
+        /* 与计量共用运行日志；同一秒内的多个状态变化会合并成一次追加。 */
+        SaveDevInfo(50u);
+    }
 
     PRINT("[Rule] exec rule trig=%d act=%d\r\n",
           r->ctrl.trig_type, Dev.irActType);
@@ -225,6 +194,7 @@ static bool Rule_ExecuteInverse(DEV_RULE_T *r)
 static bool trig_check_time(const DEV_RULE_T *r)
 {
     uint16_t hour, min, weekday, month;
+    if(!RTC_IsTimeValid()) return false;
     rule_get_time(&hour, &min, &weekday, &month);
 
     uint16_t now_min = hour * 60 + min;
@@ -367,19 +337,25 @@ void Rule_Pro(void)
                r->trig_val2 != 0xFFFFu && Rule_ExecuteInverse(r)) r->ctrl.executed = 0;
             break;
         case TRIG_TEMP_ABOVE:
+            if(!ADC_IsValid()) break;
             temp = rule_get_temp_x10();
             if(!r->ctrl.executed && temp > (int16_t)r->trig_val && Rule_Execute(r)) r->ctrl.executed = 1;
             if(r->ctrl.executed && temp <= (int16_t)r->trig_val - (int16_t)r->trig_val2) r->ctrl.executed = 0;
             break;
         case TRIG_TEMP_BELOW:
+            if(!ADC_IsValid()) break;
             temp = rule_get_temp_x10();
             if(!r->ctrl.executed && temp < (int16_t)r->trig_val && Rule_Execute(r)) r->ctrl.executed = 1;
             if(r->ctrl.executed && temp >= (int16_t)r->trig_val + (int16_t)r->trig_val2) r->ctrl.executed = 0;
             break;
-        case TRIG_POWER_ABOVE: triggered = trig_check_power_above(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
+        case TRIG_POWER_ABOVE:
+            if(!HLW8110_GetStatus()->valid) break;
+            triggered = trig_check_power_above(r);
+            if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1;
+            break;
         case TRIG_RUNTIME: triggered = trig_check_runtime(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
         case TRIG_ENERGY: triggered = trig_check_energy(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
-        case TRIG_COMBINED: triggered = trig_check_combined(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
+        case TRIG_COMBINED: if(!ADC_IsValid()) break; triggered = trig_check_combined(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
         default: break;
         }
     }
@@ -444,8 +420,43 @@ void Rule_Clear(uint8_t index)
 /*  计量模块                                                           */
 /* ------------------------------------------------------------------ */
 
-#define METER_SAVE_INTERVAL  3600  /* 每小时保存一次计量数据到Flash */
-#define METER_WH_PER_TICK    1     /* 每秒累计电量的基础单位 */
+#define METER_SAVE_INTERVAL         3600UL
+#define METER_TENTH_KWH_DIVISOR  3600000UL /* (W*10)*s -> 0.1 kWh */
+#define METER_SECONDS_PER_DAY       86400UL
+#define METER_DAY_UNINITIALIZED     0xFFFFFFFFUL
+
+static uint32_t meterDayStart = METER_DAY_UNINITIALIZED;
+
+static void meter_sync_day(void)
+{
+    uint32_t dayStart;
+
+    /* 掉电后的安全基准时间不可信，等网关对时后再判断是否跨日。 */
+    if(!RTC_IsTimeValid()) return;
+    if(meterDayStart != METER_DAY_UNINITIALIZED &&
+       LocalTimestamp >= meterDayStart &&
+       LocalTimestamp < meterDayStart + METER_SECONDS_PER_DAY) return;
+
+    dayStart = LocalTimestamp - (LocalTimestamp % METER_SECONDS_PER_DAY);
+    if(meterDayStart == METER_DAY_UNINITIALIZED) {
+        if(Dev.meter.last_save_ts < dayStart ||
+           Dev.meter.last_save_ts >= dayStart + METER_SECONDS_PER_DAY) {
+            Dev.meter.today_run_minutes = 0U;
+        }
+    } else {
+        Dev.meter.today_run_minutes = 0U;
+    }
+    meterDayStart = dayStart;
+}
+
+uint16_t Meter_GetTodayRunMinutes(void)
+{
+    meter_sync_day();
+    if(Dev.meter.today_run_minutes > METER_DAY_MAX_RUN_MINUTES) {
+        Dev.meter.today_run_minutes = METER_DAY_MAX_RUN_MINUTES;
+    }
+    return Dev.meter.today_run_minutes;
+}
 
 /**
  * @brief 计量数据更新 (每秒调用一次)
@@ -457,28 +468,46 @@ void Rule_Clear(uint8_t index)
  */
 void Meter_Update(uint32_t dt_sec)
 {
-    static uint32_t sec_acc = 0;  /* 秒累加器, 60秒进位到分钟 */
+    uint64_t accumulated;
+    uint32_t increments;
 
-    if (Dev.onOff != PowerOn) {
-        return; /* 空调关闭时不计量 */
+    meter_sync_day();
+    if(Dev.meter.today_run_minutes > METER_DAY_MAX_RUN_MINUTES) {
+        Dev.meter.today_run_minutes = METER_DAY_MAX_RUN_MINUTES;
     }
 
-    sec_acc += dt_sec;
-
-    /* 运行时间: 每60秒累加1分钟 */
-    if (sec_acc >= 60) {
-        Dev.meter.run_minutes += (sec_acc / 60);
-        sec_acc %= 60;
+    if(Dev.onOff == PowerOn) {
+        uint32_t seconds = (uint32_t)Dev.meter.run_seconds_remainder + dt_sec;
+        uint32_t runMinuteIncrements = seconds / 60UL;
+        Dev.meter.run_minutes += runMinuteIncrements;
+        if(runMinuteIncrements >= (uint32_t)METER_DAY_MAX_RUN_MINUTES -
+                                  Dev.meter.today_run_minutes) {
+            Dev.meter.today_run_minutes = METER_DAY_MAX_RUN_MINUTES;
+        } else {
+            Dev.meter.today_run_minutes = (uint16_t)(Dev.meter.today_run_minutes +
+                                                      runMinuteIncrements);
+        }
+        Dev.meter.run_seconds_remainder = (uint16_t)(seconds % 60UL);
+        Dev.runTime = Dev.meter.run_minutes > 0xFFFFUL ? 0xFFFFU : (uint16_t)Dev.meter.run_minutes;
     }
 
-    /* 电量累计: 功率(W*10) * 时间(s) / 3600 / 1000 = 0.1kWh 单位 */
-    /* 公式: energy_wh += (loadPower * dt_sec) / 36000 */
-    Dev.meter.energy_wh += (uint32_t)Dev.loadPower * dt_sec / 36000;
+    /* 按实测功率累计，红外状态与空调物理状态不一致时也不会漏计。 */
+    if(HLW8110_GetStatus()->valid && Dev.loadPower != 0U) {
+        accumulated = (uint64_t)Dev.meter.energy_watt_tenth_seconds + (uint64_t)Dev.loadPower * dt_sec;
+        increments = (uint32_t)(accumulated / METER_TENTH_KWH_DIVISOR);
+        Dev.meter.energy_watt_tenth_seconds = (uint32_t)(accumulated % METER_TENTH_KWH_DIVISOR);
+        if(0xFFFFFFFFUL - Dev.meter.energy_wh < increments) Dev.meter.energy_wh = 0xFFFFFFFFUL;
+        else Dev.meter.energy_wh += increments;
+    }
 
-    /* 定期保存计量数据到Flash */
-    if (LocalTimestamp - Dev.meter.last_save_ts >= METER_SAVE_INTERVAL) {
+    /* RTC 对时可能回拨，避免无符号下溢导致连续擦写。 */
+    if(!RTC_IsTimeValid()) {
+        /* 未对时阶段不以 2026-01-01 的安全基准覆盖真实保存时间。 */
+    } else if(Dev.meter.last_save_ts == 0U || LocalTimestamp < Dev.meter.last_save_ts) {
         Dev.meter.last_save_ts = LocalTimestamp;
-        SaveDevInfo(0); /* 立即保存 */
+    } else if(LocalTimestamp - Dev.meter.last_save_ts >= METER_SAVE_INTERVAL) {
+        Dev.meter.last_save_ts = LocalTimestamp;
+        SaveDevInfo(0);
     }
 }
 
@@ -497,7 +526,13 @@ void Meter_Save(void)
 void Meter_Reset(void)
 {
     Dev.meter.energy_wh    = 0;
+    Dev.meter.energy_watt_tenth_seconds = 0;
     Dev.meter.run_minutes  = 0;
+    Dev.meter.run_seconds_remainder = 0;
+    Dev.meter.today_run_minutes = 0;
+    meterDayStart = RTC_IsTimeValid()
+        ? LocalTimestamp - (LocalTimestamp % METER_SECONDS_PER_DAY)
+        : METER_DAY_UNINITIALIZED;
     Dev.meter.onoff_count  = 0;
     Dev.meter.fault_count  = 0;
     Dev.meter.last_save_ts = LocalTimestamp;

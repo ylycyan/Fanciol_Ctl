@@ -1,6 +1,10 @@
 ENTRY( _start )
 
-__stack_size = 512;
+/*
+ * BLE 回调 -> V2 协议 -> 配置提交的静态调用链约 624 B，且预编译 BLE/Flash
+ * 库与中断现场不生成 .su 报告。预留 1536 B，避免 512 B 默认栈在现场被静默越界。
+ */
+__stack_size = 1536;
 
 PROVIDE( _stack_size = __stack_size );
 
@@ -176,5 +180,4 @@ SECTIONS
         PROVIDE( _eusrstack = .);
     } >RAM 
 }
-
 
