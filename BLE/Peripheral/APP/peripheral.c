@@ -204,8 +204,8 @@ void Peripheral_Init()
         static uint8_t baselineAdv[] = {
             0x02, GAP_ADTYPE_FLAGS,
             BT_DEFAULT_DISCOVERABLE_MODE | GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED,
-            0x0A, GAP_ADTYPE_LOCAL_NAME_COMPLETE,
-            'C','l','i','m','a','S','y','n','c'
+            0x08, GAP_ADTYPE_LOCAL_NAME_COMPLETE,
+            'S','p','l','i','t','A','C'
         };
         uint8_t enable = TRUE;
         uint16_t advInt = BT_DEFAULT_ADVERTISING_INTERVAL;
@@ -795,7 +795,14 @@ static uint8_t peripheralBuildAdvData(void)
     uint8_t localName[23];
     static const char hex[]="0123456789ABCDEF";
     uint8_t nameLen = (uint8_t)strlen(BT_DEVICE_NAME);
+    uint16_t shortId;
     GET_UNIQUE_ID(uid);
+    /*
+     * GET_UNIQUE_ID() returns the six-byte factory BLE MAC followed by two
+     * zero bytes. Some MAC byte positions are manufacturer/batch constants
+     * (observed as 0x1970), so fold all six bytes into the installer short ID.
+     */
+    shortId = V2_Crc16(uid, 6u);
     if(nameLen > 22)
     {
         nameLen = 22;
@@ -811,7 +818,7 @@ static uint8_t peripheralBuildAdvData(void)
     advertData[p++] = HI_UINT16(SIMPLEPROFILE_SERV_UUID);
 
     memcpy(localName,BT_DEVICE_NAME,nameLen);
-    if(nameLen<=17u){localName[nameLen++]='-';localName[nameLen++]=hex[uid[4]>>4];localName[nameLen++]=hex[uid[4]&0x0Fu];localName[nameLen++]=hex[uid[5]>>4];localName[nameLen++]=hex[uid[5]&0x0Fu];}
+    if(nameLen<=17u){localName[nameLen++]='-';localName[nameLen++]=hex[(shortId>>12)&0x0Fu];localName[nameLen++]=hex[(shortId>>8)&0x0Fu];localName[nameLen++]=hex[(shortId>>4)&0x0Fu];localName[nameLen++]=hex[shortId&0x0Fu];}
     advertData[p++] = (uint8_t)(nameLen + 1);
     advertData[p++] = GAP_ADTYPE_LOCAL_NAME_COMPLETE;
     memcpy(&advertData[p], localName, nameLen);

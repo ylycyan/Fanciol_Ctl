@@ -324,7 +324,7 @@ static inline void Led_Init(void){
 #define BT_DEFAULT_DESIRED_SLAVE_LATENCY        0
 #define BT_DEFAULT_DESIRED_CONN_TIMEOUT         1000
 #define BT_COMPANY_ID                           0x07D7  //蓝牙厂商 ID
-#define BT_DEVICE_NAME                          "ClimaSync" //设备名
+#define BT_DEVICE_NAME                          "SplitAC" // 分体空调控制器广播基础名
 // #define BT_DEFAULT_MAC_ADDR                     {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02} //BLE MAC 地址 默认由芯片地址随机生成
 
 //uilt functions

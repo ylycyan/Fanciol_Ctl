@@ -63,8 +63,9 @@ static uint32_t current_capability_bitmap(void)
 void SplitAcV2_Init(void)
 {
     uint8_t uid[8] __attribute__((aligned(4)));
+    uint16_t short_id;
     staged_config_valid=0;staged_rules_valid=0;identify_until=0;maintenance_until=0;
-    GET_UNIQUE_ID(uid);memcpy(device_identity,"CH583-",6);device_identity[6]=hex_digit(uid[3]>>4);device_identity[7]=hex_digit(uid[3]);device_identity[8]=hex_digit(uid[4]>>4);device_identity[9]=hex_digit(uid[4]);device_identity[10]=hex_digit(uid[5]>>4);device_identity[11]=hex_digit(uid[5]);device_identity_len=12;
+    GET_UNIQUE_ID(uid);short_id=V2_Crc16(uid,6u);memcpy(device_identity,"SplitAC-",8);device_identity[8]=hex_digit((uint8_t)(short_id>>12));device_identity[9]=hex_digit((uint8_t)(short_id>>8));device_identity[10]=hex_digit((uint8_t)(short_id>>4));device_identity[11]=hex_digit((uint8_t)short_id);device_identity_len=12;
 }
 void SplitAcV2_ResetSession(void){staged_config_valid=0;staged_rules_valid=0;identify_until=0;maintenance_until=0;}
 uint8_t SplitAcV2_IdentifyActive(void){if(!identify_until)return 0;if(!before(CurTick,identify_until)){identify_until=0;return 0;}return 1;}
