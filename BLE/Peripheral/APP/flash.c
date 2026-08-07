@@ -6,11 +6,6 @@
 static volatile uint16_t Flash_Delay;
 static volatile uint8_t Ir_Save_Pending;
 
-/* Compatibility facade for existing modules. New data is partitioned by concern. */
-int Flash_Erase(void) { return EEPROM_ERASE(V2_CONFIG_SLOT_A, EEPROM_BLOCK_SIZE); }
-int Flash_Write(uint8_t *data, uint32_t len) { return EEPROM_WRITE(V2_CONFIG_SLOT_A, data, len); }
-int Flash_Read(uint8_t *data, uint32_t len) { return EEPROM_READ(V2_CONFIG_SLOT_A, data, len); }
-
 /* Legacy callers express delay in 10 ms ticks; Flash_Poll runs once per second. */
 void SaveDevInfo(uint16_t delay) { Flash_Delay = delay ? (uint16_t)((delay + 99u) / 100u) : 1u; }
 void SaveIrInfo(void) { Ir_Save_Pending = 1u; }

@@ -1,8 +1,9 @@
 ENTRY( _start )
 
 /*
- * BLE 回调 -> V2 协议 -> 配置提交的静态调用链约 624 B，且预编译 BLE/Flash
- * 库与中断现场不生成 .su 报告。预留 1536 B，避免 512 B 默认栈在现场被静默越界。
+ * The BLE callback -> V2 protocol -> configuration commit chain uses more
+ * than the vendor example's 512-byte stack. Reserve the verified product
+ * minimum so a control/configuration request cannot silently corrupt RAM.
  */
 __stack_size = 1536;
 
@@ -180,4 +181,3 @@ SECTIONS
         PROVIDE( _eusrstack = .);
     } >RAM 
 }
-

@@ -327,36 +327,6 @@ static inline void Led_Init(void){
 #define BT_DEVICE_NAME                          "ClimaSync" //设备名
 // #define BT_DEFAULT_MAC_ADDR                     {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02} //BLE MAC 地址 默认由芯片地址随机生成
 
-//蓝牙协议
-typedef enum {
-    BT_CMD_NULL     = 0, //空指令
-    BT_CMD_OK       = 1, 
-    BT_CMD_FAIL     = 2,
-    BT_CMD_DATA     = 3, 
-    BT_CMD_OPERATE  = 4, //同云端Operate+OperateTag+OperateParameter配置,[len(1)cmd(1:4)operate(1)operateTag(1)operateParameter(f:4)Crc(1)]
-    BT_CMD_IRTRANS  = 5,
-    BT_CMD_IRMATCH  = 6,  
-    BT_CMD_IRLEARN  = 7,  //红外学习
-    BT_CMD_SYSPARAMS= 8,  //系统参数
-    BT_CMD_UPDATE   = 9,  //固件更新
-    BT_CMD_RESET    = 10, //设备软重启
-    BT_CMD_ILLEGAL  = 11,
-}BT_CMD_t;
-
-typedef enum{
-    eBtSet = 0, //设置指令
-    eBtGet = 1, //查询指令
-}BT_SET_GET_t;
-
-// //ble帧结构
-// typedef struct{
-//     uint8_t len; //数据长度
-//     uint8_t cmd; 
-//     uint8_t dat[128];
-//     uint8_t checksum; 
-// }BT_FRAME_T;
-// static BT_FRAME_T BTFrame;
-
 //uilt functions
 extern void PrintHex(char *msg, uint8_t *buffer, uint16_t size);
 
@@ -406,15 +376,8 @@ extern void ADC_Init(void);
 extern uint8_t ADC_IsValid(void);
 extern void LED_Pro(void);
 extern void Rule_Pro(void);
-extern void Rule_Init(void);
 extern void Rule_DailyReset(void);
-extern void Rule_ResetOne(uint8_t index);
-extern const DEV_RULE_T* Rule_Get(uint8_t index);
-extern void Rule_Set(uint8_t index, const DEV_RULE_T *rule);
-extern void Rule_Clear(uint8_t index);
 extern void Meter_Update(uint32_t dt_sec);
-extern void Meter_Save(void);
-extern void Meter_Reset(void);
 extern uint16_t Meter_GetTodayRunMinutes(void);
 void LED_GREEN_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 void LED_RED_BLINK(bool IsBlinking, uint32_t BlinkInterval);

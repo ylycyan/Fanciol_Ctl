@@ -40,7 +40,13 @@ static void rule_get_time(uint16_t *hour, uint16_t *min, uint16_t *weekday,
     uint16_t year, mon, day, h, m, sec;
     static const uint8_t month_offset[12] = {0,3,2,5,0,3,5,1,4,6,2,4};
 
-    RTC_GetTime(&year, &mon, &day, &h, &m, &sec);
+    if(!RTC_GetWallTime(&year, &mon, &day, &h, &m, &sec)) {
+        year = 2020u;
+        mon = 1u;
+        day = 1u;
+        h = 0u;
+        m = 0u;
+    }
 
     if (hour)   *hour   = h;
     if (min)    *min    = m;
@@ -293,17 +299,6 @@ static bool trig_check_combined(const DEV_RULE_T *r)
 /*  公共接口                                                           */
 /* ------------------------------------------------------------------ */
 
-/**
- * @brief 规则引擎初始化 (清空所有规则和计量)
- */
-void Rule_Init(void)
-{
-    uint8_t i;
-    for (i = 0; i < MAX_RULES; i++) {
-        Dev.rules[i].ctrl.enable = 0;
-    }
-    /* meter 保留, 不清零 (由 Flash 加载) */
-}
 
 /**
  * @brief 规则引擎主循环 (每秒调用一次)
@@ -372,49 +367,6 @@ void Rule_DailyReset(void)
     }
 }
 
-/**
- * @brief 清除指定规则的 executed 标志
- */
-void Rule_ResetOne(uint8_t index)
-{
-    if (index < MAX_RULES) {
-        Dev.rules[index].ctrl.executed = 0;
-    }
-}
-
-/**
- * @brief 获取指定规则的只读指针 (用于蓝牙查询)
- */
-const DEV_RULE_T* Rule_Get(uint8_t index)
-{
-    if (index < MAX_RULES) {
-        return &Dev.rules[index];
-    }
-    return (const DEV_RULE_T*)0;
-}
-
-/**
- * @brief 设置指定规则 (用于蓝牙配置)
- */
-void Rule_Set(uint8_t index, const DEV_RULE_T *rule)
-{
-    if (index < MAX_RULES && rule) {
-        Dev.rules[index] = *rule;
-        SaveDevInfo(50); /* 延迟500ms保存到Flash */
-    }
-}
-
-/**
- * @brief 清空指定规则
- */
-void Rule_Clear(uint8_t index)
-{
-    if (index < MAX_RULES) {
-        Dev.rules[index].ctrl.enable = 0;
-        Dev.rules[index].ctrl.executed = 0;
-        SaveDevInfo(50);
-    }
-}
 
 /* ------------------------------------------------------------------ */
 /*  计量模块                                                           */
@@ -511,30 +463,4 @@ void Meter_Update(uint32_t dt_sec)
     }
 }
 
-/**
- * @brief 手动保存计量数据
- */
-void Meter_Save(void)
-{
-    Dev.meter.last_save_ts = LocalTimestamp;
-    SaveDevInfo(0);
-}
 
-/**
- * @brief 清空计量数据
- */
-void Meter_Reset(void)
-{
-    Dev.meter.energy_wh    = 0;
-    Dev.meter.energy_watt_tenth_seconds = 0;
-    Dev.meter.run_minutes  = 0;
-    Dev.meter.run_seconds_remainder = 0;
-    Dev.meter.today_run_minutes = 0;
-    meterDayStart = RTC_IsTimeValid()
-        ? LocalTimestamp - (LocalTimestamp % METER_SECONDS_PER_DAY)
-        : METER_DAY_UNINITIALIZED;
-    Dev.meter.onoff_count  = 0;
-    Dev.meter.fault_count  = 0;
-    Dev.meter.last_save_ts = LocalTimestamp;
-    SaveDevInfo(0);
-}

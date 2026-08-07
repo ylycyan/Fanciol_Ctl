@@ -19,7 +19,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include "b_cdc.h"
 #include "lora.h"
 #include "board.h"
 #include "timer.h"
@@ -60,6 +59,27 @@ void Main_Circulation()
  *
  * @return  none
  */
+#if defined(BLE_BASELINE_DIAGNOSTIC)
+int main(void)
+{
+    SetSysClock(CLK_SOURCE_PLL_60MHz);
+    GPIOA_SetBits(GPIO_Pin_9);
+    GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);
+    GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
+    UART1_DefInit();
+    PRINT("BLE baseline %s ,build in(%s:%s)\r\n", VER_LIB, __DATE__, __TIME__);
+
+    CH58X_BLEInit();
+    HAL_Init();
+    GAPRole_PeripheralInit();
+    Peripheral_Init();
+
+    while(1)
+    {
+        TMOS_SystemProcess();
+    }
+}
+#else
 int main(void)
 {
     uint8_t retainedResetReason;
@@ -78,10 +98,11 @@ int main(void)
     GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);
     GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
     UART1_DefInit();
-    // InitUSBDevice(); //usb-cdc??????? 
+    // InitUSBDevice(); //usb-cdc 已弃用，不再初始化
     PRINT("%s ,build in(%s:%s)\n", VER_LIB,__DATE__,__TIME__);
     CH58X_BLEInit();
     HAL_Init();
+    PRINT("BLE RTC clock: internal 32K RC\r\n");
     RTC_ProductInit(retainedResetReason, retainedTimestamp);
     LocalTimestamp = Rtc_GetTimestamp();
     GAPRole_PeripheralInit();
@@ -107,5 +128,6 @@ int main(void)
     //lora test    
     Main_Circulation();
 }
+#endif
 
 /******************************** endfile @ main ******************************/

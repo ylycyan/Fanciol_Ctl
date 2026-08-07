@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 uint8_t RTC_IsTimeValid(void);
-void RTC_GetTime(uint16_t *year, uint16_t *month, uint16_t *day,
-                 uint16_t *hour, uint16_t *minute, uint16_t *second);
+uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *month, uint16_t *day,
+                        uint16_t *hour, uint16_t *minute, uint16_t *second);
 
 #endif

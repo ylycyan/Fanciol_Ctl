@@ -42,8 +42,8 @@ uint8_t RTC_IsTimeValid(void)
     return 1u;
 }
 
-void RTC_GetTime(uint16_t *year, uint16_t *month, uint16_t *day,
-                 uint16_t *hour, uint16_t *minute, uint16_t *second)
+uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *month, uint16_t *day,
+                        uint16_t *hour, uint16_t *minute, uint16_t *second)
 {
     *year = 2026u;
     *month = 7u;
@@ -51,6 +51,7 @@ void RTC_GetTime(uint16_t *year, uint16_t *month, uint16_t *day,
     *hour = 12u;
     *minute = 0u;
     *second = 0u;
+    return 1u;
 }
 
 const HLW8110_Status_t *HLW8110_GetStatus(void)

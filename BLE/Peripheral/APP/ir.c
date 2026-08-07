@@ -140,7 +140,7 @@ void Check_IrBuf(void){ //
                 #endif
                 Dev.errorCode.bit.irMatch = 1;
             }else{ //匹配成功
-                //查询 g_arc_info 表中是否存在对应编号
+                // HXD039B 匹配返回码即模块内部码，直接作为 Dev.irType 使用
                 Dev.irType = (((uint16_t)IrBuf.rxbuf[0])<<8)|(IrBuf.rxbuf[1]);
                 Dev.errorCode.bit.irMatch = 0;
                  #if _IR_INFO_

@@ -5,41 +5,6 @@
 #include "lora.h"
 #include "board.h"
 #include "fixed_math_v2.h"
-/*
-void Lora_Pio_Init(void)
-{
-        GPIOA_SetBits(GPIO_Pin_12);
-        GPIOA_ModeCfg(GPIO_Pin_12 | GPIO_Pin_13 | GPIO_Pin_14, GPIO_ModeOut_PP_5mA);
-        SPI1_MasterDefInit();   
-        // 单字节发送
-        GPIOA_ResetBits(GPIO_Pin_12);
-        SPI1_MasterSendByte(0x55);
-        GPIOA_SetBits(GPIO_Pin_12);
-        DelayMs(1);
-        GPIOA_ResetBits(GPIO_Pin_12);
-        i = SPI1_MasterRecvByte();
-        GPIOA_SetBits(GPIO_Pin_12);
-        DelayMs(2);
-        PRINT("receive %x\n",i);
-    
-        // FIFO 连续发送
-        GPIOA_ResetBits(GPIO_Pin_12);
-        SPI1_MasterTrans(spiBuff, 8);
-        GPIOA_SetBits(GPIO_Pin_12);
-        DelayMs(2);
-        GPIOA_ResetBits(GPIO_Pin_12);
-        SPI1_MasterRecv(spiBuffrev, 8);
-        GPIOA_SetBits(GPIO_Pin_12);
-        DelayMs(2);
-        PRINT("FIFO recv ");
-        for(i = 0; i < 8; i++)
-        {
-            PRINT(" %x", spiBuffrev[i]);
-        }
-        PRINT("\n");
-}
-*/
-
 void Lora_Spi_Init(void)
 {
     /* SPI 0 */
@@ -323,12 +288,6 @@ void Lora_SetRx( uint32_t timeout )
     buf[2] = ( uint8_t )( timeout & 0xFF );
     Lora_WriteCommand( RADIO_SET_RX, buf, 3 );
 }
-
-void Lora_SetTxContinuousWave( void )
-{
-    Lora_WriteCommand( RADIO_SET_TXCONTINUOUSWAVE, 0, 0 );
-}
-
 
 void Lora_SetStopRxTimerOnPreambleDetect( uint8_t enable )
 {
@@ -708,125 +667,6 @@ void Lora_Tx(uint8_t *data, uint8_t len){
 	SX126x.PacketParams.Params.LoRa.PayloadLength = len;
 	Lora_SetPacketParams( &SX126x.PacketParams );
 	Lora_SendPayload( data, len, 0 );
-}
-
-
-/**
- * @brief Sends a LoRa transmission request.
- * @param data Pointer to the data to be transmitted.
- * @param len Length of the data in bytes.
- * @param ms Timeout value in milliseconds.
- * 
- * @return Returns true if the transmission was successful, false otherwise.
- */
-bool Lora_TxRequest(uint8_t *data, uint8_t len, uint32_t ms){
-	int timeoutMs = ms;
-	uint16_t irqRegs = 0;
-	if(ms < 200){
-		timeoutMs = 1500;
-	}
-	Lora_ClearIrqStatus(IRQ_RADIO_ALL);
-	Lora_SetDioIrqParams( IRQ_TX_DONE);
-	SX126x.PacketParams.Params.LoRa.PayloadLength = len;
-	Lora_SetPacketParams( &SX126x.PacketParams );
-	Lora_SendPayload( data, len, 0 );
-	while(timeoutMs > 0){
-		irqRegs = Lora_GetIrqStatus();
-        if( irqRegs == 0xFFFF ){
-            PRINT("Error: SPI Read Failure (0xFFFF). Check wiring/power.\n");
-            return false;
-        }
-		if( ( irqRegs & IRQ_TX_DONE ) == IRQ_TX_DONE ){
-	//		PRINT("Tx Success \n");
-			break;
-		}else if((irqRegs & IRQ_RX_TX_TIMEOUT) == IRQ_RX_TX_TIMEOUT){
-			PRINT("Tx Irq Timeout .\n");
-			break;
-		}
-		timeoutMs -= 20;
-		mDelaymS(20);
-	}
-	if(timeoutMs <= 0){
-		PRINT("\t#Tx timeout(%ld ms) for %d bytes .\n", ms, len);
-		Lora_Listening();
-		return false;
-	}else{
-		//PRINT("\tTx(in %ld ms) for %d bytes .\n",(ms-timeoutMs), len);
-		Lora_Listening();
-		return true;
-	}
-}
-
-void Lora_Rx(uint8_t *data, uint8_t *len, uint32_t ms){
-	int32_t timeoutMs = ms;
-	uint16_t irqRegs = 0;
-	PacketStatus_t pktStatus;
-	if(ms < 200){
-		timeoutMs = 1500;
-	}
-	*len = 0;
-	while(timeoutMs > 0){
-		irqRegs = Lora_GetIrqStatus();
-//		PRINT("irqRegs = %d\n",irqRegs);
-        if( irqRegs == 0xFFFF ){
-             PRINT("Error: SPI Read Failure (0xFFFF).\n");
-             break;
-        }
-		if((irqRegs & IRQ_RX_DONE) == IRQ_RX_DONE){
-			Lora_GetPayload(data,len,0xFF);
-			Lora_GetPacketStatus( &pktStatus );
-			Rssi = pktStatus.Params.LoRa.RssiPkt+20;
-			break;
-		}else if((irqRegs & IRQ_RX_TX_TIMEOUT) == IRQ_RX_TX_TIMEOUT){
-			PRINT("rx Irq timeout .\n");
-			break;
-		}
-		timeoutMs -= 20;
-		mDelaymS(20);
-	}
-	if (*len == 0) {
-		PRINT("\tRx timeout(%ld ms).\n", ms);
-		Lora_Listening();
-	} else {
-		//PRINT("\tRx(%d bytes in %ld ms).\n", *len, (ms-timeoutMs));
-		Lora_Listening();
-	}
-}
-
-//发送信息，然后切换至接收模式
-void Lora_RxRequest(uint8_t *data, uint8_t *len, uint32_t ms){
-	int32_t timeoutMs = ms;
-	uint16_t irqRegs = 0;
-	PacketStatus_t pktStatus;
-	if(ms < 200){
-		timeoutMs = 1500;
-	}
-	*len = 0;
-	while(timeoutMs > 0){
-		irqRegs = Lora_GetIrqStatus();
-//		PRINT("irqRegs = %d\n",irqRegs);
-        if( irqRegs == 0xFFFF ){
-             PRINT("Error: SPI Read Failure (0xFFFF).\n");
-             break;
-        }
-		if((irqRegs & IRQ_RX_DONE) == IRQ_RX_DONE){
-			Lora_GetPayload(data,len,0xFF);
-			Lora_GetPacketStatus( &pktStatus );
-			Rssi = pktStatus.Params.LoRa.RssiPkt+20;
-			break;
-		}else if((irqRegs & IRQ_RX_TX_TIMEOUT) == IRQ_RX_TX_TIMEOUT){
-			PRINT("rx Irq timeout .\n");
-			break;
-		}
-		timeoutMs -= 20;
-		mDelaymS(20);
-	}
-	if (*len == 0) {
-		PRINT("\tRx timeout(%ld ms).\n", ms);
-	} else {
-		//PRINT("\tRx(%d bytes in %ld ms).\n", *len, (ms-timeoutMs));
-	}
-	Lora_Listening();
 }
 
 void Lora_CheckData(uint8_t *data, uint8_t *len){

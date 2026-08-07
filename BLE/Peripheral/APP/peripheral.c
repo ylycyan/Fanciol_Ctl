@@ -193,7 +193,42 @@ static void peripheralEnableAdvertising(const char *reason)
  */
 void Peripheral_Init()
 {
+    bStatus_t gapServiceStatus;
+    bStatus_t gattServiceStatus;
+    bStatus_t devInfoStatus;
+    bStatus_t simpleServiceStatus;
+    bStatus_t otaServiceStatus;
     Peripheral_TaskID = TMOS_ProcessEventRegister(Peripheral_ProcessEvent);
+#if defined(BLE_BASELINE_DIAGNOSTIC)
+    {
+        static uint8_t baselineAdv[] = {
+            0x02, GAP_ADTYPE_FLAGS,
+            BT_DEFAULT_DISCOVERABLE_MODE | GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED,
+            0x0A, GAP_ADTYPE_LOCAL_NAME_COMPLETE,
+            'C','l','i','m','a','S','y','n','c'
+        };
+        uint8_t enable = TRUE;
+        uint16_t advInt = BT_DEFAULT_ADVERTISING_INTERVAL;
+        uint8_t advStatus;
+        uint8_t enableStatus;
+
+        GAP_SetParamValue(TGAP_DISC_ADV_INT_MIN, advInt);
+        GAP_SetParamValue(TGAP_DISC_ADV_INT_MAX, advInt);
+        advStatus = GAPRole_SetParameter(GAPROLE_ADVERT_DATA,
+                                         sizeof(baselineAdv), baselineAdv);
+        enableStatus = GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED,
+                                            sizeof(enable), &enable);
+        gapServiceStatus = GGS_AddService(GATT_ALL_SERVICES);
+        gattServiceStatus = GATTServApp_AddService(GATT_ALL_SERVICES);
+        GGS_SetParameter(GGS_DEVICE_NAME_ATT, sizeof(attDeviceName), attDeviceName);
+        peripheralInitConnItem(&peripheralConnList);
+        PRINT("BLE baseline cfg: task=%u adv=%02x enable=%02x gap=%02x gatt=%02x\r\n",
+              Peripheral_TaskID, advStatus, enableStatus,
+              gapServiceStatus, gattServiceStatus);
+        tmos_set_event(Peripheral_TaskID, SBP_START_DEVICE_EVT);
+        return;
+    }
+#endif
     V2_ReassemblerReset(&v2Reassembler);
     SplitAcV2_Init();
     OtaGuard_Reset(&otaGuard);
@@ -204,12 +239,18 @@ void Peripheral_Init()
         uint16_t desired_min_interval = BT_DEFAULT_DESIRED_MIN_CONN_INTERVAL;
         uint16_t desired_max_interval = BT_DEFAULT_DESIRED_MAX_CONN_INTERVAL;
 
-        GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);
-        GAPRole_SetParameter(GAPROLE_ADVERT_DATA, advLen, advertData);
-        GAPRole_SetParameter(GAPROLE_MIN_CONN_INTERVAL, sizeof(uint16_t), &desired_min_interval);
-        GAPRole_SetParameter(GAPROLE_MAX_CONN_INTERVAL, sizeof(uint16_t), &desired_max_interval);
+        uint8_t scanStatus = GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);
+        uint8_t advStatus = GAPRole_SetParameter(GAPROLE_ADVERT_DATA, advLen, advertData);
+        uint8_t minStatus = GAPRole_SetParameter(GAPROLE_MIN_CONN_INTERVAL, sizeof(uint16_t), &desired_min_interval);
+        uint8_t maxStatus = GAPRole_SetParameter(GAPROLE_MAX_CONN_INTERVAL, sizeof(uint16_t), &desired_max_interval);
         initial_advertising_enable = TRUE;
-        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
+        {
+            uint8_t enableStatus = GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
+            PRINT("BLE adv cfg: task=%u len=%u scan=%02x adv=%02x min=%02x max=%02x enable=%02x\r\n",
+                  Peripheral_TaskID, advLen, scanStatus, advStatus,
+                  minStatus, maxStatus, enableStatus);
+        }
+        PrintHex("BLE adv data", advertData, advLen);
     }
 
     {
@@ -238,11 +279,14 @@ void Peripheral_Init()
     }
 
     // Initialize GATT attributes
-    GGS_AddService(GATT_ALL_SERVICES);           // GAP
-    GATTServApp_AddService(GATT_ALL_SERVICES);   // GATT attributes
-    DevInfo_AddService();                        // Device Information Service
-    SimpleProfile_AddService(GATT_ALL_SERVICES); // Simple GATT Profile
-    OTAProfile_AddService(GATT_ALL_SERVICES);
+    gapServiceStatus = GGS_AddService(GATT_ALL_SERVICES);           // GAP
+    gattServiceStatus = GATTServApp_AddService(GATT_ALL_SERVICES);  // GATT attributes
+    devInfoStatus = DevInfo_AddService();                           // Device Information Service
+    simpleServiceStatus = SimpleProfile_AddService(GATT_ALL_SERVICES);
+    otaServiceStatus = OTAProfile_AddService(GATT_ALL_SERVICES);
+    PRINT("BLE services: gap=%02x gatt=%02x dev=%02x simple=%02x ota=%02x\r\n",
+          gapServiceStatus, gattServiceStatus, devInfoStatus,
+          simpleServiceStatus, otaServiceStatus);
 
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, sizeof(attDeviceName), attDeviceName);
     PRINT("Device Name: %s\n", attDeviceName);
@@ -314,7 +358,10 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
     if(events & SBP_START_DEVICE_EVT)
     {
         // Start the Device
-        GAPRole_PeripheralStartDevice(Peripheral_TaskID, &Peripheral_BondMgrCBs, &Peripheral_PeripheralCBs);
+        PRINT("BLE start status=%02x\r\n",
+              GAPRole_PeripheralStartDevice(Peripheral_TaskID,
+                                            &Peripheral_BondMgrCBs,
+                                            &Peripheral_PeripheralCBs));
         return (events ^ SBP_START_DEVICE_EVT);
     }
 
@@ -773,22 +820,6 @@ static uint8_t peripheralBuildAdvData(void)
     return p;
 }
 
-//M:len(1)cmd(1)DATA(N)Crc(1)
-//S:Len(1)cmd(1)Crc(1)
-// 辅助发送函数
-void SendBtResponse(uint8_t cmd, uint8_t* payload, uint8_t payloadLen) {
-    uint8_t txBuf[64];
-    if(payloadLen + 3 > 64) return;
-    txBuf[0] = payloadLen + 3; // Total Len
-    txBuf[1] = cmd;            // Cmd
-    if(payloadLen > 0) {
-        tmos_memcpy(&txBuf[2], payload, payloadLen);
-    }
-    AddCrc(txBuf, payloadLen + 2);
-    PrintHex("Tx",txBuf,txBuf[0]);
-    peripheralCharNotify(SIMPLEPROFILE_CHAR1, txBuf, txBuf[0]);
-}
-
 static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len)
 {
     switch(paramID)
@@ -810,290 +841,11 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
             }
             /*
              * 量产固件只接受 BLE V2。旧协议可以绕过配置版本、范围校验和原子提交，
-             * 因而不能继续作为隐藏写入口保留。以下旧实现暂留源码供迁移核对，
-             * 但该分支在编译后不可达，并会被 --gc-sections 清除。
+             * 不能作为隐藏写入口保留；旧协议处理器与 SendBtResponse 已一并删除。
              */
             V2_ReassemblerReset(&v2Reassembler);
             PRINT("BLE legacy frame rejected\r\n");
             break;
-#if 0
-            uint8_t rxbuf[64];
-            if(len > 64) len = 64;
-            tmos_memcpy(rxbuf, pValue, len);
-            PrintHex("RX", rxbuf, len);
-
-            // 校验: 长度至少3字节(Len+Cmd+Crc), 首字节为长度, CRC校验通过
-            if(len < 3 || len != rxbuf[0] || !ChkCrc(rxbuf, len))
-            {
-                PRINT("Protocol Error: Len/CRC\n");
-                SendBtResponse(BT_CMD_ERROR, (uint8_t*)"CRC/LEN", 7);
-                break;
-            }
-
-            uint8_t cmd = rxbuf[1];
-            uint8_t* pData = &rxbuf[2];
-            uint8_t dataLen = len - 3; 
-            
-            uint8_t rspBuf[60];
-            uint8_t rspLen = 0;
-            int16_t tmpS16;
-
-            switch(cmd)
-            {
-                case BT_CMD_WRITE: // 写属性
-                {
-                    uint8_t i = 0;
-                    while(i < dataLen) {
-                        uint8_t pid = pData[i++];
-                        switch(pid) {
-                            case PID_SWITCH:
-                                if(i < dataLen) Dev.onOff = pData[i++];
-                                break;
-                            case PID_MODE:
-                                if(i < dataLen) Dev.ctlMode = pData[i++];
-                                break;
-                            case PID_TEMP_SET:
-                                if(i + 1 < dataLen) {
-                                    Dev.temSet = (pData[i] | (pData[i+1]<<8));
-                                    i += 2;
-                                }
-                                break;
-                            case PID_FAN_SPEED:
-                                if(i < dataLen) Dev.wind = pData[i++];
-                                break;
-                            case PID_LOCK:
-                                i++;
-                                break;
-                            case PID_LORA_CFG:
-                                if(i + 2 < dataLen) {
-                                    Dev.nodeId = (pData[i] | (pData[i+1]<<8));
-                                    Dev.channel = pData[i+2];
-                                    i += 3;
-                                }
-                                Dev.loraStatus = 1;
-                                Timer_Lora = LORA_SEC_TO_TICKS(600);
-                                SaveDevInfo(2);//2s后保存Dev数据
-                                break;
-                            case PID_IR_CFG:
-                                Dev.irActType = pData[i+0];
-                                if(Dev.irActType == ACT_TYPE_IR) {
-                                    if(i + 3 < dataLen) {
-                                        Dev.irType = (pData[i+1] | (pData[i+2]<<8));
-                                        Dev.irIdx = pData[i+3];
-                                        i += 4;
-                                    }
-                                }else if(Dev.irActType == ACT_TYPE_LEARN) {
-                                    //学习模式只需要irActType，通道由PID_IR_LEARN控制
-                                    i += 1;
-                                }
-                                SaveDevInfo(2);//2s后保存Dev数据
-                                break;
-                            case PID_SYS_CTRL:
-                                if(i + 3 < dataLen) {
-                                    Dev.nodeId = (pData[i] | (pData[i+1]<<8));
-                                    Dev.channel = pData[i+2];
-                                    Dev.mode = pData[i+3];
-                                    i += 4;
-                                }
-                                Dev.loraStatus = 1;
-                                Timer_Lora = LORA_SEC_TO_TICKS(600);
-                                SaveDevInfo(2);//2s后保存Dev数据
-                                break;
-                            case PID_RELAY_CFG: // 中继配置
-                                if(i + 2 < dataLen) {
-                                    uint8_t role = pData[i];
-                                    uint16_t parentId = (pData[i+1] | (pData[i+2]<<8));
-                                    i += 3;
-                                    if(role == LINK_RELAY) {
-                                        Dev.linkRole = LINK_RELAY;
-                                        Dev.parentRelayId = 0;
-                                    } else if(role == LINK_CHILD && parentId != 0 && parentId != Dev.nodeId) {
-                                        Dev.linkRole = LINK_CHILD;
-                                        Dev.parentRelayId = parentId;
-                                    } else {
-                                        Dev.linkRole = LINK_DIRECT;
-                                        Dev.parentRelayId = 0;
-                                    }
-                                    PRINT("Relay cfg: role=%d parent=%04x\n",
-                                          Dev.linkRole, Dev.parentRelayId);
-                                }
-                                // 触发重新注册
-                                Dev.loraStatus = 1;
-                                Timer_Lora = LORA_SEC_TO_TICKS(600);
-                                SaveDevInfo(2);
-                                break;
-                            default:
-                                break;
-                        }
-                    }
-                    SendBtResponse(BT_CMD_ACK, NULL, 0);
-                    break;
-                }
-                case BT_CMD_READ: // 读属性
-                {
-                    uint8_t i = 0;
-                    while(i < dataLen) {
-                        uint8_t pid = pData[i++];
-                        rspBuf[rspLen++] = pid;
-                        switch(pid) {
-                            case PID_SWITCH:
-                                rspBuf[rspLen++] = Dev.onOff;
-                                break;
-                            case PID_MODE:
-                                rspBuf[rspLen++] = Dev.ctlMode;
-                                break;
-                            case PID_TEMP_SET:
-                                rspBuf[rspLen++] = Dev.temSet & 0xFF;
-                                rspBuf[rspLen++] = (Dev.temSet >> 8) & 0xFF;
-                                break;
-                            case PID_TEMP_ROOM:
-                                tmpS16 = Dev.roomTempX10;
-                                rspBuf[rspLen++] = tmpS16 & 0xFF;
-                                rspBuf[rspLen++] = (tmpS16 >> 8) & 0xFF;
-                                break;
-                            case PID_FAN_SPEED:
-                                rspBuf[rspLen++] = Dev.wind;
-                                break;
-                            case PID_ERROR:
-                                rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
-                                rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;
-                                break;
-                            case PID_LORA_CFG:
-                                rspBuf[rspLen++] = Dev.nodeId & 0xFF;
-                                rspBuf[rspLen++] = (Dev.nodeId >> 8) & 0xFF;
-                                rspBuf[rspLen++] = Dev.channel & 0xFF;
-                                break;
-                            case PID_IR_CFG:
-                                rspBuf[rspLen++] = Dev.irActType;
-                                rspBuf[rspLen++] = Dev.irType & 0xFF;
-                                rspBuf[rspLen++] = (Dev.irType >> 8) & 0xFF;
-                                rspBuf[rspLen++] = Dev.irIdx;
-                                break;
-                            case PID_ALL_STATE:
-                                // Switch(1)
-                                rspBuf[rspLen++] = Dev.onOff;
-                                // Mode(1)
-                                rspBuf[rspLen++] = Dev.ctlMode;
-                                // TempSet(2)
-                                rspBuf[rspLen++] = Dev.temSet & 0xFF;
-                                rspBuf[rspLen++] = (Dev.temSet >> 8) & 0xFF;
-                                // TempRoom(2)
-                                tmpS16 = Dev.roomTempX10;
-                                rspBuf[rspLen++] = tmpS16 & 0xFF;
-                                rspBuf[rspLen++] = (tmpS16 >> 8) & 0xFF;
-                                // Fan(1)
-                                rspBuf[rspLen++] = Dev.wind;
-                                // Error(2)
-                                rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
-                                rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;
-                                break;
-                            case PID_DEV_INFO:
-                                // RunTime(2)
-                                rspBuf[rspLen++] = Dev.runTime & 0xFF;
-                                rspBuf[rspLen++] = (Dev.runTime >> 8) & 0xFF;
-                                // Power(2)
-                                rspBuf[rspLen++] = Dev.loadPower & 0xFF;
-                                rspBuf[rspLen++] = (Dev.loadPower >> 8) & 0xFF;
-                                break;
-                            case PID_SYS_PARAMS:
-                                rspBuf[rspLen++] = Dev.nodeId & 0xFF;
-                                rspBuf[rspLen++] = (Dev.nodeId >> 8) & 0xFF;
-                                rspBuf[rspLen++] = Dev.channel & 0xFF;
-                                rspBuf[rspLen++] = Dev.loraStatus;
-                                rspBuf[rspLen++] = Dev.scanCycle;
-                                rspBuf[rspLen++] = Dev.irType & 0xFF;
-                                rspBuf[rspLen++] = (Dev.irType >> 8) & 0xFF;
-                                rspBuf[rspLen++] = Dev.irIdx;
-                                rspBuf[rspLen++] = Dev.irActType;
-                                rspBuf[rspLen++] = Dev.mode;
-                                rspBuf[rspLen++] = Dev.errorCode.u16Val & 0xFF;
-                                rspBuf[rspLen++] = (Dev.errorCode.u16Val >> 8) & 0xFF;
-                                tmpS16 = Dev.roomTempX10;
-                                rspBuf[rspLen++] = tmpS16 & 0xFF;
-                                rspBuf[rspLen++] = (tmpS16 >> 8) & 0xFF;
-                                rspBuf[rspLen++] = Dev.runTime & 0xFF;
-                                rspBuf[rspLen++] = (Dev.runTime >> 8) & 0xFF;
-                                rspBuf[rspLen++] = Dev.loadPower & 0xFF;
-                                rspBuf[rspLen++] = (Dev.loadPower >> 8) & 0xFF;
-                                break;
-                            case PID_IR_LEARN_LIST:
-                                //返回10个学习通道的enable状态
-                                for(uint8_t ch = 0; ch < MAX_IR_LEARNNUM; ch++){
-                                    rspBuf[rspLen++] = Dev.learnCode[ch].enable;
-                                }
-                                break;
-                            case PID_RELAY_CFG: // 中继配置读取
-                                rspBuf[rspLen++] = Dev.linkRole;
-                                rspBuf[rspLen++] = (Dev.linkRole == LINK_CHILD) ? 1 : 0;
-                                rspBuf[rspLen++] = Dev.parentRelayId & 0xFF;
-                                rspBuf[rspLen++] = (Dev.parentRelayId >> 8) & 0xFF;
-                                rspBuf[rspLen++] = Relay_GetChildCount();
-                                {
-                                    uint16_t bmp = Relay_GetChildBitmap();
-                                    rspBuf[rspLen++] = bmp & 0xFF;
-                                    rspBuf[rspLen++] = (bmp >> 8) & 0xFF;
-                                }
-                                break;
-                        }
-                    }
-                    SendBtResponse(BT_CMD_NOTIFY, rspBuf, rspLen);
-                    break;
-                }
-                case BT_CMD_ACTION: // 执行动作
-                {
-                    uint8_t action = pData[0];
-                    switch(action) {
-                        case ACT_RESET:
-                            PRINT("Resetting...\n");
-                            SendBtResponse(BT_CMD_ACK, NULL, 0);
-                            SYS_ResetExecute();
-                            break;
-                        case ACT_IR_CMD: // 红外控制指令: [ACT][CMD]
-                            if(dataLen > 1 && Ir_ExecuteVerified((IR_CMD_t)pData[1])) {
-                                SendBtResponse(BT_CMD_ACK, NULL, 0);
-                            } else {
-                                SendBtResponse(BT_CMD_ERROR, (uint8_t*)"IR_BUSY", 7);
-                            }
-                            break;
-                        case ACT_IR_MATCH:
-                            if(Ir_StartMatch()) SendBtResponse(BT_CMD_ACK, NULL, 0);
-                            else SendBtResponse(BT_CMD_ERROR, (uint8_t*)"IR_BUSY", 7);
-                            break;
-                        case ACT_IR_LEARN:
-                            //启动红外学习: [ACT][channel_idx]
-                            IrLearnChannel = (dataLen > 1) ? pData[1] : 0;
-                            if(IrLearnChannel >= MAX_IR_LEARNNUM) IrLearnChannel = 0;
-                            if(Ir_StartLearning(IrLearnChannel)) {
-                                SendBtResponse(BT_CMD_ACK, NULL, 0);
-                            } else {
-                                SendBtResponse(BT_CMD_ERROR, (uint8_t*)"IR_BUSY", 7);
-                            }
-                            break;
-                        case ACT_IR_LEARN_SEND:
-                            //发送学习码: [ACT][channel_idx]
-                            if(dataLen > 1 && pData[1] < MAX_IR_LEARNNUM){
-                                if(Ir_SendLearnedVerified(pData[1])) {
-                                    SendBtResponse(BT_CMD_ACK, NULL, 0);
-                                } else {
-                                    SendBtResponse(BT_CMD_ERROR, (uint8_t*)"IR_BUSY", 7);
-                                }
-                            }else{
-                                SendBtResponse(BT_CMD_ERROR, (uint8_t*)"INV_CH", 6);
-                            }
-                            break;
-                        case ACT_SAVE_PARAMS:
-                            // SaveDevInfo(1); 
-                            SendBtResponse(BT_CMD_ACK, NULL, 0);
-                            break;
-                    }
-                    break;
-                }
-                default:
-                    SendBtResponse(BT_CMD_ERROR, (uint8_t*)"UNK_CMD", 7);
-                    break;
-            }
-            break;
-#endif
         }
 
         case SIMPLEPROFILE_CHAR2:

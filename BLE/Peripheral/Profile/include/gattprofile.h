@@ -42,9 +42,9 @@ extern "C" {
 #define SIMPLEPROFILE_SERVICE       0x00000001
 
 // Length of characteristic in bytes
-#define SIMPLEPROFILE_CHAR1_LEN     251
+#define SIMPLEPROFILE_CHAR1_LEN     120
 #define SIMPLEPROFILE_CHAR2_LEN     120
-#define SIMPLEPROFILE_CHAR3_LEN     251
+#define SIMPLEPROFILE_CHAR3_LEN     120
 
 /*********************************************************************
  * TYPEDEFS

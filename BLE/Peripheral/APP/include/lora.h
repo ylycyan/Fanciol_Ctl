@@ -362,8 +362,5 @@
 	void Lora_Listening();
 	void Lora_Tx(uint8_t *data, uint8_t len);
 	uint16_t Lora_GetIrqStatus( void );
-	bool Lora_TxRequest(uint8_t *data, uint8_t len, uint32_t ms);
-	void Lora_Rx(uint8_t *data, uint8_t *len, uint32_t ms);
-	void Lora_RxRequest(uint8_t *data, uint8_t *len, uint32_t ms);
 	void Lora_CheckData(uint8_t *data, uint8_t *len);
 #endif /* INC_SX126X_H_ */

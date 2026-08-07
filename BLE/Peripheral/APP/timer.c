@@ -14,6 +14,23 @@ static volatile uint8_t Flag_100ms = 0;
 static volatile uint8_t Flag_1s = 0;
 volatile uint32_t CurTick = 0;  //??tick ,??10ms
 static uint8_t rtcTimeValid = 0;
+static int32_t rtcUnixOffset = 0;
+
+static uint8_t rtc_read_hardware_timestamp(uint32_t *timestamp)
+{
+    time_v2_fields_t fields;
+    uint16_t year, mon, day, hour, min, sec;
+
+    if(timestamp == 0) return 0;
+    RTC_GetTime(&year, &mon, &day, &hour, &min, &sec);
+    fields.year = year;
+    fields.month = (uint8_t)mon;
+    fields.day = (uint8_t)day;
+    fields.hour = (uint8_t)hour;
+    fields.minute = (uint8_t)min;
+    fields.second = (uint8_t)sec;
+    return TimeV2_ToUnix(&fields, timestamp);
+}
 //??60M????????????? 131072/60000000*255=0.557056s?
 void WWDG_Init(void){
     WWDG_SetCounter(0);//??
@@ -29,6 +46,8 @@ void WWDG_Refresh(void){
 void RTC_SetTimestamp(uint32_t timestamp)
 {
     time_v2_fields_t fields;
+    uint32_t hardwareTimestamp;
+    uint32_t delta;
     if ((timestamp < 1672531200u) || (timestamp > 2147483000u)) { //2023-01-01 00:00:00 ~ 2038-01-19 11:03:20
         PRINT("RTC_SetTimestamp: invalid timestamp %lu\r\n", timestamp);
         return;
@@ -49,13 +68,35 @@ void RTC_SetTimestamp(uint32_t timestamp)
           fields.hour, fields.minute, fields.second);
 
     // 这里只校准 RTC。BLE/TMOS 只能在启动时初始化一次，运行中对时不得重置协议栈。
-    sys_safe_access_enable();
-    R8_CK32K_CONFIG |= RB_CLK_OSC32K_XT | RB_CLK_INT32K_PON | RB_CLK_XT32K_PON;
-    sys_safe_access_disable();
-    RTC_InitTime(fields.year, fields.month, fields.day,
-                 fields.hour, fields.minute, fields.second);
-    rtcTimeValid = 1;
+    if(!rtc_read_hardware_timestamp(&hardwareTimestamp)) {
+        PRINT("RTC_SetTimestamp: hardware time invalid\r\n");
+        return;
+    }
 
+    /*
+     * BLE/TMOS uses the hardware RTC counter as its scheduler time base.
+     * Keep that counter monotonic and represent wall-clock synchronisation as
+     * a software offset. Reinitialising either RTC or BLE here breaks active
+     * connections and duplicates protocol-stack tasks.
+     */
+    if(timestamp >= hardwareTimestamp) {
+        delta = timestamp - hardwareTimestamp;
+        if(delta > 0x7fffffffUL) {
+            PRINT("RTC_SetTimestamp: offset out of range\r\n");
+            return;
+        }
+        rtcUnixOffset = (int32_t)delta;
+    } else {
+        delta = hardwareTimestamp - timestamp;
+        if(delta > 0x7fffffffUL) {
+            PRINT("RTC_SetTimestamp: offset out of range\r\n");
+            return;
+        }
+        rtcUnixOffset = -(int32_t)delta;
+    }
+    LocalTimestamp = timestamp;
+    rtcTimeValid = 1;
+    PRINT("RTC software offset=%ld\r\n", (long)rtcUnixOffset);
 }
 
 void RTC_ProductInit(uint8_t resetReason, uint32_t retainedTimestamp)
@@ -81,18 +122,32 @@ uint8_t RTC_IsTimeValid(void)
 
 //???????
 uint32_t Rtc_GetTimestamp(void){
+    uint32_t hardwareTimestamp;
+    uint32_t magnitude;
+
+    if(!rtc_read_hardware_timestamp(&hardwareTimestamp)) return LocalTimestamp;
+    if(rtcUnixOffset >= 0) {
+        magnitude = (uint32_t)rtcUnixOffset;
+        if(hardwareTimestamp > (0xffffffffUL - magnitude)) return LocalTimestamp;
+        return hardwareTimestamp + magnitude;
+    }
+    magnitude = (uint32_t)(-rtcUnixOffset);
+    if(hardwareTimestamp < magnitude) return LocalTimestamp;
+    return hardwareTimestamp - magnitude;
+}
+
+uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *mon, uint16_t *day,
+                        uint16_t *hour, uint16_t *min, uint16_t *sec)
+{
     time_v2_fields_t fields;
-    uint32_t timestamp;
-    uint16_t year, mon, day, hour, min, sec;
-    RTC_GetTime(&year, &mon, &day, &hour, &min, &sec);
-    fields.year = year;
-    fields.month = (uint8_t)mon;
-    fields.day = (uint8_t)day;
-    fields.hour = (uint8_t)hour;
-    fields.minute = (uint8_t)min;
-    fields.second = (uint8_t)sec;
-    if(!TimeV2_ToUnix(&fields, &timestamp)) return LocalTimestamp;
-    return timestamp;
+    if(!TimeV2_FromUnix(Rtc_GetTimestamp(), &fields)) return 0;
+    if(year) *year = fields.year;
+    if(mon) *mon = fields.month;
+    if(day) *day = fields.day;
+    if(hour) *hour = fields.hour;
+    if(min) *min = fields.minute;
+    if(sec) *sec = fields.second;
+    return 1;
 }
 
 //20ms????,????????LoRa
@@ -180,8 +235,8 @@ void Period_1s(void){
         {
             static uint8_t last_day = 0;
             uint16_t y, m, d, h, mi, s;
-            RTC_GetTime(&y, &m, &d, &h, &mi, &s);
-            if (!RTC_IsTimeValid()) {
+            if (!RTC_IsTimeValid() ||
+                !RTC_GetWallTime(&y, &m, &d, &h, &mi, &s)) {
                 last_day = 0;
             } else if (last_day == 0) {
                 last_day = d;
@@ -190,12 +245,6 @@ void Period_1s(void){
                 last_day = d;
             }
         }
-
-        #if 0 //test only
-        // FREQ_SYS
-        PRINT("#curtick:%d , @timestamp:%d\r\n",CurTick,LocalTimestamp);
-        // Lora_Tx((uint8_t*)"123456789ABCD",10,1500);
-        #endif 
     }
 }
 
