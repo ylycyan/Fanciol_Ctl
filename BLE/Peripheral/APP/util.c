@@ -1,8 +1,8 @@
 #include "board.h"
 #include "timer.h"
 #include "lora.h"
-#include "fixed_math_v2.h"
 #include "gateway_lora_codec.h"
+#include "hlw8110.h"
 #include "lora_recovery_v2.h"
 #include "relay_child_table_v2.h"
 #include <string.h>
@@ -41,7 +41,8 @@ volatile uint32_t Timer_Lora = 0; // Lora state timer, LORA_POLL_INTERVAL_MS/tic
 
 typedef struct {
     uint32_t token;
-    uint32_t parameter_bits;
+    uint32_t parameter_value;
+    uint16_t operate_tag;
     uint8_t operation;
     uint8_t result;
     uint8_t valid;
@@ -272,30 +273,21 @@ static uint8_t BuildGatewayAckPacket(uint8_t *buf, uint8_t tag, uint16_t nodeId,
 static uint8_t BuildDataPacket(uint8_t *buf, uint8_t tag, uint16_t nodeId, uint8_t errorInfo)
 {
     GatewayLoraFancoilState state;
+    const HLW8110_Status_t *meter = HLW8110_GetStatus();
     int16_t roomTemp = Dev.roomTempX10;
     int16_t setTemp = (int16_t)(Dev.temSet * 10U);
 
-    state.status_code = 0U;
     if(Dev.temSet < 16U || Dev.temSet > 32U ||
        !GatewayLora_EncodeSmallFloatX10(setTemp, &state.set_temperature_sf)) {
         state.set_temperature_sf = 0U;
-        state.status_code |= (uint16_t)(1U << 4); /* D4 温度参数异常。 */
     }
     if(!GatewayLora_EncodeSmallFloatX10(roomTemp, &state.room_temperature_sf)) {
-        /* 温度采样越界使用 0，并通过 v5/D9 指示温度检测异常。 */
         state.room_temperature_sf = 0U;
-        state.status_code |= (uint16_t)(1U << 9);
     }
-    state.operation_status = GatewayLora_PackFancoilOperationStatus(
-        Dev.onOff == PowerOn ? 1U : 0U,
-        (uint8_t)Dev.ctlMode,
-        (uint8_t)Dev.wind);
-    /* 本机没有风机盘管进出水温差传感器；固定字段必须保留并上报 0.0。 */
-    state.fan_temperature_diff_sf = 0U;
-    state.valve_temperature_diff_sf = 0U;
-    state.status_code |= GatewayLora_MapFancoilStatus(
-        Dev.errorCode.u16Val,
-        Dev.mode == 0U ? 1U : 0U /* D10：本地/脱机自治模式 */);
+    state.power_setting = Dev.onOff == PowerOn ? 1U : 0U;
+    state.work_mode_sf = (uint16_t)(uint8_t)Dev.ctlMode << 8;
+    state.fan_speed_sf = (uint16_t)(uint8_t)Dev.wind << 8;
+    state.run_feedback = meter->valid ? meter->current_ma : 0U;
 
     return GatewayLora_BuildFancoilReport(buf, tag, nodeId,
                                           Lora_GetRssi(), errorInfo, &state);
@@ -531,39 +523,45 @@ static uint8_t Relay_ProcessState(uint8_t *buf, uint8_t *len)
     }
 }
 
-static uint8_t ExecuteGatewayControl(uint8_t op, uint32_t parameterBits)
+static uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t parameterValue)
 {
     IR_CMD_t command;
-    uint8_t value = 0;
+    uint16_t value = 0U;
 
+    /* 仅接受云端定义的原子操作；21/1~4 等联动指令不执行。 */
     switch(op) {
         case 21:
+            if(operateTag != 0U) return 2;
             command = IR_CMD_POWER_ON;
             break;
         case 22:
+            if(operateTag != 0U) return 2;
             command = IR_CMD_POWER_OFF;
             break;
-        case 23: {
-            if(!FixedMathV2_DecodeUnsignedInteger(parameterBits, 16U, 31U, &value)) return 2;
+        case 23:
+            if(operateTag != 0U || parameterValue < 16U || parameterValue > 31U) return 2;
+            value = (uint16_t)parameterValue;
             command = (IR_CMD_t)(IR_CMD_TEMP_16 + (value - 16U));
             break;
-        }
-        case 24: {
-            if(!FixedMathV2_DecodeUnsignedInteger(parameterBits,
-                                                  (uint8_t)Mode_Auto,
-                                                  (uint8_t)Mode_Heat,
-                                                  &value)) return 2;
+        case 24:
+            if(operateTag > (uint16_t)Mode_Heat) return 2;
+            value = operateTag;
             command = (IR_CMD_t)(IR_CMD_MODE_AUTO + value);
             break;
-        }
-        case 25: {
-            if(!FixedMathV2_DecodeUnsignedInteger(parameterBits,
-                                                  (uint8_t)Wind_Auto,
-                                                  (uint8_t)Wind_High,
-                                                  &value)) return 2;
+        case 25:
+            if(operateTag > (uint16_t)Wind_High) return 2;
+            value = operateTag;
             command = (IR_CMD_t)(IR_CMD_FAN_AUTO + value);
             break;
-        }
+        case 26:
+            if(operateTag != 0U || parameterValue < 1U || parameterValue > 0xFFFEU) return 2;
+            value = (uint16_t)parameterValue;
+            if(Dev.irActType != ACT_TYPE_IR || Dev.irIdx >= IR_BRAND_COUNT) return 2;
+            if(!Ir_PrepareConfigurationChange()) return 1;
+            Dev.irType = value;
+            Dev.errorCode.bit.irMatch = 0;
+            SaveDevInfo(50u);
+            return 0;
         default:
             return 2;
     }
@@ -590,7 +588,7 @@ static uint8_t ExecuteGatewayControl(uint8_t op, uint32_t parameterBits)
             Dev.onOff = PowerOff;
             break;
         case 23:
-            Dev.temSet = value;
+            Dev.temSet = (uint8_t)value;
             break;
         case 24:
             Dev.ctlMode = (Mode_t)value;
@@ -610,26 +608,29 @@ static uint8_t Lora_ParseGatewayControl(const uint8_t *buf,
                                         uint8_t len,
                                         uint8_t tag,
                                         uint8_t *operation,
-                                        uint32_t *parameterBits,
+                                        uint16_t *operateTag,
+                                        uint32_t *parameterValue,
                                         uint32_t *token)
 {
     const uint8_t *parameterPtr;
 
     if(tag == LORA_TAG_FANCOIL_CONTROL && len == 18U) {
-        /* eDeviceFancoil: operate@6, parameter@9, token@13。 */
+        /* eDeviceFancoil: operate@6, operateTag@7, parameter@9, token@13。 */
         *operation = buf[6];
+        *operateTag = (uint16_t)buf[7] | ((uint16_t)buf[8] << 8);
         parameterPtr = buf + 9;
         *token = Lora_GetU32Le(buf + 13);
     } else if(tag == LORA_TAG_SPLITAC_CONTROL && len == 22U) {
         /* 保留旧 tag=3 解析，便于现场切换云端类型时明确返回结果。 */
         *operation = buf[10];
+        *operateTag = (uint16_t)buf[11] | ((uint16_t)buf[12] << 8);
         parameterPtr = buf + 13;
         *token = Lora_GetU32Le(buf + 17);
     } else {
         return 0;
     }
 
-    *parameterBits = Lora_GetU32Le(parameterPtr);
+    *parameterValue = Lora_GetU32Le(parameterPtr);
     return 1;
 }
 
@@ -637,16 +638,18 @@ static uint8_t Lora_ExecuteGatewayControlCached(const uint8_t *buf, uint8_t len,
 {
     uint8_t operation;
     uint8_t result;
-    uint32_t parameterBits;
+    uint16_t operateTag;
+    uint32_t parameterValue;
     uint32_t token;
 
-    if(!Lora_ParseGatewayControl(buf, len, tag, &operation, &parameterBits, &token)) {
+    if(!Lora_ParseGatewayControl(buf, len, tag, &operation, &operateTag, &parameterValue, &token)) {
         if(controlRejectedCount != 0xFFFFU) controlRejectedCount++;
         return 2;
     }
 
     if(controlCache.valid && controlCache.token == token) {
-        if(controlCache.operation != operation || controlCache.parameter_bits != parameterBits) {
+        if(controlCache.operation != operation || controlCache.operate_tag != operateTag ||
+           controlCache.parameter_value != parameterValue) {
             if(controlRejectedCount != 0xFFFFU) controlRejectedCount++;
             PRINT("LoRa control token conflict: %08lx\n", (unsigned long)token);
             return 2;
@@ -656,9 +659,10 @@ static uint8_t Lora_ExecuteGatewayControlCached(const uint8_t *buf, uint8_t len,
         return controlCache.result;
     }
 
-    result = ExecuteGatewayControl(operation, parameterBits);
+    result = ExecuteGatewayControl(operation, operateTag, parameterValue);
     controlCache.token = token;
-    controlCache.parameter_bits = parameterBits;
+    controlCache.parameter_value = parameterValue;
+    controlCache.operate_tag = operateTag;
     controlCache.operation = operation;
     controlCache.result = result;
     controlCache.valid = 1;
@@ -667,7 +671,8 @@ static uint8_t Lora_ExecuteGatewayControlCached(const uint8_t *buf, uint8_t len,
     } else if(controlRejectedCount != 0xFFFFU) {
         controlRejectedCount++;
     }
-    PRINT("LoRa control: op=%d token=%08lx result=%d\n", operation, (unsigned long)token, result);
+    PRINT("LoRa control: op=%d operateTag=%u token=%08lx result=%d\n",
+          operation, operateTag, (unsigned long)token, result);
     return result;
 }
 

@@ -9,11 +9,11 @@ static void test_fancoil_type20_fixed_report(void)
 {
     static const uint8_t expected[] = {
         0x01U, 0x00U, 0x34U, 0x12U, 0xD8U, 0x00U,
-        0x00U, 0x1AU, 0x13U, 0x00U, 0x19U,
-        0x00U, 0x00U, 0x00U, 0x00U, 0x03U, 0x0AU, 0x5EU
+        0x00U, 0x1AU, 0x01U, 0x00U, 0x19U,
+        0x00U, 0x01U, 0x00U, 0x03U, 0xD2U, 0x04U, 0x19U
     };
     GatewayLoraFancoilState state = {
-        0x1A00U, 0x13U, 0x1900U, 0U, 0U, 0x0A03U
+        0x1A00U, 1U, 0x1900U, 0x0100U, 0x0300U, 1234U
     };
     uint8_t packet[GATEWAY_LORA_FANCOIL_REPORT_LENGTH];
 
@@ -31,27 +31,8 @@ static void test_fancoil_type20_fixed_report(void)
     assert(packet[9] == 0xC0U && packet[10] == 0xE0U);
     assert(GatewayLora_DecodeSmallFloatX10(state.room_temperature_sf) == -325);
     assert(!GatewayLora_EncodeSmallFloatX10(1280, &state.room_temperature_sf));
-    assert(GatewayLora_PackFancoilOperationStatus(0U, 1U, 3U) == 0x03U);
-    assert(GatewayLora_PackFancoilOperationStatus(1U, 1U, 3U) == 0x13U);
-    assert(GatewayLora_PackFancoilOperationStatus(1U, 4U, 2U) == 0x22U);
-    assert(GatewayLora_PackFancoilOperationStatus(1U, 3U, 1U) == 0x31U);
-    assert(GatewayLora_PackFancoilOperationStatus(1U, 0U, 0U) == 0x60U);
     assert(GatewayLora_BuildFancoilReport(packet, 0U, 0U,
                                           -40, 0U, &state) == 0U);
-}
-
-static void test_fancoil_status_uses_product_bit_positions(void)
-{
-    uint16_t internal = GATEWAY_FANCOIL_INTERNAL_FAULT_LORA |
-                        GATEWAY_FANCOIL_INTERNAL_FAULT_IR_MATCH |
-                        GATEWAY_FANCOIL_INTERNAL_FAULT_TEMP_ADC |
-                        GATEWAY_FANCOIL_INTERNAL_FAULT_METER |
-                        GATEWAY_FANCOIL_INTERNAL_FAULT_STORAGE;
-    assert(GatewayLora_MapFancoilStatus(internal, 0U) == 0x0A07U);
-    assert(GatewayLora_MapFancoilStatus(0U, 1U) == 0x0400U);
-    assert(GatewayLora_MapFancoilStatus(
-               GATEWAY_FANCOIL_INTERNAL_FAULT_IR_LEARN |
-               GATEWAY_FANCOIL_INTERNAL_FAULT_IR_MATCH, 0U) == 0x0002U);
 }
 
 static void test_relay_is_also_a_normal_gateway_node(void)
@@ -132,7 +113,6 @@ static void test_relay_inner_round_trip_and_rejection(void)
 int main(void)
 {
     test_fancoil_type20_fixed_report();
-    test_fancoil_status_uses_product_bit_positions();
     test_relay_is_also_a_normal_gateway_node();
     test_channel_matches_fixed_gateway_radio_table();
     test_child_login_carries_parent_only_on_local_hop();

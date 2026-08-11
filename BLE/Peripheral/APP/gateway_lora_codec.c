@@ -75,52 +75,6 @@ int16_t GatewayLora_DecodeSmallFloatX10(uint16_t encoded)
         : (int16_t)(integer * 10 + fractionX10);
 }
 
-uint16_t GatewayLora_MapFancoilStatus(uint16_t internalFaults,
-                                      uint8_t offlineAutonomyActive)
-{
-    uint16_t cloudFaults = 0U;
-
-    /* D0 通信模块故障。 */
-    if((internalFaults & GATEWAY_FANCOIL_INTERNAL_FAULT_LORA) != 0U) {
-        cloudFaults |= (uint16_t)(1U << 0);
-    }
-    /* D1 红外模块故障：匹配与学习共用一个云端故障位。 */
-    if((internalFaults & (GATEWAY_FANCOIL_INTERNAL_FAULT_IR_LEARN |
-                          GATEWAY_FANCOIL_INTERNAL_FAULT_IR_MATCH)) != 0U) {
-        cloudFaults |= (uint16_t)(1U << 1);
-    }
-    /* D2 状态检测故障：HLW8110/功率状态检测不可用。 */
-    if((internalFaults & GATEWAY_FANCOIL_INTERNAL_FAULT_METER) != 0U) {
-        cloudFaults |= (uint16_t)(1U << 2);
-    }
-    /* D9 温度检测故障。 */
-    if((internalFaults & GATEWAY_FANCOIL_INTERNAL_FAULT_TEMP_ADC) != 0U) {
-        cloudFaults |= (uint16_t)(1U << 9);
-    }
-    /* D10 脱机运行状态。 */
-    if(offlineAutonomyActive != 0U) cloudFaults |= (uint16_t)(1U << 10);
-    /* D11 存储参数故障。 */
-    if((internalFaults & GATEWAY_FANCOIL_INTERNAL_FAULT_STORAGE) != 0U) {
-        cloudFaults |= (uint16_t)(1U << 11);
-    }
-    return cloudFaults;
-}
-
-uint8_t GatewayLora_PackFancoilOperationStatus(uint8_t power,
-                                               uint8_t mode,
-                                               uint8_t fanSpeed)
-{
-    uint8_t operation;
-
-    if(power == 0U) operation = 0U;
-    else if(mode == 1U) operation = 1U; /* 制冷 */
-    else if(mode == 4U) operation = 2U; /* 制热 */
-    else if(mode == 3U) operation = 3U; /* 送风/新风 */
-    else operation = 6U;                /* 自动、除湿等无法无损映射 */
-    if(fanSpeed > 3U) fanSpeed = 0U;
-    return (uint8_t)((operation << 4) | fanSpeed);
-}
-
 uint8_t GatewayLora_BuildFancoilReport(uint8_t *out,
                                       uint8_t tag,
                                       uint16_t nodeId,
@@ -137,11 +91,11 @@ uint8_t GatewayLora_BuildFancoilReport(uint8_t *out,
     out[5] = errorInfo;
 
     GatewayLora_PutU16Le(out + 6, state->set_temperature_sf);
-    out[8] = state->operation_status;
+    out[8] = state->power_setting;
     GatewayLora_PutU16Le(out + 9, state->room_temperature_sf);
-    GatewayLora_PutU16Le(out + 11, state->fan_temperature_diff_sf);
-    GatewayLora_PutU16Le(out + 13, state->valve_temperature_diff_sf);
-    GatewayLora_PutU16Le(out + 15, state->status_code);
+    GatewayLora_PutU16Le(out + 11, state->work_mode_sf);
+    GatewayLora_PutU16Le(out + 13, state->fan_speed_sf);
+    GatewayLora_PutU16Le(out + 15, state->run_feedback);
     out[17] = GatewayLora_Checksum(out, 17U);
     return GATEWAY_LORA_FANCOIL_REPORT_LENGTH;
 }

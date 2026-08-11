@@ -57,14 +57,13 @@ typedef enum {
 
 /* Dev Info */
 #define DevType  20 /* 产品编译期声明；旧登录包不携带该值，云端节点表也必须配置为 20。 */
-/* eDeviceFancoil=20: v0(sf),v1(u8),v2(sf),v3(sf),v4(sf),v5(u16)，只能有 6 个值。 */
 #define DevTag   50
 #define MAGIC_CODE 0x52AB //首次上电判断
 #define AD_INTERVAL 10 //adc采集间隔
 /*
  * 网关固定设备类型 20，数据区固定 11 字节：
- * v0 设定温度(sf)，v1 高 4 位运行状态/低 4 位风速(u8)，v2 环境温度(sf)，
- * v3 风机温差(sf)，v4 水阀温差(sf)，v5 状态码(u16)。
+ * v0 设定温度(sf)，v1 开关设定(u8)，v2 环境温度(sf)，
+ * v3 工作模式(sf)，v4 风速档位(sf)，v5 运行反馈(u16，负载电流 mA)。
  */
 
 /* Infrared */
