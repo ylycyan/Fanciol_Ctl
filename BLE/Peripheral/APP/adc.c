@@ -9,7 +9,7 @@ void ADC_Init(void){
 }
 uint8_t ADC_IsValid(void){ return adcValid; }
 void ADC_Pro(void){
-    static u_int32_t lastSampStamp = 0;
+    static uint32_t lastSampStamp = 0;
     /*
      * RTC 可能被网关向前或向后校时，不能把无符号差值强转 int 后再 abs：
      * 大跨度校时会溢出。回拨时立即重新采样，正常情况下按间隔限频。

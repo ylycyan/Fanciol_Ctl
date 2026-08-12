@@ -1,5 +1,17 @@
+/**
+ * @file ir_control_map.c
+ * @brief 红外命令 → 学习码通道映射
+ *
+ * 学习模式共 10 个固定通道，语义约定：
+ *   0开机 1关机 2制冷 3制热 4除湿 5送风 6温度+ 7温度- 8风速 9自定义
+ * 绝对温度、自动模式、绝对风速等无法由单个学习键保证一致性，明确返回 -1。
+ */
 #include "ir_control_map.h"
 
+/**
+ * @brief 将红外命令映射到学习码通道
+ * @return 通道号 0~9；不支持的命令返回 -1
+ */
 int8_t IrControl_LearnedChannel(IR_CMD_t command)
 {
     switch(command) {

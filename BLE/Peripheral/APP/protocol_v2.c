@@ -1,9 +1,21 @@
+/**
+ * @file protocol_v2.c
+ * @brief BLE V2 协议帧编解码与分片重组
+ *
+ * 逻辑帧格式（V2_MAX_FRAME_SIZE = 251 字节）：
+ *   [MAGIC 0xA5][Ver 0x02][Type][Seq(2)][Opcode][Status][PayloadLen(2)][Payload][CRC16(2)]
+ * 物理链路（CHAR1）按 MTU 分片，每片头 5 字节：flags + index + count + seq(2)。
+ * CRC16 为 CCITT-1021，覆盖 CRC 之前全部字节。
+ */
 #include "protocol_v2.h"
 #include <string.h>
 
 static uint16_t get_u16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 static void put_u16(uint8_t *p, uint16_t value) { p[0] = (uint8_t)value; p[1] = (uint8_t)(value >> 8); }
 
+/**
+ * @brief 计算 CCITT-1021 CRC16（初始值 0xFFFF）
+ */
 uint16_t V2_Crc16(const uint8_t *data, uint16_t len)
 {
     uint16_t crc = 0xFFFFu;
@@ -16,6 +28,9 @@ uint16_t V2_Crc16(const uint8_t *data, uint16_t len)
     return crc;
 }
 
+/**
+ * @brief 编码逻辑帧（含头、payload、CRC）
+ */
 uint8_t V2_BleEncode(const v2_ble_frame_t *f, uint8_t *out, uint16_t cap, uint16_t *out_len)
 {
     uint16_t total;
@@ -32,6 +47,9 @@ uint8_t V2_BleEncode(const v2_ble_frame_t *f, uint8_t *out, uint16_t cap, uint16
     return V2_STATUS_OK;
 }
 
+/**
+ * @brief 解码逻辑帧：校验 MAGIC/版本/长度/CRC
+ */
 uint8_t V2_BleDecode(const uint8_t *data, uint16_t len, v2_ble_frame_t *f)
 {
     uint16_t payload_len;
@@ -45,8 +63,20 @@ uint8_t V2_BleDecode(const uint8_t *data, uint16_t len, v2_ble_frame_t *f)
     return V2_STATUS_OK;
 }
 
+/**
+ * @brief 清空分片重组上下文（连接断开/协议错误时调用）
+ */
 void V2_ReassemblerReset(v2_ble_reassembler_t *ctx) { if(ctx) memset(ctx, 0, sizeof(*ctx)); }
 
+/**
+ * @brief 接收一个物理分片并尝试重组完整逻辑帧
+ *
+ * - 校验分片头：flags 首片/末片位、index<count<=20、块长上限
+ * - 新序号/新分片数时重置上下文
+ * - 所有分片到齐后按 offset 拼接成完整帧（容量校验）
+ *
+ * @retval V2_STATUS_BUSY 未到齐，继续等；V2_STATUS_OK 重组完成（*frame_len 为长度）
+ */
 uint8_t V2_ReassemblerPush(v2_ble_reassembler_t *ctx, const uint8_t *frag, uint16_t len,
                            uint8_t *frame, uint16_t cap, uint16_t *frame_len)
 {

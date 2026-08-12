@@ -8,7 +8,8 @@
 #define HEALTH_V2_FLASH     0x04u
 #define HEALTH_V2_PERIODIC  0x08u
 #define HEALTH_V2_BLE_STACK 0x10u
-#define HEALTH_V2_REQUIRED  0x1Fu
+#define HEALTH_V2_CELLULAR  0x20u
+#define HEALTH_V2_REQUIRED  0x3Fu
 #define HEALTH_V2_RECENT_LIMIT 32u
 
 typedef struct {

@@ -1,9 +1,19 @@
+/**
+ * @file time_v2.c
+ * @brief Unix 时间戳 ↔ 公历日期互转（纯整数，无浮点/无 mktime）
+ *
+ * 有效范围 1970-01-01 ~ 2038-01-19（uint32 时间戳上限附近），
+ * 超出范围返回 0 以保护 RTC 软件偏移的 int32 表示。
+ */
 #include "time_v2.h"
 
 static const uint8_t monthDays[12] = {
     31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
 };
 
+/**
+ * @brief 判断闰年（公历规则：4 年一闰、百年不闰、四百年再闰）
+ */
 static uint8_t TimeV2_IsLeapYear(uint16_t year)
 {
     if((year % 4U) != 0U) return 0;
@@ -11,6 +21,9 @@ static uint8_t TimeV2_IsLeapYear(uint16_t year)
     return (year % 400U) == 0U;
 }
 
+/**
+ * @brief 某年某月的天数（2 月按闰年调整）
+ */
 static uint8_t TimeV2_DaysInMonth(uint16_t year, uint8_t month)
 {
     uint8_t days;
@@ -21,6 +34,10 @@ static uint8_t TimeV2_DaysInMonth(uint16_t year, uint8_t month)
     return days;
 }
 
+/**
+ * @brief Unix 时间戳 → 公历字段（逐年级减，简单可靠）
+ * @retval 1 成功；0 时间戳超范围或指针为空
+ */
 uint8_t TimeV2_FromUnix(uint32_t timestamp, time_v2_fields_t *fields)
 {
     uint32_t days;
@@ -56,6 +73,10 @@ uint8_t TimeV2_FromUnix(uint32_t timestamp, time_v2_fields_t *fields)
     return 1;
 }
 
+/**
+ * @brief 公历字段 → Unix 时间戳（含 1970 前闰年修正）
+ * @retval 1 成功；0 字段非法或结果超范围
+ */
 uint8_t TimeV2_ToUnix(const time_v2_fields_t *fields, uint32_t *timestamp)
 {
     uint32_t days;
@@ -73,6 +94,7 @@ uint8_t TimeV2_ToUnix(const time_v2_fields_t *fields, uint32_t *timestamp)
     daysInMonth = TimeV2_DaysInMonth(fields->year, fields->month);
     if(fields->day < 1U || fields->day > daysInMonth) return 0;
 
+    /* 自 1970-01-01 起的天数：年 ×365 + 闰日修正 + 月天数 + 日 */
     previousYear = (uint32_t)fields->year - 1UL;
     days = 365UL * ((uint32_t)fields->year - 1970UL);
     days += previousYear / 4UL - previousYear / 100UL + previousYear / 400UL;

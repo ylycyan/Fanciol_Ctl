@@ -6,12 +6,15 @@
 #include "health_v2.h"
 #include "hlw8110.h"
 #include "timer.h"
+#include "ml307r.h"
+#include <stddef.h>
 #include <string.h>
 
 #define CAPABILITY_BASE             0x00000AF0UL
 #define CAPABILITY_PROFILE_CONTROLS 0x0000040FUL
 #define CAPABILITY_POWER            0x00000001UL
 #define CAPABILITY_MODE             0x00000002UL
+#define CAPABILITY_CELLULAR         0x00001000UL
 
 typedef struct __attribute__((packed)) {
     uint16_t node_id;
@@ -29,7 +32,6 @@ static staged_config_t staged_config;
 static uint8_t staged_config_valid;
 static DEV_RULE_T staged_rules[MAX_RULES];
 static uint8_t staged_rules_valid;
-static DEV_RULE_T rollback_rules[MAX_RULES];
 static char device_identity[16];
 static uint8_t device_identity_len;
 static uint32_t identify_until;
@@ -44,7 +46,7 @@ static char hex_digit(uint8_t value){value&=0x0Fu;return (char)(value<10u?'0'+va
 
 static uint32_t current_capability_bitmap(void)
 {
-    uint32_t bitmap=CAPABILITY_BASE;
+    uint32_t bitmap=CAPABILITY_BASE|CAPABILITY_CELLULAR;
     uint16_t learned;
 
     if(Dev.irActType==ACT_TYPE_IR) {
@@ -141,17 +143,17 @@ static void update_learned_state(uint8_t channel)
     }
 }
 
-static uint8_t execute_control(const uint8_t *p,uint16_t len)
+uint8_t SplitAcControl_Execute(uint8_t control,uint16_t value)
 {
-    uint8_t control;uint16_t value;IR_CMD_t cmd;
-    if(len!=3u)return V2_STATUS_INVALID_ARG;
-    control=p[0];value=get16(p+1);
+    IR_CMD_t cmd;
 
     if(control==V2_CONTROL_LEARNED_CHANNEL) {
         if(value>=MAX_IR_LEARNNUM)return V2_STATUS_INVALID_ARG;
         if(Dev.irActType!=ACT_TYPE_LEARN||!Dev.learnCode[value].enable)return V2_STATUS_NOT_SUPPORTED;
         if(!Ir_SendLearnedVerified((uint8_t)value))return V2_STATUS_BUSY;
         update_learned_state((uint8_t)value);
+        SaveDevInfo(50u);
+        Ml307_RequestReport();
         return V2_STATUS_OK;
     }
 
@@ -180,16 +182,30 @@ static uint8_t execute_control(const uint8_t *p,uint16_t len)
     else if(control==V2_CONTROL_TEMP_STEP){if(Dev.temSet<16u||Dev.temSet>31u)Dev.temSet=25u;if(value&&Dev.temSet<31u)Dev.temSet++;else if(!value&&Dev.temSet>16u)Dev.temSet--;}
     else if(control==V2_CONTROL_FAST_MODE){update_power_state(1);Dev.ctlMode=value?Mode_Heat:Mode_Cool;}
     SaveDevInfo(50u);
+    Ml307_RequestReport();
     return V2_STATUS_OK;
 }
 
-static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *payload_len)
+static uint8_t execute_control(const uint8_t *p,uint16_t len)
+{
+    if(len!=3u)return V2_STATUS_INVALID_ARG;
+    return SplitAcControl_Execute(p[0],get16(p+1));
+}
+
+static uint8_t transport_online(void)
+{
+    return (ConnectivityV2_LoraEnabled() && Dev.loraStatus >= Status_Connected) ||
+           Ml307_IsOnline();
+}
+
+/* Keep the large response scratch buffer out of this function's frame. */
+static __attribute__((noinline)) uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *payload_len)
 {
     uint8_t status=V2_STATUS_OK;uint32_t revision;staged_config_t cfg;
     *payload_len=0;
     switch(req->opcode){
     case V2_OP_GET_CAPABILITIES:
-        put32(payload,current_capability_bitmap());payload[4]=V2_PROTOCOL_VERSION;payload[5]=2;payload[6]=15;payload[7]=1;
+        put32(payload,current_capability_bitmap());payload[4]=V2_PROTOCOL_VERSION;payload[5]=2;payload[6]=17;payload[7]=1;
         payload[8]=(uint8_t)Dev.irActType;put16(payload+9,Ir_GetLearnedMask());*payload_len=11;break;
     case V2_OP_GET_DEVICE_INFO:{
         payload[0]=1;payload[1]=device_identity_len;memcpy(payload+2,device_identity,device_identity_len);*payload_len=(uint16_t)(2u+device_identity_len);break;}
@@ -204,7 +220,7 @@ static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *pay
         int16_t room=Dev.roomTempX10;
         payload[0]=(Dev.onOff==PowerOn)?1u:0u;payload[1]=(uint8_t)Dev.ctlMode;put16(payload+2,(uint16_t)(Dev.temSet*10u));put16(payload+4,(uint16_t)room);
         payload[6]=(uint8_t)Dev.wind;put16(payload+7,Dev.errorCode.u16Val);payload[9]=(uint8_t)Dev.loraStatus;
-        payload[10]=(Dev.mode==0u||Dev.loraStatus<Status_Connected)?1u:0u;put32(payload+11,Dev.meter.run_minutes);put32(payload+15,ConfigV2_GetRevision());
+        payload[10]=(Dev.mode==0u||!transport_online())?1u:0u;put32(payload+11,Dev.meter.run_minutes);put32(payload+15,ConfigV2_GetRevision());
         payload[19]=meter->valid;put16(payload+20,meter->voltage_dv);put16(payload+22,meter->current_ma);put16(payload+24,meter->power_w_x10);
         put32(payload+26,Dev.meter.energy_wh);put16(payload+30,meter->communication_errors);*payload_len=32;break;}
     case V2_OP_GET_CONFIG:
@@ -213,6 +229,8 @@ static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *pay
     case V2_OP_VALIDATE_CONFIG:
         status=parse_config(req->payload,req->payload_len,&staged_config);if(status==V2_STATUS_OK)staged_config_valid=1;break;
     case V2_OP_COMMIT_CONFIG:
+    {
+        DEV_RULE_T rollback_rules[MAX_RULES];
         status=parse_config(req->payload,req->payload_len,&cfg);if(status!=V2_STATUS_OK)break;
         if(staged_config_valid&&memcmp(&cfg,&staged_config,sizeof(cfg))!=0){status=V2_STATUS_CONFLICT;break;}
         if((cfg.ir_action_type!=(uint8_t)Dev.irActType||cfg.ir_type!=Dev.irType||cfg.ir_index!=Dev.irIdx)&&
@@ -230,6 +248,7 @@ static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *pay
                 (Dev.irIdx>=IR_BRAND_COUNT||!Dev.irType||Dev.irType==0xFFFFu))?1u:0u;
             memcpy(Dev.rules,rollback_rules,sizeof(rollback_rules));}
         break;
+    }
     case V2_OP_EXEC_CONTROL:
         status=execute_control(req->payload,req->payload_len);break;
     case V2_OP_GET_RULES:{
@@ -264,7 +283,7 @@ static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *pay
         if(req->payload_len!=1u||req->payload[0]!=1u){status=V2_STATUS_NOT_SUPPORTED;break;}
         if(!Ir_ConfiguredCommandSupported(IR_CMD_POWER_OFF)){status=V2_STATUS_NOT_SUPPORTED;break;}
         status=Ir_ExecuteConfiguredVerified(IR_CMD_POWER_OFF)?V2_STATUS_OK:V2_STATUS_BUSY;
-        if(status==V2_STATUS_OK){update_power_state(0);SaveDevInfo(50u);}
+        if(status==V2_STATUS_OK){update_power_state(0);SaveDevInfo(50u);Ml307_RequestReport();}
         break;
     case V2_OP_GET_DIAGNOSTICS:{
         const HLW8110_Status_t *meter=HLW8110_GetStatus();
@@ -311,6 +330,78 @@ static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *pay
             off=(uint16_t)(off+13u);count++;
         }
         payload[4]=count;*payload_len=off;break;}
+    case V2_OP_GET_CONNECTIVITY_CONFIG:
+        status=ConnectivityV2_Encode(payload,V2_MAX_PAYLOAD,payload_len);
+        break;
+    case V2_OP_SET_CONNECTIVITY_CONFIG:
+    {
+        connectivity_config_v2_t config;
+        const connectivity_config_v2_t *current=ConnectivityV2_Get();
+        uint8_t lora_changed;
+        uint8_t cellular_changed;
+        status=ConnectivityV2_Decode(req->payload,req->payload_len,&config);
+        if(status!=V2_STATUS_OK)break;
+        lora_changed=((current->transport_mask^config.transport_mask)&CONNECTIVITY_V2_LORA)||
+                     (current->lora_register_sf!=config.lora_register_sf)||
+                     (current->lora_register_bw!=config.lora_register_bw)||
+                     (current->lora_listen_sf!=config.lora_listen_sf)||
+                     (current->lora_listen_bw!=config.lora_listen_bw);
+        cellular_changed=((current->transport_mask^config.transport_mask)&CONNECTIVITY_V2_CELLULAR)||
+                         memcmp((const uint8_t *)current+offsetof(connectivity_config_v2_t,mqtt_port),
+                                (const uint8_t *)&config+offsetof(connectivity_config_v2_t,mqtt_port),
+                                sizeof(config)-offsetof(connectivity_config_v2_t,mqtt_port));
+        status=ConnectivityV2_Save(&config);
+        if(status==V2_STATUS_OK){
+            put32(payload,ConnectivityV2_GetGeneration());*payload_len=4u;
+            if(lora_changed){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
+            if(cellular_changed)Ml307_ApplyConfiguration();
+        }
+        break;
+    }
+    case V2_OP_GET_CONNECTIVITY_STATUS:
+    {
+        const connectivity_config_v2_t *config=ConnectivityV2_Get();
+        const ml307_status_v2_t *cell= Ml307_GetStatus();
+        payload[0]=CONNECTIVITY_V2_SCHEMA;payload[1]=config->transport_mask;payload[2]=cell->phase;
+        payload[3]=cell->sim_ready;payload[4]=cell->network_registered;payload[5]=cell->mqtt_online;
+        payload[6]=(uint8_t)cell->signal_rssi;payload[7]=cell->last_error;payload[8]=cell->consecutive_failures;
+        put16(payload+9,cell->reset_count);put16(payload+11,cell->publish_count);
+        put16(payload+13,cell->command_executed_count);put16(payload+15,cell->command_duplicate_count);
+        put16(payload+17,cell->command_rejected_count);put16(payload+19,cell->rx_overflow_count);
+        put32(payload+21,cell->last_connected_ms);put32(payload+25,cell->last_report_ms);
+        payload[29]=(uint8_t)Dev.loraStatus;payload[30]=transport_online();put32(payload+31,CurTick);
+        payload[35]=cell->uart_active;payload[36]=cell->waiting;put16(payload+37,cell->timeout_count);
+        put32(payload+39,cell->rx_bytes);put32(payload+43,cell->tx_bytes);
+        put32(payload+47,cell->retry_remaining_ms);payload[51]=Ml307_AtGetStatus()->state;
+        *payload_len=52u;break;
+    }
+    case V2_OP_RESTART_CELLULAR:
+        if(!SplitAcV2_MaintenanceActive()){status=V2_STATUS_UNAUTHORIZED;break;}
+        if(req->payload_len!=0u){status=V2_STATUS_INVALID_ARG;break;}
+        Ml307_Restart();break;
+    case V2_OP_CELLULAR_AT:
+    {
+        const ml307_at_status_v2_t *at;
+        uint8_t response_length;
+        if(!SplitAcV2_MaintenanceActive()){status=V2_STATUS_UNAUTHORIZED;break;}
+        if(req->payload_len<1u){status=V2_STATUS_INVALID_ARG;break;}
+        if(req->payload[0]==1u)
+            status=Ml307_AtStart(req->payload+1,(uint8_t)(req->payload_len-1u));
+        else if(req->payload[0]==2u){
+            if(req->payload_len!=1u){status=V2_STATUS_INVALID_ARG;break;}
+            status=Ml307_AtCancel();
+        } else if(req->payload[0]!=0u || req->payload_len!=1u){
+            status=V2_STATUS_INVALID_ARG;
+        }
+        if(status!=V2_STATUS_OK)break;
+        at=Ml307_AtGetStatus();
+        payload[0]=2u;payload[1]=at->state;payload[2]=at->truncated;
+        payload[3]=Ml307_GetStatus()->uart_active;put16(payload+4,at->generation);
+        put32(payload+6,at->elapsed_ms);
+        put16(payload+10,Ml307_AtGetTxDelta());put16(payload+12,Ml307_AtGetRxDelta());
+        response_length=Ml307_AtCopyResponse(payload+15,(uint8_t)(V2_MAX_PAYLOAD-15u));
+        payload[14]=response_length;*payload_len=(uint16_t)response_length+15u;break;
+    }
     case V2_OP_FACTORY_RESET:
         if(!SplitAcV2_MaintenanceActive()){status=V2_STATUS_UNAUTHORIZED;break;}
         if(!Ir_PrepareConfigurationChange()){status=V2_STATUS_BUSY;break;}
@@ -318,6 +409,7 @@ static uint8_t dispatch(const v2_ble_frame_t *req,uint8_t *payload,uint16_t *pay
         if(status==V2_STATUS_OK){
             staged_config_valid=0u;staged_rules_valid=0u;
             Dev.loraStatus=Status_Logining;Timer_Lora=0u;
+            Ml307_ApplyConfiguration();
         }
         break;
     case V2_OP_OTA_BEGIN:

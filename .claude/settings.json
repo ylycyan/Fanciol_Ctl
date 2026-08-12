@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(arm-none-eabi-nm libCH58xBLE.a)",
+      "Bash(riscv-none-elf-objdump -d libCH58xBLE.a)",
+      "Bash(riscv64-unknown-elf-objdump -d libCH58xBLE.a)",
+      "Bash(gcc -I./stubs -I../BLE/Peripheral/APP/include -Wall -Werror -fsyntax-only test_ml307r_codec.c)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(gcc -I./stubs -I../BLE/Peripheral/APP/include -Wall -o /tmp/test_ml307 codec_stub.c test_ml307r_codec.c)",
+      "Bash(gcc -I./stubs -I../BLE/Peripheral/APP/include -Wall -o /tmp/test_ml307 test_ml307r_codec.c -x c ../BLE/Peripheral/APP/ml307r_codec.c)",
+      "Bash(/tmp/test_ml307)",
+      "Bash(gcc -I./stubs -I../BLE/Peripheral/APP/include -Wall -o /tmp/test_cfg test_config_store_v2.c ../BLE/Peripheral/APP/config_store_v2.c)",
+      "Bash(echo \"CFG_EXIT: $?\")",
+      "Bash(/tmp/test_cfg)",
+      "Bash(sort -t: -k2 -rn)",
+      "Bash(arm-none-eabi-size firmware.elf)",
+      "Bash(gcc -I./stubs -I../BLE/Peripheral/APP/include -Wall -o /tmp/t_rule test_rule_reliability_v2.c ../BLE/Peripheral/APP/rule.c ../BLE/Peripheral/APP/ml307r.c)",
+      "Bash(echo \"rule test exit: $?\")",
+      "WebSearch",
+      "WebFetch(domain:docs.emqx.com)"
+    ]
+  }
+}

@@ -1,5 +1,15 @@
+/**
+ * @file fixed_math_v2.c
+ * @brief 定点数学工具：协议参数解码与频率换算（避免浮点/64 位除法）
+ */
 #include "fixed_math_v2.h"
 
+/**
+ * @brief 解码 IEEE754 单精度比特位为受限整数
+ *
+ * 仅接受"整数值可精确表示"的正数（尾数低位必须全 0），
+ * 用于解析网关下发的整数参数（如温度设定），拒绝负数/小数/NaN/Inf。
+ */
 uint8_t FixedMathV2_DecodeUnsignedInteger(uint32_t ieee754Bits,
                                           uint8_t minValue,
                                           uint8_t maxValue,
@@ -36,6 +46,12 @@ uint8_t FixedMathV2_DecodeUnsignedInteger(uint32_t ieee754Bits,
     return 1;
 }
 
+/**
+ * @brief 射频频率 (Hz) → SX126x PLL 分频值
+ *
+ * SX126x 频率寄存器 = freq / (32MHz / 2^25) = freq × 2^25 / 32MHz。
+ * 分解为商余避免 64 位除法溢出：2^25/32e6 = 131072/125000 = 1 + 6072/125000。
+ */
 uint32_t FixedMathV2_FrequencyHzToPll(uint32_t frequencyHz)
 {
     uint32_t quotient = frequencyHz / 125000UL;

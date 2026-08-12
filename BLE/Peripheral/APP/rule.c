@@ -21,6 +21,8 @@
 #include "timer.h"
 #include "gateway_lora_codec.h"
 #include "hlw8110.h"
+#include "config_store_v2.h"
+#include "ml307r.h"
 
 #define METER_DAY_MAX_RUN_MINUTES 1440U
 
@@ -314,8 +316,10 @@ void Rule_Pro(void)
     bool triggered;
     int16_t temp;
 
-    /* Remote mode delegates to the gateway while connected. Local mode is always autonomous. */
-    if (BITGET(Dev.mode, 0) && Dev.loraStatus >= Status_Connected) return;
+    /* 远程模式只要任一已选链路在线就由云端接管；本地模式始终自治。 */
+    if (BITGET(Dev.mode, 0) &&
+        ((ConnectivityV2_LoraEnabled() && Dev.loraStatus >= Status_Connected) ||
+         Ml307_IsOnline())) return;
     for (i = 0; i < MAX_RULES; i++) {
         DEV_RULE_T *r = &Dev.rules[i];
 
@@ -383,7 +387,7 @@ static void meter_sync_day(void)
 {
     uint32_t dayStart;
 
-    /* 掉电后的安全基准时间不可信，等网关对时后再判断是否跨日。 */
+    /* 掉电后的安全基准时间不可信，等 LoRa 或 4G 对时后再判断是否跨日。 */
     if(!RTC_IsTimeValid()) return;
     if(meterDayStart != METER_DAY_UNINITIALIZED &&
        LocalTimestamp >= meterDayStart &&
@@ -462,5 +466,3 @@ void Meter_Update(uint32_t dt_sec)
         SaveDevInfo(0);
     }
 }
-
-

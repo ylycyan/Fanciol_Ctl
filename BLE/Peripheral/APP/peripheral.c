@@ -357,11 +357,13 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
 
     if(events & SBP_START_DEVICE_EVT)
     {
+        bStatus_t startStatus;
         // Start the Device
-        PRINT("BLE start status=%02x\r\n",
-              GAPRole_PeripheralStartDevice(Peripheral_TaskID,
-                                            &Peripheral_BondMgrCBs,
-                                            &Peripheral_PeripheralCBs));
+        startStatus = GAPRole_PeripheralStartDevice(Peripheral_TaskID,
+                                                    &Peripheral_BondMgrCBs,
+                                                    &Peripheral_PeripheralCBs);
+        PRINT("BLE start status=%02x\r\n", startStatus);
+        (void)startStatus;
         return (events ^ SBP_START_DEVICE_EVT);
     }
 
@@ -391,9 +393,13 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
 
     if(events & SBP_PHY_UPDATE_EVT)
     {
+        bStatus_t phyStatus;
         // start phy update
-        PRINT("PHY Update %x...\n", GAPRole_UpdatePHY(peripheralConnList.connHandle, 0, 
-                    GAP_PHY_BIT_LE_2M, GAP_PHY_BIT_LE_2M, GAP_PHY_OPTIONS_NOPRE));
+        phyStatus = GAPRole_UpdatePHY(peripheralConnList.connHandle, 0,
+                                      GAP_PHY_BIT_LE_2M, GAP_PHY_BIT_LE_2M,
+                                      GAP_PHY_OPTIONS_NOPRE);
+        PRINT("PHY Update %x...\n", phyStatus);
+        (void)phyStatus;
 
         return (events ^ SBP_PHY_UPDATE_EVT);
     }

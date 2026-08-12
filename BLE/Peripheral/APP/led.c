@@ -1,3 +1,10 @@
+/**
+ * @file led.c
+ * @brief 四色 LED（红/蓝/白/绿）常亮与闪烁管理
+ *
+ * 每个 LED 独立配置闪烁间隔；Interval=0 表示常亮，>0 为翻转周期(ms)。
+ * 停止闪烁时恢复到默认状态（灭）。LED_Pro 由 100ms 周期任务调用。
+ */
 #include "board.h"
 
 typedef struct{
@@ -18,7 +25,7 @@ static LED_Ctx_t LEDs[] = {
 
 /**
  * @brief 设置 LED 闪烁参数
- * 
+ *
  * @param Pin LED 引脚
  * @param IsBlinking 是否开启闪烁
  * @param BlinkInterval 闪烁翻转间隔(ms)，0表示常亮
@@ -31,13 +38,13 @@ static void LED_SetBlink(uint32_t Pin, bool IsBlinking, uint32_t BlinkInterval, 
             if((LEDs[i].IsBlinking == IsBlinking) && (LEDs[i].BlinkInterval == BlinkInterval)){
                 return;
             }
-            
+
             LEDs[i].IsBlinking = IsBlinking;
             LEDs[i].BlinkInterval = BlinkInterval;
             LEDs[i].DefaultState = DefaultState;
             // 重置计时器，从当前时刻开始计时
-            LEDs[i].LastBlinkTime = CurTick; 
-            
+            LEDs[i].LastBlinkTime = CurTick;
+
             // 如果停止闪烁，立即应用默认状态
             if(!IsBlinking){
                  if(DefaultState) GPIOB_SetBits(Pin);
@@ -53,22 +60,31 @@ static void LED_SetBlink(uint32_t Pin, bool IsBlinking, uint32_t BlinkInterval, 
     }
 }
 
+/** @brief 红色 LED：常亮/闪烁控制 */
 void LED_RED_BLINK(bool IsBlinking, uint32_t BlinkInterval){
     LED_SetBlink(LED_RED_PIN, IsBlinking, BlinkInterval, FALSE);
 }
 
+/** @brief 蓝色 LED：常亮/闪烁控制 */
 void LED_BLUE_BLINK(bool IsBlinking, uint32_t BlinkInterval){
     LED_SetBlink(LED_BLUE_PIN, IsBlinking, BlinkInterval, FALSE);
 }
 
+/** @brief 白色 LED：常亮/闪烁控制 */
 void LED_WHITE_BLINK(bool IsBlinking, uint32_t BlinkInterval){
     LED_SetBlink(LED_WHITE_PIN, IsBlinking, BlinkInterval, FALSE);
 }
 
+/** @brief 绿色 LED：常亮/闪烁控制 */
 void LED_GREEN_BLINK(bool IsBlinking, uint32_t BlinkInterval){
     LED_SetBlink(LED_GREEN_PIN, IsBlinking, BlinkInterval, FALSE);
 }
 
+/**
+ * @brief LED 闪烁轮询（每 100ms 调用一次）
+ *
+ * 到翻转时刻取反引脚电平；无符号减法处理 CurTick 回绕。
+ */
 void LED_Pro(void){
     uint32_t CurrentTime = CurTick;
     for(int i=0; i<sizeof(LEDs)/sizeof(LEDs[0]); i++){

@@ -25,6 +25,7 @@
 #include "health_v2.h"
 #include "hlw8110.h"
 #include "config_store_v2.h"
+#include "ml307r.h"
 /*********************************************************************
  * GLOBAL TYPEDEFS
  */
@@ -43,13 +44,24 @@ __HIGH_CODE
 __attribute__((noinline))
 void Main_Circulation()
 {
+    uint8_t ml307Initialized = 0U;
     while(1)
-    {   
+    {
         Period_20ms();
         Period_100ms();
         Period_1s();
         TMOS_SystemProcess();
         HealthV2_Mark(HEALTH_V2_BLE_STACK);
+        /*
+         * HEAD 已验证的 BLE/TMOS 启动路径必须先获得调度。新增的蜂窝硬件
+         * 只能在协议栈稳定运行后初始化；仅 LoRa 配置则不会触碰 UART1/PB22。
+         */
+        if(!ml307Initialized && CurTick >= 1000U) {
+            Ml307_Init();
+            ml307Initialized = 1U;
+        }
+        if(ml307Initialized) Ml307_Process();
+        else HealthV2_Mark(HEALTH_V2_CELLULAR);
     }
 }
 /*********************************************************************
@@ -63,10 +75,12 @@ void Main_Circulation()
 int main(void)
 {
     SetSysClock(CLK_SOURCE_PLL_60MHz);
-    GPIOA_SetBits(GPIO_Pin_9);
-    GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);
-    GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
-    UART1_DefInit();
+#ifdef DEBUG
+    GPIOA_SetBits(bTXD2);
+    GPIOA_ModeCfg(bRXD2, GPIO_ModeIN_PU);
+    GPIOA_ModeCfg(bTXD2, GPIO_ModeOut_PP_5mA);
+    UART2_DefInit();
+#endif
     PRINT("BLE baseline %s ,build in(%s:%s)\r\n", VER_LIB, __DATE__, __TIME__);
 
     CH58X_BLEInit();
@@ -93,13 +107,18 @@ int main(void)
     PFIC_EnableIRQ(TMR0_IRQn);                    //enable timer0 core interrupt
     Led_Init();
     IR_Init();
-    //debug init
-    GPIOA_SetBits(GPIO_Pin_9);
-    GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);
-    GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
-    UART1_DefInit();
+    // UART1 专用于 ML307R；调试构建将日志输出到 UART2 PA6/PA7。
+#ifdef DEBUG
+    GPIOA_SetBits(bTXD2);
+    GPIOA_ModeCfg(bRXD2, GPIO_ModeIN_PU);
+    GPIOA_ModeCfg(bTXD2, GPIO_ModeOut_PP_5mA);
+    UART2_DefInit();
+#endif
     // InitUSBDevice(); //usb-cdc 已弃用，不再初始化
     PRINT("%s ,build in(%s:%s)\n", VER_LIB,__DATE__,__TIME__);
+    PRINT("BLE cfg: heap=%u packet=%u count=%u links=%u/%u\r\n",
+          BLE_MEMHEAP_SIZE, BLE_BUFF_MAX_LEN, BLE_BUFF_NUM,
+          PERIPHERAL_MAX_CONNECTION, CENTRAL_MAX_CONNECTION);
     CH58X_BLEInit();
     HAL_Init();
     PRINT("BLE RTC clock: internal 32K RC\r\n");

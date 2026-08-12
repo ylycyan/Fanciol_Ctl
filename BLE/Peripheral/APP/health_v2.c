@@ -40,6 +40,7 @@ static uint32_t last_ir_ms;
 static uint32_t last_flash_ms;
 static uint32_t last_periodic_ms;
 static uint32_t last_ble_ms;
+static uint32_t last_cellular_ms;
 static uint32_t healthy_since_ms;
 static uint32_t health_generation;
 static uint16_t health_next_slot;
@@ -302,6 +303,7 @@ void HealthV2_Init(uint8_t boot_reset_reason, uint16_t fault_snapshot)
     last_flash_ms = CurTick;
     last_periodic_ms = CurTick;
     last_ble_ms = CurTick;
+    last_cellular_ms = CurTick;
     healthy_since_ms = 0;
     reported_mask = 0;
     fault_latched = 0;
@@ -317,6 +319,7 @@ void HealthV2_Mark(uint8_t component)
     if(component & HEALTH_V2_FLASH) last_flash_ms = now;
     if(component & HEALTH_V2_PERIODIC) last_periodic_ms = now;
     if(component & HEALTH_V2_BLE_STACK) last_ble_ms = now;
+    if(component & HEALTH_V2_CELLULAR) last_cellular_ms = now;
 }
 
 uint8_t HealthV2_Tick100ms(uint16_t fault_snapshot)
@@ -334,6 +337,8 @@ uint8_t HealthV2_Tick100ms(uint16_t fault_snapshot)
         mask |= HEALTH_V2_PERIODIC;
     if((uint32_t)(now - last_ble_ms) > HEALTH_FAST_DEADLINE_MS)
         mask |= HEALTH_V2_BLE_STACK;
+    if((uint32_t)(now - last_cellular_ms) > HEALTH_FAST_DEADLINE_MS)
+        mask |= HEALTH_V2_CELLULAR;
 
     if(mask) {
         healthy_since_ms = 0;

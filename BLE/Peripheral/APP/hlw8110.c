@@ -1,3 +1,15 @@
+/**
+ * @file hlw8110.c
+ * @brief HLW8110 单相电能计量芯片驱动（非阻塞状态机）
+ *
+ * 通过 UART0 (PB4:RX, PB7:TX) 与 HLW8110 通信，9600 8E1。
+ * 主循环每 20ms 调用 HLW8110_Poll() 推进状态机：
+ *   - 上电/故障后先拉低 RX 引脚复位芯片（手册要求 >9.15ms）
+ *   - 依次读取并回写 SYSCON/EMUCON/EMUCON2 配置并回读校验
+ *   - 校准系数（RMS_IAC / RMS_UC / POWER_PAC）后进入周期采样
+ *   - 每 2 秒采样 功率/电流/电压 一组，全部通过范围校验后才对外发布
+ * 通信异常自动整芯片复位重连；连续失败达到阈值后置位功率故障码。
+ */
 #include "CH58x_common.h"
 #include "board.h"
 #include "hlw8110.h"
@@ -120,6 +132,9 @@ static uint32_t parse_be32(const uint8_t *data)
            ((uint32_t)data[2] << 8) | data[3];
 }
 
+/**
+ * @brief UART0 引脚与波特率配置（HLW8110 专用，8E1）
+ */
 static void uart_configure(void)
 {
     GPIOPinRemap(DISABLE, RB_PIN_UART0);
@@ -133,6 +148,11 @@ static void uart_configure(void)
     R8_UART0_DIV = 1;
 }
 
+/**
+ * @brief 记录一次通信失败，连续达到阈值时置位功率故障码
+ * @param reason 失败原因（HLW8110_ERROR_*）
+ * @param detail 附加详情（寄存器值等），用于现场诊断
+ */
 static void record_failure(uint8_t reason, uint32_t detail)
 {
     meter_status.last_error_reason = reason;
@@ -152,6 +172,11 @@ static void record_failure(uint8_t reason, uint32_t detail)
     }
 }
 
+/**
+ * @brief 进入整芯片复位恢复流程
+ *
+ * 按手册要求将 RX 保持低电平超过 9.15ms，随后重新走完整配置流程。
+ */
 static void begin_recovery(uint32_t now, uint8_t reason, uint32_t detail)
 {
     record_failure(reason, detail);
@@ -167,6 +192,12 @@ static void begin_recovery(uint32_t now, uint8_t reason, uint32_t detail)
     state_started_ms = now;
 }
 
+/**
+ * @brief 拒绝本次采样（数据越界），不做昂贵的整芯片复位
+ *
+ * 与 begin_recovery 的区别：UART/芯片本身正常，只是数值超出合理范围，
+ * 直接丢弃本轮采样并等待下一个采样周期。
+ */
 static void reject_sample(uint32_t now, uint8_t reason, uint32_t detail)
 {
     /* 数据越界不代表 UART 或芯片失去响应，不做昂贵的整芯片复位。 */
@@ -178,6 +209,9 @@ static void reject_sample(uint32_t now, uint8_t reason, uint32_t detail)
     state_started_ms = now;
 }
 
+/**
+ * @brief 发送结果检查：失败或超时则进入恢复流程
+ */
 static uint8_t tx_progress_or_recover(uint8_t sent, uint32_t now)
 {
     if(sent) return 1U;
@@ -186,6 +220,11 @@ static uint8_t tx_progress_or_recover(uint8_t sent, uint32_t now)
     return 0U;
 }
 
+/**
+ * @brief 发起一次寄存器读请求
+ * @param reg 寄存器地址（bit7 必须为 0）
+ * @param data_length 期望数据长度（1~4 字节，不含校验和）
+ */
 static uint8_t start_read(uint8_t reg, uint8_t data_length, uint32_t now)
 {
     if(data_length == 0U || data_length > 4U || R8_UART0_TFC > (UART_FIFO_SIZE - 2U)) return 0;
@@ -200,6 +239,10 @@ static uint8_t start_read(uint8_t reg, uint8_t data_length, uint32_t now)
     return 1;
 }
 
+/**
+ * @brief 轮询等待读响应：校验帧长、全 FF、校验和，超时判定
+ * @retval HLW_RX_WAITING 等待中；HLW_RX_OK 完整有效；HLW_RX_FAILED 出错
+ */
 static hlw_rx_result_t poll_response(uint32_t now)
 {
     uint8_t line_status = UART0_GetLinSTA();
@@ -255,6 +298,9 @@ static hlw_rx_result_t poll_response(uint32_t now)
     return HLW_RX_WAITING;
 }
 
+/**
+ * @brief 发送特殊命令帧（写使能/写保护/通道选择）
+ */
 static uint8_t send_special(uint8_t special_command)
 {
     uint8_t sum;
@@ -268,6 +314,9 @@ static uint8_t send_special(uint8_t special_command)
     return 1;
 }
 
+/**
+ * @brief 写 16 位寄存器（bit7 置 1 表示写）
+ */
 static uint8_t write_register_u16(uint8_t reg, uint16_t value)
 {
     uint8_t command = (uint8_t)(reg | 0x80U);
@@ -286,6 +335,13 @@ static uint8_t write_register_u16(uint8_t reg, uint16_t value)
     return 1;
 }
 
+/**
+ * @brief 处理"读寄存器"类状态：发起请求→轮询响应→按状态推进
+ *
+ * 配置读回阶段（VERIFY_*）校验写入是否生效；校准阶段（CAL_*）保存
+ * 功率/电流/电压系数；采样阶段（SAMPLE_*）把原始值换算为实际物理量。
+ * 任何一步失败都进入整芯片恢复流程。
+ */
 static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
 {
     hlw_rx_result_t result;
@@ -306,6 +362,7 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
 
     switch(meter_state) {
     case HLW_STATE_CONFIG_READ_SYSCON:
+        /* 读出当前 SYSCON，合入目标位（开 ADC1/ADC3、电流 PGA×16），其余位保持 */
         config_syscon = parse_be16(response);
         desired_syscon = (uint16_t)(config_syscon &
                                     (uint16_t)~(HLW_SYSCON_ADC1ON | HLW_SYSCON_ADC2ON |
@@ -316,6 +373,7 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
         meter_state = HLW_STATE_CONFIG_READ_EMUCON;
         break;
     case HLW_STATE_CONFIG_READ_EMUCON:
+        /* EMUCON：关闭直流模式与高低通滤波器旁路，恢复交流测量 */
         config_emucon = parse_be16(response);
         desired_emucon = (uint16_t)(config_emucon &
                                     (uint16_t)~(HLW_EMUCON_DC_MODE | HLW_EMUCON_HPFIA_OFF |
@@ -323,6 +381,7 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
         meter_state = HLW_STATE_CONFIG_READ_EMUCON2;
         break;
     case HLW_STATE_CONFIG_READ_EMUCON2:
+        /* EMUCON2：选内部基准，关闭波形/峰值捕获与 B 通道 */
         config_emucon2 = parse_be16(response);
         desired_emucon2 = (uint16_t)((config_emucon2 &
                                       (uint16_t)~(HLW_EMUCON2_CHS_IB | HLW_EMUCON2_WAVE_EN |
@@ -346,21 +405,25 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
         meter_state = HLW_STATE_CAL_RMS_IAC;
         break;
     case HLW_STATE_CAL_RMS_IAC:
+        /* 校准系数：电流有效值（0 或全 FF 视为无效） */
         rms_iac = parse_be16(response);
         if(rms_iac == 0U || rms_iac == 0xFFFFU) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, rms_iac); return; }
         meter_state = HLW_STATE_CAL_RMS_UC;
         break;
     case HLW_STATE_CAL_RMS_UC:
+        /* 校准系数：电压有效值 */
         rms_uc = parse_be16(response);
         if(rms_uc == 0U || rms_uc == 0xFFFFU) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, rms_uc); return; }
         meter_state = HLW_STATE_CAL_POWER_PAC;
         break;
     case HLW_STATE_CAL_POWER_PAC:
+        /* 校准系数：功率 */
         power_pac = parse_be16(response);
         if(power_pac == 0U || power_pac == 0xFFFFU) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, power_pac); return; }
         meter_state = HLW_STATE_SELECT_A;
         break;
     case HLW_STATE_SAMPLE_POWER:
+        /* 采样功率：32 位原始值 → W×10 */
         sample_power_w_x10 = HLW8110_CalcPowerX10(parse_be32(response), power_pac);
         meter_state = HLW_STATE_SAMPLE_CURRENT;
         break;
@@ -378,6 +441,7 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
             reject_sample(now, HLW8110_ERROR_VOLTAGE_RANGE, raw);
             return;
         }
+        /* 三个量全部通过校验后才发布本轮采样 */
         meter_status.power_w_x10 = sample_power_w_x10;
         meter_status.current_ma = sample_current_ma;
         meter_status.voltage_dv = sample_voltage_dv;
@@ -403,6 +467,9 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
     state_started_ms = now;
 }
 
+/**
+ * @brief 初始化计量模块：复位引脚拉低，进入整芯片复位流程
+ */
 void HLW8110_Init(void)
 {
     memset(&meter_status, 0, sizeof(meter_status));
@@ -420,12 +487,21 @@ void HLW8110_Init(void)
     state_started_ms = CurTick;
 }
 
+/**
+ * @brief 计量状态机主轮询（每 20ms 由 Period_20ms 调用，非阻塞）
+ *
+ * 各状态通过 CurTick 时间戳推进，不忙等：
+ *   RESET_LOW(12ms) → BOOT_WAIT(100ms) → 配置读/写/校验 → 校准 → IDLE
+ *   IDLE 每 2 秒进入一轮 SAMPLE_* 采样
+ *   异常统一走 begin_recovery 或 reject_sample
+ */
 void HLW8110_Poll(void)
 {
     uint32_t now = CurTick;
 
     switch(meter_state) {
     case HLW_STATE_RESET_LOW:
+        /* 拉低 RX 复位引脚并保持 12ms（手册要求 >9.15ms） */
         if(!elapsed(now, state_started_ms, HLW_RECOVERY_LOW_MS)) return;
         GPIOB_SetBits(GPIO_Pin_7);
         uart_configure();
@@ -433,6 +509,7 @@ void HLW8110_Poll(void)
         state_started_ms = now;
         return;
     case HLW_STATE_BOOT_WAIT:
+        /* 芯片上电后等待 100ms 再开始配置 */
         if(!elapsed(now, state_started_ms, HLW_BOOT_WAIT_MS)) return;
         meter_state = HLW_STATE_CONFIG_READ_SYSCON;
         state_started_ms = now;
@@ -447,11 +524,13 @@ void HLW8110_Poll(void)
         service_read_state(HLW_REG_EMUCON2, 2U, now);
         return;
     case HLW_STATE_CONFIG_UNLOCK:
+        /* 写使能（解除寄存器写保护） */
         if(!tx_progress_or_recover(send_special(HLW_WRITE_ENABLE), now)) return;
         meter_state = HLW_STATE_CONFIG_WRITE_SYSCON;
         state_started_ms = now;
         return;
     case HLW_STATE_CONFIG_WRITE_SYSCON:
+        /* 等 TX 静默后回写配置；与当前值相同则跳过写操作 */
         if(!elapsed(now, state_started_ms, HLW_TX_SETTLE_MS)) return;
         if(desired_syscon != config_syscon &&
            !tx_progress_or_recover(write_register_u16(HLW_REG_SYSCON, desired_syscon), now)) return;
@@ -473,18 +552,21 @@ void HLW8110_Poll(void)
         state_started_ms = now;
         return;
     case HLW_STATE_CONFIG_SELECT_A:
+        /* 选择通道 A（电流采样通道） */
         if(!elapsed(now, state_started_ms, HLW_TX_SETTLE_MS)) return;
         if(!tx_progress_or_recover(send_special(HLW_SELECT_CHANNEL_A), now)) return;
         meter_state = HLW_STATE_CONFIG_LOCK;
         state_started_ms = now;
         return;
     case HLW_STATE_CONFIG_LOCK:
+        /* 重新写保护 */
         if(!elapsed(now, state_started_ms, HLW_TX_SETTLE_MS)) return;
         if(!tx_progress_or_recover(send_special(HLW_WRITE_PROTECT), now)) return;
         meter_state = HLW_STATE_CONFIG_SETTLE;
         state_started_ms = now;
         return;
     case HLW_STATE_CONFIG_SETTLE:
+        /* 配置生效等待 */
         if(!elapsed(now, state_started_ms, HLW_CONFIG_SETTLE_MS)) return;
         meter_state = HLW_STATE_CONFIG_VERIFY_SYSCON;
         state_started_ms = now;
@@ -508,12 +590,14 @@ void HLW8110_Poll(void)
         service_read_state(HLW_REG_POWER_PAC, 2U, now);
         return;
     case HLW_STATE_SELECT_A:
+        /* 校准完成后再次选通道 A，进入空闲采样 */
         if(!tx_progress_or_recover(send_special(HLW_SELECT_CHANNEL_A), now)) return;
         meter_state = HLW_STATE_IDLE;
         next_sample_ms = now;
         state_started_ms = now;
         return;
     case HLW_STATE_IDLE:
+        /* 空闲等待采样间隔（2 秒） */
         if((int32_t)(now - next_sample_ms) < 0) return;
         meter_state = HLW_STATE_SAMPLE_POWER;
         state_started_ms = now;
@@ -533,6 +617,9 @@ void HLW8110_Poll(void)
     }
 }
 
+/**
+ * @brief 获取计量状态快照（供上报与诊断）
+ */
 const HLW8110_Status_t *HLW8110_GetStatus(void)
 {
     return &meter_status;

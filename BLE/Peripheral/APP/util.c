@@ -5,6 +5,7 @@
 #include "hlw8110.h"
 #include "lora_recovery_v2.h"
 #include "relay_child_table_v2.h"
+#include "ml307r.h"
 #include <string.h>
 
 volatile uint32_t Timer_Lora = 0; // Lora state timer, LORA_POLL_INTERVAL_MS/tick
@@ -601,6 +602,7 @@ static uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t p
     }
     /* 延迟并合并运行状态写入，不改变固定网关报文和 LoRa 轮询热路径。 */
     SaveDevInfo(50u);
+    Ml307_RequestReport();
     return 0;
 }
 

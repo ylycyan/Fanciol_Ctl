@@ -9,6 +9,7 @@
 #include "hlw8110.h"
 #include "time_v2.h"
 #include "config_store_v2.h"
+#include "ml307r.h"
 static volatile uint8_t Flag_20ms = 0;
 static volatile uint8_t Flag_100ms = 0;
 static volatile uint8_t Flag_1s = 0;
@@ -109,10 +110,10 @@ void RTC_ProductInit(uint8_t resetReason, uint32_t retainedTimestamp)
         return;
     }
 
-    /* 真正掉电后没有可信时钟，先给 RTC 安全基准，但禁止定时规则直到网关对时。 */
+    /* 真正掉电后没有可信时钟，先给 RTC 安全基准，等待 LoRa 或 4G 对时。 */
     RTC_SetTimestamp(1767225600u); /* 2026-01-01 00:00:00 */
     rtcTimeValid = 0;
-    PRINT("RTC waiting for gateway time sync\r\n");
+    PRINT("RTC waiting for remote time sync\r\n");
 }
 
 uint8_t RTC_IsTimeValid(void)
@@ -154,7 +155,11 @@ uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *mon, uint16_t *day,
 void Period_20ms(void){
     if(Flag_20ms){
         Flag_20ms = 0;
-        Lora_Pro();
+        if(ConnectivityV2_LoraEnabled()) Lora_Pro();
+        else {
+            Dev.errorCode.bit.lora = 0U;
+            Dev.loraStatus = Status_Logining;
+        }
         HLW8110_Poll();
         HealthV2_Mark(HEALTH_V2_LORA);
     }
@@ -207,18 +212,23 @@ void Period_1s(void){
          * 重启、配置漂移、队列滞留、控制成功率和外设恢复情况。
          * 单行输出不会进入网关协议，也不增加 Flash 擦写。
          */
+#ifdef DEBUG
         {
             static uint8_t health_log_seconds = 0U;
             if(++health_log_seconds >= 60U) {
                 const HLW8110_Status_t *meter = HLW8110_GetStatus();
                 health_log_seconds = 0U;
-                PRINT("#HEALTH up=%lu rev=%lu reset=%u fault=%04x lora=%u loraTick=%lu irQ=%u/%u irTx=%u/%u/%u meterErr=%u meterFail=%u/%u/%02x\r\n",
+                const ml307_status_v2_t *cellular = Ml307_GetStatus();
+                PRINT("#HEALTH up=%lu rev=%lu reset=%u fault=%04x lora=%u loraTick=%lu cell=%u/%u cellFail=%u irQ=%u/%u irTx=%u/%u/%u meterErr=%u meterFail=%u/%u/%02x\r\n",
                       (unsigned long)(CurTick / 1000U),
                       (unsigned long)ConfigV2_GetRevision(),
                       HealthV2_ConsecutiveResets(),
                       Dev.errorCode.u16Val,
                       Dev.loraStatus,
                       (unsigned long)Timer_Lora,
+                      cellular->phase,
+                      cellular->mqtt_online,
+                      cellular->consecutive_failures,
                       Ir_GetQueueDepth(),
                       Ir_GetQueueHighWater(),
                       Ir_GetSubmittedCount(),
@@ -230,6 +240,7 @@ void Period_1s(void){
                       meter->last_error_register);
             }
         }
+#endif
 
         // 每天00:00重置规则的executed标志
         {

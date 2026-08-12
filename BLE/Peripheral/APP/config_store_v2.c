@@ -9,6 +9,7 @@
 #define RUNTIME_MAGIC   0x34544E52UL
 #define IR_MAGIC        0x32524953UL
 #define LORA_PARAM_MAGIC 0x3250524CUL
+#define CONNECTIVITY_MAGIC 0x324D4F43UL
 #define RUNTIME_SLOTS   64u
 
 typedef struct __attribute__((packed)) {
@@ -82,6 +83,20 @@ typedef struct __attribute__((packed)) {
     uint32_t crc32;
 } lora_param_record_v2_t;
 
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint8_t schema_version;
+    uint8_t reserved;
+    uint32_t generation;
+    uint16_t payload_length;
+    uint32_t crc32;
+    connectivity_config_v2_t payload;
+} connectivity_record_v2_t;
+
+typedef char connectivity_record_must_fit_page[
+    (sizeof(connectivity_record_v2_t) <= EEPROM_PAGE_SIZE) ? 1 : -1
+];
+
 static uint32_t config_revision;
 static uint32_t config_slot;
 static uint32_t runtime_generation;
@@ -96,6 +111,9 @@ static uint32_t ir_slot;
 static uint8_t ir_write_locked;
 static uint8_t lora_params_write_locked;
 static uint8_t storage_startup_flags;
+static connectivity_config_v2_t connectivity_config;
+static uint32_t connectivity_generation;
+static uint32_t connectivity_slot;
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint16_t len)
 {
@@ -694,6 +712,57 @@ static uint8_t valid_lora_bw(uint8_t bw)
     }
 }
 
+static void connectivity_defaults(connectivity_config_v2_t *config)
+{
+    memset(config, 0, sizeof(*config));
+    config->transport_mask = CONNECTIVITY_V2_LORA;
+    config->lora_register_sf = LORA_SF_LISTEN;
+    config->lora_register_bw = LORA_BW_LISTEN;
+    config->lora_listen_sf = LORA_SF_SCAN;
+    config->lora_listen_bw = LORA_BW_SCAN;
+    config->mqtt_port = 1883U;
+    config->mqtt_keepalive_sec = 60U;
+    config->report_interval_sec = 60U;
+    config->mqtt_qos = 0U;
+}
+
+static uint8_t connectivity_string_valid(const char *value, uint16_t capacity)
+{
+    uint16_t i;
+    if(!value || !capacity || value[capacity - 1U] != '\0') return 0U;
+    for(i = 0U; value[i] != '\0'; ++i) {
+        uint8_t ch = (uint8_t)value[i];
+        if(ch < 0x20U || ch > 0x7EU || ch == '"' || ch == '\\') return 0U;
+    }
+    return 1U;
+}
+
+static uint8_t connectivity_record_erased(const connectivity_record_v2_t *record)
+{
+    const uint8_t *bytes = (const uint8_t *)record;
+    uint16_t i;
+    for(i = 0U; i < sizeof(*record); ++i) if(bytes[i] != 0xFFU) return 0U;
+    return 1U;
+}
+
+static uint32_t connectivity_crc(const connectivity_record_v2_t *record)
+{
+    uint32_t crc = crc32_update(0xFFFFFFFFUL, (const uint8_t *)record,
+                                (uint16_t)offsetof(connectivity_record_v2_t, crc32));
+    crc = crc32_update(crc, (const uint8_t *)&record->payload,
+                       sizeof(record->payload));
+    return crc ^ 0xFFFFFFFFUL;
+}
+
+static uint8_t connectivity_record_valid(const connectivity_record_v2_t *record)
+{
+    return record->magic == CONNECTIVITY_MAGIC &&
+           record->schema_version == CONNECTIVITY_V2_SCHEMA &&
+           record->payload_length == sizeof(record->payload) &&
+           record->crc32 == connectivity_crc(record) &&
+           ConnectivityV2_Validate(&record->payload) == V2_STATUS_OK;
+}
+
 uint8_t LoraParamsV2_Validate(uint8_t register_sf, uint8_t register_bw,
                               uint8_t listen_sf, uint8_t listen_bw)
 {
@@ -703,63 +772,315 @@ uint8_t LoraParamsV2_Validate(uint8_t register_sf, uint8_t register_bw,
     return V2_STATUS_OK;
 }
 
+uint8_t ConnectivityV2_Validate(const connectivity_config_v2_t *config)
+{
+    if(!config || config->transport_mask == 0U ||
+       (config->transport_mask & (uint8_t)~(CONNECTIVITY_V2_LORA | CONNECTIVITY_V2_CELLULAR)) != 0U)
+        return V2_STATUS_INVALID_ARG;
+    if(LoraParamsV2_Validate(config->lora_register_sf,
+                             config->lora_register_bw,
+                             config->lora_listen_sf,
+                             config->lora_listen_bw) != V2_STATUS_OK)
+        return V2_STATUS_INVALID_ARG;
+    if(config->mqtt_port == 0U || config->mqtt_keepalive_sec < 60U ||
+       config->mqtt_keepalive_sec > 3600U || config->report_interval_sec < 10U ||
+       config->report_interval_sec > 3600U || config->mqtt_qos > 1U)
+        return V2_STATUS_INVALID_ARG;
+    if(!connectivity_string_valid(config->mqtt_host, sizeof(config->mqtt_host)) ||
+       !connectivity_string_valid(config->mqtt_client_id, sizeof(config->mqtt_client_id)) ||
+       !connectivity_string_valid(config->mqtt_username, sizeof(config->mqtt_username)) ||
+       !connectivity_string_valid(config->mqtt_password, sizeof(config->mqtt_password)) ||
+       !connectivity_string_valid(config->publish_topic, sizeof(config->publish_topic)) ||
+       !connectivity_string_valid(config->subscribe_topic, sizeof(config->subscribe_topic)) ||
+       !connectivity_string_valid(config->apn, sizeof(config->apn)))
+        return V2_STATUS_INVALID_ARG;
+    if((config->transport_mask & CONNECTIVITY_V2_CELLULAR) != 0U &&
+       (!config->mqtt_host[0] || !config->publish_topic[0] || !config->subscribe_topic[0]))
+        return V2_STATUS_INVALID_ARG;
+    return V2_STATUS_OK;
+}
+
+static void connectivity_apply(const connectivity_config_v2_t *config)
+{
+    memcpy(&connectivity_config, config, sizeof(connectivity_config));
+    Dev.loraRegisterSf = config->lora_register_sf;
+    Dev.loraRegisterBw = config->lora_register_bw;
+    Dev.loraListenSf = config->lora_listen_sf;
+    Dev.loraListenBw = config->lora_listen_bw;
+}
+
+uint8_t ConnectivityV2_Load(void)
+{
+    connectivity_record_v2_t record;
+    lora_param_record_v2_t legacy;
+    uint8_t first_valid;
+    uint8_t second_valid;
+    uint8_t first_erased;
+    uint8_t second_erased;
+    uint8_t selected_valid = 0U;
+
+    lora_params_write_locked = 0U;
+    memset(&record, 0xFF, sizeof(record));
+    if(EEPROM_READ(V2_CONNECTIVITY_SLOT_A, &record, sizeof(record)) != 0U)
+        goto connectivity_read_error;
+    memcpy(&legacy, &record, sizeof(legacy));
+    first_valid = connectivity_record_valid(&record);
+    first_erased = connectivity_record_erased(&record);
+    if(first_valid) {
+        connectivity_generation = record.generation;
+        connectivity_slot = V2_CONNECTIVITY_SLOT_A;
+        connectivity_apply(&record.payload);
+        selected_valid = 1U;
+    }
+
+    /* Reuse one page-sized scratch record to keep the boot task stack bounded. */
+    memset(&record, 0xFF, sizeof(record));
+    if(EEPROM_READ(V2_CONNECTIVITY_SLOT_B, &record, sizeof(record)) != 0U)
+        goto connectivity_read_error;
+    second_valid = connectivity_record_valid(&record);
+    second_erased = connectivity_record_erased(&record);
+    if(second_valid && (!selected_valid ||
+       (int32_t)(record.generation - connectivity_generation) > 0)) {
+        connectivity_generation = record.generation;
+        connectivity_slot = V2_CONNECTIVITY_SLOT_B;
+        connectivity_apply(&record.payload);
+        selected_valid = 1U;
+    }
+    if(selected_valid) {
+        if(first_valid != second_valid) {
+            uint32_t target = connectivity_slot == V2_CONNECTIVITY_SLOT_A ?
+                              V2_CONNECTIVITY_SLOT_B : V2_CONNECTIVITY_SLOT_A;
+            uint32_t expected_crc;
+            memset(&record, 0, sizeof(record));
+            record.magic = CONNECTIVITY_MAGIC;
+            record.schema_version = CONNECTIVITY_V2_SCHEMA;
+            record.generation = connectivity_generation + 1U;
+            record.payload_length = sizeof(record.payload);
+            memcpy(&record.payload, &connectivity_config, sizeof(record.payload));
+            record.crc32 = connectivity_crc(&record);
+            expected_crc = record.crc32;
+            if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
+               EEPROM_WRITE(target, &record, sizeof(record)) != 0U ||
+               EEPROM_READ(target, &record, sizeof(record)) != 0U ||
+               !connectivity_record_valid(&record) || record.crc32 != expected_crc) {
+                lora_params_write_locked = 1U;
+                storage_startup_flags |= STORAGE_V2_STARTUP_DEGRADED;
+            } else {
+                connectivity_generation = record.generation;
+                connectivity_slot = target;
+                /* A blank peer slot is normal after the very first commit.
+                 * Rebuild its redundancy silently; only a non-erased invalid
+                 * record represents corruption worth exposing as recovered. */
+                if(!((first_valid && second_erased) || (second_valid && first_erased)))
+                    storage_startup_flags |= STORAGE_V2_STARTUP_RECOVERED;
+            }
+        }
+        return V2_STATUS_OK;
+    }
+
+    /* 兼容迁移旧版 0x2000 单槽 LoRa 参数记录。 */
+    connectivity_defaults(&connectivity_config);
+    connectivity_generation = 0U;
+    connectivity_slot = V2_CONNECTIVITY_SLOT_B;
+    if(legacy.magic == LORA_PARAM_MAGIC &&
+       legacy.crc32 == ConfigV2_Crc32((const uint8_t *)&legacy,
+                                      (uint16_t)(sizeof(legacy) - 4U)) &&
+       LoraParamsV2_Validate(legacy.register_sf, legacy.register_bw,
+                             legacy.listen_sf, legacy.listen_bw) == V2_STATUS_OK) {
+        connectivity_config.lora_register_sf = legacy.register_sf;
+        connectivity_config.lora_register_bw = legacy.register_bw;
+        connectivity_config.lora_listen_sf = legacy.listen_sf;
+        connectivity_config.lora_listen_bw = legacy.listen_bw;
+        if(legacy.register_sf == 10U && legacy.register_bw == 0x04U &&
+           legacy.listen_sf == 8U && legacy.listen_bw == 0x0AU) {
+            connectivity_config.lora_register_sf = LORA_SF_LISTEN;
+            connectivity_config.lora_register_bw = LORA_BW_LISTEN;
+            connectivity_config.lora_listen_sf = LORA_SF_SCAN;
+            connectivity_config.lora_listen_bw = LORA_BW_SCAN;
+        }
+        connectivity_apply(&connectivity_config);
+        storage_startup_flags |= STORAGE_V2_STARTUP_RECOVERED;
+        return ConnectivityV2_Save(&connectivity_config);
+    }
+
+    connectivity_apply(&connectivity_config);
+    if(!first_erased || !second_erased)
+        storage_startup_flags |= STORAGE_V2_STARTUP_RECOVERED;
+    return V2_STATUS_VERIFY_FAILED;
+
+connectivity_read_error:
+    connectivity_defaults(&connectivity_config);
+    connectivity_apply(&connectivity_config);
+    connectivity_generation = 0U;
+    connectivity_slot = V2_CONNECTIVITY_SLOT_B;
+    lora_params_write_locked = 1U;
+    storage_startup_flags |= STORAGE_V2_STARTUP_DEGRADED;
+    return V2_STATUS_IO_ERROR;
+}
+
+uint8_t ConnectivityV2_Save(const connectivity_config_v2_t *config)
+{
+    connectivity_record_v2_t record;
+    uint32_t target;
+    uint32_t expected_crc;
+    uint8_t status = ConnectivityV2_Validate(config);
+    if(lora_params_write_locked) return V2_STATUS_IO_ERROR;
+    if(status != V2_STATUS_OK) return status;
+    if(memcmp(config, &connectivity_config, sizeof(*config)) == 0 && connectivity_generation != 0U)
+        return V2_STATUS_OK;
+
+    memset(&record, 0, sizeof(record));
+    record.magic = CONNECTIVITY_MAGIC;
+    record.schema_version = CONNECTIVITY_V2_SCHEMA;
+    record.generation = connectivity_generation + 1U;
+    record.payload_length = sizeof(record.payload);
+    memcpy(&record.payload, config, sizeof(record.payload));
+    record.crc32 = connectivity_crc(&record);
+    expected_crc = record.crc32;
+    target = connectivity_slot == V2_CONNECTIVITY_SLOT_A ?
+             V2_CONNECTIVITY_SLOT_B : V2_CONNECTIVITY_SLOT_A;
+    if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
+       EEPROM_WRITE(target, &record, sizeof(record)) != 0U ||
+       EEPROM_READ(target, &record, sizeof(record)) != 0U)
+        return V2_STATUS_IO_ERROR;
+    if(!connectivity_record_valid(&record) || record.crc32 != expected_crc)
+        return V2_STATUS_VERIFY_FAILED;
+
+    connectivity_generation = record.generation;
+    connectivity_slot = target;
+    connectivity_apply(&record.payload);
+    return V2_STATUS_OK;
+}
+
+const connectivity_config_v2_t *ConnectivityV2_Get(void)
+{
+    return &connectivity_config;
+}
+
+uint32_t ConnectivityV2_GetGeneration(void)
+{
+    return connectivity_generation;
+}
+
+uint8_t ConnectivityV2_LoraEnabled(void)
+{
+    return (connectivity_config.transport_mask & CONNECTIVITY_V2_LORA) != 0U;
+}
+
+uint8_t ConnectivityV2_CellularEnabled(void)
+{
+    return (connectivity_config.transport_mask & CONNECTIVITY_V2_CELLULAR) != 0U;
+}
+
+static uint8_t wire_put_string(uint8_t *payload, uint16_t capacity, uint16_t *offset,
+                               const char *value, uint16_t value_capacity)
+{
+    uint16_t length = 0U;
+    while(length < value_capacity && value[length]) length++;
+    if(length >= value_capacity || length > 255U ||
+       (uint16_t)(*offset + 1U + length) > capacity) return 0U;
+    payload[(*offset)++] = (uint8_t)length;
+    memcpy(payload + *offset, value, length);
+    *offset = (uint16_t)(*offset + length);
+    return 1U;
+}
+
+uint8_t ConnectivityV2_Encode(uint8_t *payload, uint16_t capacity, uint16_t *length)
+{
+    const connectivity_config_v2_t *config = &connectivity_config;
+    uint16_t offset = 17U;
+    if(!payload || !length || capacity < offset) return V2_STATUS_INVALID_ARG;
+    payload[0] = CONNECTIVITY_V2_SCHEMA;
+    payload[1] = config->transport_mask;
+    payload[2] = config->lora_register_sf;
+    payload[3] = config->lora_register_bw;
+    payload[4] = config->lora_listen_sf;
+    payload[5] = config->lora_listen_bw;
+    payload[6] = config->mqtt_qos;
+    payload[7] = (uint8_t)config->mqtt_port;
+    payload[8] = (uint8_t)(config->mqtt_port >> 8);
+    payload[9] = (uint8_t)config->mqtt_keepalive_sec;
+    payload[10] = (uint8_t)(config->mqtt_keepalive_sec >> 8);
+    payload[11] = (uint8_t)config->report_interval_sec;
+    payload[12] = (uint8_t)(config->report_interval_sec >> 8);
+    payload[13] = (uint8_t)connectivity_generation;
+    payload[14] = (uint8_t)(connectivity_generation >> 8);
+    payload[15] = (uint8_t)(connectivity_generation >> 16);
+    payload[16] = (uint8_t)(connectivity_generation >> 24);
+    if(!wire_put_string(payload, capacity, &offset, config->mqtt_host, sizeof(config->mqtt_host)) ||
+       !wire_put_string(payload, capacity, &offset, config->mqtt_client_id, sizeof(config->mqtt_client_id)) ||
+       !wire_put_string(payload, capacity, &offset, config->mqtt_username, sizeof(config->mqtt_username)) ||
+       !wire_put_string(payload, capacity, &offset, config->mqtt_password, sizeof(config->mqtt_password)) ||
+       !wire_put_string(payload, capacity, &offset, config->publish_topic, sizeof(config->publish_topic)) ||
+       !wire_put_string(payload, capacity, &offset, config->subscribe_topic, sizeof(config->subscribe_topic)) ||
+       !wire_put_string(payload, capacity, &offset, config->apn, sizeof(config->apn)))
+        return V2_STATUS_INVALID_ARG;
+    *length = offset;
+    return V2_STATUS_OK;
+}
+
+static uint8_t wire_get_string(const uint8_t *payload, uint16_t length, uint16_t *offset,
+                               char *value, uint16_t capacity)
+{
+    uint16_t string_length;
+    if(*offset >= length) return 0U;
+    string_length = payload[(*offset)++];
+    if(string_length >= capacity || (uint16_t)(*offset + string_length) > length) return 0U;
+    memcpy(value, payload + *offset, string_length);
+    value[string_length] = '\0';
+    *offset = (uint16_t)(*offset + string_length);
+    return 1U;
+}
+
+uint8_t ConnectivityV2_Decode(const uint8_t *payload, uint16_t length,
+                              connectivity_config_v2_t *config)
+{
+    uint16_t offset = 17U;
+    uint32_t expected_generation;
+    if(!payload || !config || length < offset || payload[0] != CONNECTIVITY_V2_SCHEMA)
+        return V2_STATUS_INVALID_ARG;
+    memset(config, 0, sizeof(*config));
+    config->transport_mask = payload[1];
+    config->lora_register_sf = payload[2];
+    config->lora_register_bw = payload[3];
+    config->lora_listen_sf = payload[4];
+    config->lora_listen_bw = payload[5];
+    config->mqtt_qos = payload[6];
+    config->mqtt_port = (uint16_t)payload[7] | ((uint16_t)payload[8] << 8);
+    config->mqtt_keepalive_sec = (uint16_t)payload[9] | ((uint16_t)payload[10] << 8);
+    config->report_interval_sec = (uint16_t)payload[11] | ((uint16_t)payload[12] << 8);
+    expected_generation = (uint32_t)payload[13] | ((uint32_t)payload[14] << 8) |
+                          ((uint32_t)payload[15] << 16) | ((uint32_t)payload[16] << 24);
+    if(expected_generation != connectivity_generation) return V2_STATUS_CONFLICT;
+    if(!wire_get_string(payload, length, &offset, config->mqtt_host, sizeof(config->mqtt_host)) ||
+       !wire_get_string(payload, length, &offset, config->mqtt_client_id, sizeof(config->mqtt_client_id)) ||
+       !wire_get_string(payload, length, &offset, config->mqtt_username, sizeof(config->mqtt_username)) ||
+       !wire_get_string(payload, length, &offset, config->mqtt_password, sizeof(config->mqtt_password)) ||
+       !wire_get_string(payload, length, &offset, config->publish_topic, sizeof(config->publish_topic)) ||
+       !wire_get_string(payload, length, &offset, config->subscribe_topic, sizeof(config->subscribe_topic)) ||
+       !wire_get_string(payload, length, &offset, config->apn, sizeof(config->apn)) ||
+       offset != length) return V2_STATUS_INVALID_ARG;
+    return ConnectivityV2_Validate(config);
+}
+
 uint8_t LoraParamsV2_Load(void)
 {
-    lora_param_record_v2_t r;
-    lora_params_write_locked = 0U;
-    memset(&r, 0xFF, sizeof(r));
-    if(EEPROM_READ(V2_RESERVED_PAGE, &r, sizeof(r)) != 0U) {
-        Dev.loraRegisterSf = LORA_SF_LISTEN; Dev.loraRegisterBw = LORA_BW_LISTEN;
-        Dev.loraListenSf = LORA_SF_SCAN; Dev.loraListenBw = LORA_BW_SCAN;
-        lora_params_write_locked = 1U;
-        storage_startup_flags |= STORAGE_V2_STARTUP_DEGRADED;
-        return V2_STATUS_IO_ERROR;
-    }
-    if(r.magic != LORA_PARAM_MAGIC ||
-       r.crc32 != ConfigV2_Crc32((const uint8_t *)&r, (uint16_t)(sizeof(r) - 4u)) ||
-       LoraParamsV2_Validate(r.register_sf, r.register_bw, r.listen_sf, r.listen_bw) != V2_STATUS_OK) {
-        if(r.magic != 0xFFFFFFFFUL)
-            storage_startup_flags |= STORAGE_V2_STARTUP_RECOVERED;
-        Dev.loraRegisterSf = LORA_SF_LISTEN; Dev.loraRegisterBw = LORA_BW_LISTEN;
-        Dev.loraListenSf = LORA_SF_SCAN; Dev.loraListenBw = LORA_BW_SCAN;
-        return V2_STATUS_VERIFY_FAILED;
-    }
-
-    /*
-     * 早期 V2 重构版误把固定网关参数写成 SF10/BW125 + SF8/BW41.67。
-     * 仅迁移这组已发布的错误预设；实施人员明确保存的其他开发者参数继续保留。
-     */
-    if(r.register_sf == 10U && r.register_bw == 0x04U &&
-       r.listen_sf == 8U && r.listen_bw == 0x0AU) {
-        Dev.loraRegisterSf = LORA_SF_LISTEN; Dev.loraRegisterBw = LORA_BW_LISTEN;
-        Dev.loraListenSf = LORA_SF_SCAN; Dev.loraListenBw = LORA_BW_SCAN;
-        return LoraParamsV2_Save(Dev.loraRegisterSf, Dev.loraRegisterBw,
-                                 Dev.loraListenSf, Dev.loraListenBw);
-    }
-
-    Dev.loraRegisterSf = r.register_sf; Dev.loraRegisterBw = r.register_bw;
-    Dev.loraListenSf = r.listen_sf; Dev.loraListenBw = r.listen_bw;
-    return V2_STATUS_OK;
+    return ConnectivityV2_Load();
 }
 
 uint8_t LoraParamsV2_Save(uint8_t register_sf, uint8_t register_bw,
                           uint8_t listen_sf, uint8_t listen_bw)
 {
-    lora_param_record_v2_t r, verify;
+    connectivity_config_v2_t next;
     uint8_t status = LoraParamsV2_Validate(register_sf, register_bw, listen_sf, listen_bw);
     if(lora_params_write_locked) return V2_STATUS_IO_ERROR;
     if(status != V2_STATUS_OK) return status;
-    memset(&r, 0, sizeof(r)); r.magic = LORA_PARAM_MAGIC;
-    r.register_sf = register_sf; r.register_bw = register_bw;
-    r.listen_sf = listen_sf; r.listen_bw = listen_bw;
-    r.crc32 = ConfigV2_Crc32((const uint8_t *)&r, (uint16_t)(sizeof(r) - 4u));
-    if(EEPROM_ERASE(V2_RESERVED_PAGE, EEPROM_BLOCK_SIZE) ||
-       EEPROM_WRITE(V2_RESERVED_PAGE, &r, sizeof(r)) ||
-       EEPROM_READ(V2_RESERVED_PAGE, &verify, sizeof(verify)) ||
-       memcmp(&r, &verify, sizeof(r)) != 0) return V2_STATUS_VERIFY_FAILED;
-    Dev.loraRegisterSf = register_sf; Dev.loraRegisterBw = register_bw;
-    Dev.loraListenSf = listen_sf; Dev.loraListenBw = listen_bw;
-    return V2_STATUS_OK;
+    memcpy(&next, &connectivity_config, sizeof(next));
+    next.lora_register_sf = register_sf;
+    next.lora_register_bw = register_bw;
+    next.lora_listen_sf = listen_sf;
+    next.lora_listen_bw = listen_bw;
+    return ConnectivityV2_Save(&next);
 }
 
 uint8_t StorageV2_FactoryReset(void)
@@ -788,7 +1109,12 @@ uint8_t StorageV2_FactoryReset(void)
     ir_slot = V2_IR_SLOT_B;
     ir_write_locked = 0U;
     lora_params_write_locked = 0U;
+    connectivity_generation = 0U;
+    connectivity_slot = V2_CONNECTIVITY_SLOT_B;
+    connectivity_defaults(&connectivity_config);
     storage_startup_flags = 0U;
+    if(ConnectivityV2_Save(&connectivity_config) != V2_STATUS_OK)
+        return V2_STATUS_IO_ERROR;
     return ConfigV2_InitializeDefaults(0U);
 }
 

@@ -22,6 +22,15 @@ typedef struct {
     uint8_t partial;
 } failure_t;
 
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint8_t register_sf;
+    uint8_t register_bw;
+    uint8_t listen_sf;
+    uint8_t listen_bw;
+    uint32_t crc32;
+} legacy_lora_record_t;
+
 t_dev Dev;
 static uint8_t dataflash[DATAFLASH_SIZE];
 static failure_t failure;
@@ -385,6 +394,7 @@ static void test_lora_parameter_read_error_is_visible_and_non_destructive(void)
 
     reset_flash();
     assert(ConfigV2_Load() == V2_STATUS_VERIFY_FAILED);
+    assert(ConnectivityV2_Load() == V2_STATUS_VERIFY_FAILED);
     assert(LoraParamsV2_Save(11U, 2U, 9U, 3U) == V2_STATUS_OK);
     memcpy(snapshot, dataflash, sizeof(snapshot));
 
@@ -431,13 +441,24 @@ static void test_factory_reset_reports_partial_failure(void)
     assert(Dev.loraStatus == Status_Logining);
     assert(RuntimeV2_Load() == V2_STATUS_VERIFY_FAILED);
     assert(IrStoreV2_Load() == V2_STATUS_VERIFY_FAILED);
-    assert(LoraParamsV2_Load() == V2_STATUS_VERIFY_FAILED);
+    assert(LoraParamsV2_Load() == V2_STATUS_OK);
+    assert(ConnectivityV2_LoraEnabled());
+    assert(!ConnectivityV2_CellularEnabled());
 }
 
 static void test_legacy_lora_defaults_migrate_without_overwriting_custom_profile(void)
 {
+    legacy_lora_record_t legacy;
     reset_flash();
-    assert(LoraParamsV2_Save(10u, 4u, 8u, 10u) == V2_STATUS_OK);
+    memset(&legacy, 0, sizeof(legacy));
+    legacy.magic = 0x3250524CUL;
+    legacy.register_sf = 10U;
+    legacy.register_bw = 4U;
+    legacy.listen_sf = 8U;
+    legacy.listen_bw = 10U;
+    legacy.crc32 = ConfigV2_Crc32((const uint8_t *)&legacy,
+                                  (uint16_t)(sizeof(legacy) - sizeof(legacy.crc32)));
+    assert(Test_EepromWrite(V2_CONNECTIVITY_SLOT_A, &legacy, sizeof(legacy)) == 0U);
     memset(&Dev, 0, sizeof(Dev));
     assert(LoraParamsV2_Load() == V2_STATUS_OK);
     assert(Dev.loraRegisterSf == LORA_SF_LISTEN);
@@ -454,6 +475,71 @@ static void test_legacy_lora_defaults_migrate_without_overwriting_custom_profile
     assert(Dev.loraListenBw == 3u);
 }
 
+static void test_connectivity_round_trip_and_conflict(void)
+{
+    connectivity_config_v2_t next;
+    connectivity_config_v2_t decoded;
+    uint8_t wire[240];
+    uint16_t length = 0U;
+
+    reset_flash();
+    assert(ConnectivityV2_Load() == V2_STATUS_VERIFY_FAILED);
+    assert(ConnectivityV2_GetGeneration() == 0U);
+    memcpy(&next, ConnectivityV2_Get(), sizeof(next));
+    next.transport_mask = CONNECTIVITY_V2_LORA | CONNECTIVITY_V2_CELLULAR;
+    next.mqtt_qos = 1U;
+    next.mqtt_port = 1883U;
+    next.mqtt_keepalive_sec = 120U;
+    next.report_interval_sec = 30U;
+    strcpy(next.mqtt_host, "broker.example.com");
+    strcpy(next.mqtt_client_id, "splitac-1234");
+    strcpy(next.mqtt_username, "field");
+    strcpy(next.mqtt_password, "secret");
+    strcpy(next.publish_topic, "splitac/1234/state");
+    strcpy(next.subscribe_topic, "splitac/1234/control");
+    strcpy(next.apn, "iot");
+    assert(ConnectivityV2_Save(&next) == V2_STATUS_OK);
+    assert(ConnectivityV2_GetGeneration() == 1U);
+    assert(ConnectivityV2_LoraEnabled());
+    assert(ConnectivityV2_CellularEnabled());
+
+    assert(ConnectivityV2_Encode(wire, sizeof(wire), &length) == V2_STATUS_OK);
+    assert(length < sizeof(wire));
+    memset(&decoded, 0, sizeof(decoded));
+    assert(ConnectivityV2_Decode(wire, length, &decoded) == V2_STATUS_OK);
+    assert(memcmp(&decoded, &next, sizeof(next)) == 0);
+
+    wire[13] = 0U; /* stale expected generation */
+    assert(ConnectivityV2_Decode(wire, length, &decoded) == V2_STATUS_CONFLICT);
+    wire[13] = 1U;
+    wire[length++] = 0U; /* trailing bytes are rejected */
+    assert(ConnectivityV2_Decode(wire, length, &decoded) == V2_STATUS_INVALID_ARG);
+}
+
+static void test_connectivity_power_loss_keeps_previous_slot(void)
+{
+    connectivity_config_v2_t next;
+
+    reset_flash();
+    assert(ConnectivityV2_Load() == V2_STATUS_VERIFY_FAILED);
+    memcpy(&next, ConnectivityV2_Get(), sizeof(next));
+    next.transport_mask |= CONNECTIVITY_V2_CELLULAR;
+    strcpy(next.mqtt_host, "broker.example.com");
+    strcpy(next.publish_topic, "splitac/state");
+    strcpy(next.subscribe_topic, "splitac/control");
+    assert(ConnectivityV2_Save(&next) == V2_STATUS_OK);
+    assert(ConnectivityV2_GetGeneration() == 1U);
+
+    next.mqtt_port = 1884U;
+    fail_on(FAIL_WRITE, 1U, 1U);
+    assert(ConnectivityV2_Save(&next) == V2_STATUS_IO_ERROR);
+    clear_failure();
+    assert(ConnectivityV2_Load() == V2_STATUS_OK);
+    assert(ConnectivityV2_GetGeneration() == 2U); /* 单有效槽启动时自动重建冗余。 */
+    assert(ConnectivityV2_Get()->mqtt_port == 1883U);
+    assert(strcmp(ConnectivityV2_Get()->mqtt_host, "broker.example.com") == 0);
+}
+
 int main(void)
 {
     test_config_slot_recovery();
@@ -465,6 +551,8 @@ int main(void)
     test_lora_parameter_read_error_is_visible_and_non_destructive();
     test_factory_reset_reports_partial_failure();
     test_legacy_lora_defaults_migrate_without_overwriting_custom_profile();
-    puts("Config/runtime/IR power-loss recovery: PASS");
+    test_connectivity_round_trip_and_conflict();
+    test_connectivity_power_loss_keeps_previous_slot();
+    puts("Config/runtime/IR/connectivity power-loss recovery: PASS");
     return 0;
 }

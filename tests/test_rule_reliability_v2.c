@@ -10,8 +10,13 @@ uint32_t LocalTimestamp;
 static uint8_t ir_accept;
 static uint8_t ir_calls;
 static uint8_t save_calls;
+static uint8_t lora_enabled = 1U;
+static uint8_t cellular_online;
 static IR_CMD_t last_ir_cmd;
 static HLW8110_Status_t meter_status;
+
+uint8_t ConnectivityV2_LoraEnabled(void) { return lora_enabled; }
+uint8_t Ml307_IsOnline(void) { return cellular_online; }
 
 uint8_t ADC_IsValid(void)
 {
@@ -117,6 +122,21 @@ int main(void)
     assert(Dev.lastOnTime == LocalTimestamp);
     assert(Dev.lastPowerChange == LocalTimestamp);
     assert(save_calls == 1u);
+
+    /* 远程优先只在任一已选链路在线时暂停；双链路都离线必须自治。 */
+    setup_temperature_power_on_rule();
+    Dev.mode = 1U;
+    ir_accept = 1U;
+    ir_calls = 0U;
+    lora_enabled = 0U;
+    cellular_online = 1U;
+    Rule_Pro();
+    assert(ir_calls == 0U);
+    cellular_online = 0U;
+    Rule_Pro();
+    assert(ir_calls == 1U);
+    assert(Dev.onOff == PowerOn);
+    lora_enabled = 1U;
 
     /* 云端 v2 是当天运行分钟；终身累计仍单独保留给本地规则。 */
     memset(&Dev, 0, sizeof(Dev));

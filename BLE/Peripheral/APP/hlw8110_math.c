@@ -1,9 +1,19 @@
+/**
+ * @file hlw8110_math.c
+ * @brief HLW8110 原始采样值 → 物理量换算（整数运算，无浮点）
+ *
+ * 换算系数来自芯片标定：K1/K2 为功率/电压分压与采样网络的比例常数，
+ * 所有除法采用先乘后除 + 半值舍入，避免溢出且结果与浮点公式一致。
+ */
 #include "hlw8110_math.h"
 
 #define HLW_K1_NUM              2ULL
 #define HLW_K2_NUM              1ULL
 #define HLW_POWER_NOISE_X10     20ULL
 
+/**
+ * @brief 计算 HLW8110 帧校验和（帧头 0xA5 + 命令 + 数据，取反）
+ */
 uint8_t HLW8110_UartChecksum(uint8_t command, const uint8_t *data, uint8_t length)
 {
     uint8_t sum = (uint8_t)(0xA5U + command);
@@ -14,6 +24,11 @@ uint8_t HLW8110_UartChecksum(uint8_t command, const uint8_t *data, uint8_t lengt
     return (uint8_t)(~sum);
 }
 
+/**
+ * @brief 功率原始值（有符号 32 位）→ 功率 ×10（单位 0.1W）
+ *
+ * 取绝对值后按标定系数换算，低于 2.0W 视为噪声清零。
+ */
 uint16_t HLW8110_CalcPowerX10(uint32_t raw, uint16_t coefficient)
 {
     int32_t signed_raw = (int32_t)raw;
@@ -28,6 +43,10 @@ uint16_t HLW8110_CalcPowerX10(uint32_t raw, uint16_t coefficient)
     return value > 0xFFFFULL ? 0xFFFFU : (uint16_t)value;
 }
 
+/**
+ * @brief 电流有效值原始值 → 电流（mA）
+ * @retval 0 系数无效或结果溢出；1 成功（含"零值"标志位情况）
+ */
 uint8_t HLW8110_CalcCurrentMa(uint32_t raw, uint16_t coefficient, uint16_t *result)
 {
     uint64_t denominator;
@@ -46,6 +65,10 @@ uint8_t HLW8110_CalcCurrentMa(uint32_t raw, uint16_t coefficient, uint16_t *resu
     return 1U;
 }
 
+/**
+ * @brief 电压有效值原始值 → 电压（0.1V）
+ * @retval 0 系数无效或超出 300.0V；1 成功
+ */
 uint8_t HLW8110_CalcVoltageDv(uint32_t raw, uint16_t coefficient, uint16_t *result)
 {
     uint64_t denominator;

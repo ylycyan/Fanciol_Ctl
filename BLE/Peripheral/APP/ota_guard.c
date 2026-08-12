@@ -1,11 +1,25 @@
+/**
+ * @file ota_guard.c
+ * @brief OTA 流程状态机保护（防越界/乱序写入）
+ *
+ * 强制 OTA 按"擦除 → 顺序编程 → 顺序校验 → 完成"推进：
+ *   ERASING → READY → PROGRAMMING → VERIFYING → VERIFIED
+ * 任何越界、乱序、跳过步骤的请求一律拒绝；校验未完成不允许 IAP_END。
+ */
 #include "ota_guard.h"
 #include <string.h>
 
+/**
+ * @brief 重置 OTA 保护状态（断开/失败时调用）
+ */
 void OtaGuard_Reset(ota_guard_t *guard)
 {
     if(guard != 0) memset(guard, 0, sizeof(*guard));
 }
 
+/**
+ * @brief 开始擦除阶段：校验擦除范围（块对齐、位于镜像区间内、块数不越界）
+ */
 uint8_t OtaGuard_BeginErase(ota_guard_t *guard,
                             uint32_t start,
                             uint32_t block_count,
@@ -35,6 +49,9 @@ uint8_t OtaGuard_BeginErase(ota_guard_t *guard,
     return 1;
 }
 
+/**
+ * @brief 结束擦除阶段（全部擦除成功后进入 READY）
+ */
 void OtaGuard_EndErase(ota_guard_t *guard, uint8_t success)
 {
     if(guard == 0 || guard->state != OTA_GUARD_ERASING) return;
@@ -45,6 +62,9 @@ void OtaGuard_EndErase(ota_guard_t *guard, uint8_t success)
     }
 }
 
+/**
+ * @brief 是否允许在该地址编程：必须严格顺序、处于 READY/PROGRAMMING、长度不越界
+ */
 uint8_t OtaGuard_CanProgram(const ota_guard_t *guard, uint32_t address, uint16_t length)
 {
     if(guard == 0 || length == 0u ||
@@ -56,6 +76,9 @@ uint8_t OtaGuard_CanProgram(const ota_guard_t *guard, uint32_t address, uint16_t
     return (uint32_t)length <= (guard->range_end - address);
 }
 
+/**
+ * @brief 记录一段编程完成（推进 program_next）
+ */
 void OtaGuard_EndProgram(ota_guard_t *guard, uint16_t length, uint8_t success)
 {
     if(guard == 0 || !success ||
@@ -66,6 +89,9 @@ void OtaGuard_EndProgram(ota_guard_t *guard, uint16_t length, uint8_t success)
     guard->state = OTA_GUARD_PROGRAMMING;
 }
 
+/**
+ * @brief 是否允许校验：只能校验已编程区域（address < program_next），且顺序推进
+ */
 uint8_t OtaGuard_CanVerify(const ota_guard_t *guard, uint32_t address, uint16_t length)
 {
     if(guard == 0 || length == 0u ||
@@ -77,6 +103,9 @@ uint8_t OtaGuard_CanVerify(const ota_guard_t *guard, uint32_t address, uint16_t 
     return (uint32_t)length <= (guard->program_next - address);
 }
 
+/**
+ * @brief 记录一段校验完成；全部校验完进入 VERIFIED
+ */
 void OtaGuard_EndVerify(ota_guard_t *guard, uint16_t length, uint8_t success)
 {
     if(guard == 0 || !success ||
@@ -89,6 +118,9 @@ void OtaGuard_EndVerify(ota_guard_t *guard, uint16_t length, uint8_t success)
         : OTA_GUARD_VERIFYING;
 }
 
+/**
+ * @brief 是否允许结束 OTA：必须已全部校验且确有写入
+ */
 uint8_t OtaGuard_CanFinish(const ota_guard_t *guard)
 {
     return guard != 0 &&
