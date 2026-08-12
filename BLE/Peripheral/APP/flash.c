@@ -77,6 +77,7 @@ void LoadDevInfo(void)
     (void)RuntimeV2_Load();
     (void)IrStoreV2_Load();
     (void)LoraParamsV2_Load();
+    (void)DeviceProfileV2_Load();
     if(StorageV2_GetStartupFlags() != 0U) Dev.errorCode.bit.flash = 1;
     /* 状态机没有 Uninit 分支；直接进入注册态，下一次 20 ms 轮询即按配置初始化射频。 */
     Dev.loraStatus = Status_Logining;

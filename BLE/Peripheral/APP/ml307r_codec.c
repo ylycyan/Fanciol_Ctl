@@ -93,12 +93,6 @@ int8_t Ml307Codec_ParsePublish(const char *line, uint16_t length,
     return ML307_CODEC_OK;
 }
 
-static uint8_t key_equal(const char *key, uint16_t length, const char *expected)
-{
-    uint16_t expected_length = (uint16_t)strlen(expected);
-    return length == expected_length && memcmp(key, expected, length) == 0;
-}
-
 static uint8_t two_digits(const char **cursor, const char *end, uint8_t *value)
 {
     const char *p = *cursor;
@@ -143,127 +137,41 @@ uint8_t Ml307Codec_ParseClock(const char *line, uint16_t length,
     return 1U;
 }
 
-uint8_t Ml307Codec_ParseCommand(const char *payload, uint16_t length,
-                                ml307_command_v2_t *command)
+static int8_t hex_nibble(char value)
 {
-    const char *cursor;
-    const char *end;
-    uint8_t fields = 0U;
-    uint8_t first = 1U;
+    if(value >= '0' && value <= '9') return (int8_t)(value - '0');
+    if(value >= 'A' && value <= 'F') return (int8_t)(value - 'A' + 10);
+    if(value >= 'a' && value <= 'f') return (int8_t)(value - 'a' + 10);
+    return -1;
+}
 
-    if(!payload || !command || !length) return 0U;
-    cursor = payload;
-    end = payload + length;
-    memset(command, 0, sizeof(*command));
-    if(!consume(&cursor, end, '{')) return 0U;
-    while(1) {
-        const char *key;
-        uint16_t key_length;
-        uint32_t value;
-        cursor = skip_space(cursor, end);
-        if(cursor < end && *cursor == '}') { cursor++; break; }
-        if(!first && !consume(&cursor, end, ',')) return 0U;
-        if(!quoted(&cursor, end, &key, &key_length) ||
-           !consume(&cursor, end, ':') || !parse_u32(&cursor, end, &value)) return 0U;
-        if(key_equal(key, key_length, "id")) {
-            if(fields & 0x01U) return 0U;
-            command->command_id = value;
-            fields |= 0x01U;
-        } else if(key_equal(key, key_length, "op")) {
-            if(fields & 0x02U) return 0U;
-            if(value > 255U) return 0U;
-            command->operation = (uint8_t)value;
-            fields |= 0x02U;
-        } else if(key_equal(key, key_length, "value")) {
-            if(fields & 0x04U) return 0U;
-            if(value > 65535U) return 0U;
-            command->value = (uint16_t)value;
-            fields |= 0x04U;
-        } else return 0U;
-        first = 0U;
+uint16_t Ml307Codec_HexEncode(const uint8_t *input, uint8_t length,
+                              char *output, uint16_t capacity)
+{
+    static const char digits[] = "0123456789ABCDEF";
+    uint16_t encoded_length = (uint16_t)length * 2U;
+    uint8_t i;
+    if(!input || !output || !length || capacity < encoded_length) return 0U;
+    for(i = 0U; i < length; i++) {
+        output[(uint16_t)i * 2U] = digits[input[i] >> 4];
+        output[(uint16_t)i * 2U + 1U] = digits[input[i] & 0x0FU];
     }
-    cursor = skip_space(cursor, end);
-    return cursor == end && fields == 0x07U && command->command_id != 0U &&
-           command->operation >= 1U && command->operation <= 14U;
+    return encoded_length;
 }
 
-typedef struct {
-    char *output;
-    uint16_t capacity;
-    uint16_t length;
-    uint8_t failed;
-} json_writer_t;
-
-static void writer_char(json_writer_t *writer, char value)
+uint8_t Ml307Codec_HexDecode(const char *input, uint16_t length,
+                             uint8_t *output, uint8_t capacity)
 {
-    if(writer->output && writer->length + 1U < writer->capacity)
-        writer->output[writer->length] = value;
-    else if(writer->output) writer->failed = 1U;
-    writer->length++;
-}
-
-static void writer_text(json_writer_t *writer, const char *value)
-{
-    while(*value) writer_char(writer, *value++);
-}
-
-static void writer_u32(json_writer_t *writer, uint32_t value)
-{
-    char digits[10];
-    uint8_t count = 0U;
-    do {
-        digits[count++] = (char)('0' + (value % 10U));
-        value /= 10U;
-    } while(value && count < sizeof(digits));
-    while(count) writer_char(writer, digits[--count]);
-}
-
-static void writer_i32(json_writer_t *writer, int32_t value)
-{
-    if(value < 0) {
-        writer_char(writer, '-');
-        writer_u32(writer, (uint32_t)(-value));
-    } else writer_u32(writer, (uint32_t)value);
-}
-
-static void writer_hex16(json_writer_t *writer, uint16_t value)
-{
-    int8_t shift;
-    for(shift = 12; shift >= 0; shift -= 4) {
-        uint8_t digit = (uint8_t)(value >> shift) & 0x0FU;
-        writer_char(writer, digit < 10U ? (char)('0' + digit) :
-                                          (char)('A' + digit - 10U));
+    uint16_t decoded_length;
+    uint16_t i;
+    if(!input || !output || !length || (length & 1U)) return 0U;
+    decoded_length = length / 2U;
+    if(decoded_length > capacity || decoded_length > 255U) return 0U;
+    for(i = 0U; i < decoded_length; i++) {
+        int8_t high = hex_nibble(input[i * 2U]);
+        int8_t low = hex_nibble(input[i * 2U + 1U]);
+        if(high < 0 || low < 0) return 0U;
+        output[i] = (uint8_t)(((uint8_t)high << 4) | (uint8_t)low);
     }
-}
-
-uint16_t Ml307Codec_BuildReport(const ml307_report_v2_t *report,
-                                char *output, uint16_t capacity)
-{
-    json_writer_t writer;
-    if(!report || (output && capacity == 0U)) return 0U;
-    writer.output = output;
-    writer.capacity = capacity;
-    writer.length = 0U;
-    writer.failed = 0U;
-    writer_text(&writer, "{\"v\":1,\"id\":\""); writer_hex16(&writer, report->node_id);
-    writer_text(&writer, "\",\"ts\":"); writer_u32(&writer, report->timestamp);
-    writer_text(&writer, ",\"p\":"); writer_u32(&writer, report->power);
-    writer_text(&writer, ",\"m\":"); writer_u32(&writer, report->mode);
-    writer_text(&writer, ",\"t\":"); writer_u32(&writer, report->set_temp_x10);
-    writer_text(&writer, ",\"r\":"); writer_i32(&writer, report->room_temp_x10);
-    writer_text(&writer, ",\"f\":"); writer_u32(&writer, report->fan);
-    writer_text(&writer, ",\"run\":"); writer_u32(&writer, report->run_minutes);
-    writer_text(&writer, ",\"w\":"); writer_u32(&writer, report->power_w_x10);
-    writer_text(&writer, ",\"e\":"); writer_u32(&writer, report->energy_wh);
-    writer_text(&writer, ",\"er\":"); writer_u32(&writer, report->fault_code);
-    if(report->has_command_result) {
-        writer_text(&writer, ",\"c\":"); writer_u32(&writer, report->command_id);
-        writer_text(&writer, ",\"x\":"); writer_u32(&writer, report->command_result);
-    }
-    writer_char(&writer, '}');
-    if(output) {
-        if(writer.failed || writer.length >= capacity) return 0U;
-        output[writer.length] = '\0';
-    }
-    return writer.length;
+    return (uint8_t)decoded_length;
 }

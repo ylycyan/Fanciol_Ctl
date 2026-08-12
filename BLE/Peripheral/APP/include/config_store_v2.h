@@ -9,6 +9,8 @@
 #define V2_RESERVED_PAGE         0x2000u
 #define V2_CONNECTIVITY_SLOT_A   V2_RESERVED_PAGE
 #define V2_CONNECTIVITY_SLOT_B   (V2_RESERVED_PAGE + 0x0100u)
+#define V2_DEVICE_PROFILE_SLOT_A (V2_RESERVED_PAGE + 0x0200u)
+#define V2_DEVICE_PROFILE_SLOT_B (V2_RESERVED_PAGE + 0x0300u)
 #define V2_RUNTIME_PAGE          0x3000u
 #define V2_IR_PAGE               0x4000u
 #define V2_HEALTH_PAGE           0x5000u
@@ -37,6 +39,7 @@ typedef enum {
 #define CONNECTIVITY_V2_LORA          0x01U
 #define CONNECTIVITY_V2_CELLULAR      0x02U
 #define CONNECTIVITY_V2_SCHEMA        1U
+#define DEVICE_PROFILE_V2_NAME_MAX    15U
 
 /* 数组长度包含结尾 NUL；上位机可写入的最大字符数需减一。 */
 #define CONNECTIVITY_HOST_SIZE        40U
@@ -93,6 +96,10 @@ uint8_t ConnectivityV2_Decode(const uint8_t *payload, uint16_t length,
                               connectivity_config_v2_t *config);
 uint8_t ConnectivityV2_LoraEnabled(void);
 uint8_t ConnectivityV2_CellularEnabled(void);
+uint8_t DeviceProfileV2_Load(void);
+uint8_t DeviceProfileV2_SaveName(const char *name, uint8_t length);
+const char *DeviceProfileV2_GetName(void);
+void DeviceProfileV2_FactoryDefaults(void);
 uint8_t StorageV2_FactoryReset(void);
 uint8_t StorageV2_GetStartupFlags(void);
 

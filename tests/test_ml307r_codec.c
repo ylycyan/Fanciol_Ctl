@@ -5,68 +5,58 @@
 
 #include "ml307r_codec.h"
 
-static void test_publish_urc_and_command(void)
+static void test_publish_urc_and_lora_frame(void)
 {
+    static const uint8_t frame[] = {
+        0x0D, 0x01, 0x42, 0x0A, 0x34, 0x12, 0x15, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x00, 0xCB
+    };
     static const char line[] =
-        "+MQTTURC: \"publish\",0,0,\"splitac/cmd\",26,26,{\"id\":42,\"op\":1,\"value\":1}";
+        "+MQTTURC: \"publish\",0,0,\"splitac/cmd\",36,36,0D01420A3412150000000000002A000000CB";
     ml307_publish_v2_t publish;
-    ml307_command_v2_t command;
+    uint8_t decoded[18];
 
     assert(Ml307Codec_ParsePublish(line, (uint16_t)strlen(line), &publish) == ML307_CODEC_OK);
     assert(publish.topic_length == strlen("splitac/cmd"));
     assert(memcmp(publish.topic, "splitac/cmd", publish.topic_length) == 0);
-    assert(Ml307Codec_ParseCommand(publish.payload, publish.payload_length, &command));
-    assert(command.command_id == 42U);
-    assert(command.operation == 1U);
-    assert(command.value == 1U);
+    assert(Ml307Codec_HexDecode(publish.payload, publish.payload_length,
+                                decoded, sizeof(decoded)) == sizeof(frame));
+    assert(memcmp(decoded, frame, sizeof(frame)) == 0);
 }
 
-static void test_fragment_and_invalid_command_are_rejected(void)
+static void test_fragment_and_invalid_hex_are_rejected(void)
 {
     static const char fragment[] =
-        "+MQTTURC: \"publish\",0,0,\"cmd\",20,8,{\"id\":1}";
+        "+MQTTURC: \"publish\",0,0,\"cmd\",36,8,0D01420A";
     ml307_publish_v2_t publish;
-    ml307_command_v2_t command;
+    uint8_t decoded[18];
 
     assert(Ml307Codec_ParsePublish(fragment, (uint16_t)strlen(fragment), &publish) ==
            ML307_CODEC_FRAGMENTED);
-    {
-        static const char zero_id[] = "{\"id\":0,\"op\":1,\"value\":1}";
-        static const char bad_op[] = "{\"id\":1,\"op\":15,\"value\":1}";
-        static const char duplicate_id[] = "{\"id\":1,\"op\":1,\"value\":1,\"id\":2}";
-        static const char unknown_key[] = "{\"id\":1,\"op\":1,\"value\":1,\"extra\":0}";
-        assert(!Ml307Codec_ParseCommand(zero_id, (uint16_t)strlen(zero_id), &command));
-        assert(!Ml307Codec_ParseCommand(bad_op, (uint16_t)strlen(bad_op), &command));
-        assert(!Ml307Codec_ParseCommand(duplicate_id, (uint16_t)strlen(duplicate_id), &command));
-        assert(!Ml307Codec_ParseCommand(unknown_key, (uint16_t)strlen(unknown_key), &command));
-    }
+    assert(!Ml307Codec_HexDecode("0", 1U, decoded, sizeof(decoded)));
+    assert(!Ml307Codec_HexDecode("0G", 2U, decoded, sizeof(decoded)));
+    assert(!Ml307Codec_HexDecode("0x01", 4U, decoded, sizeof(decoded)));
+    assert(!Ml307Codec_HexDecode("00 1", 4U, decoded, sizeof(decoded)));
+    assert(!Ml307Codec_HexDecode("0011", 4U, decoded, 1U));
 }
 
-static void test_report_is_compact_and_contains_result(void)
+static void test_hex_round_trip(void)
 {
-    ml307_report_v2_t report = {0};
-    char output[176];
+    static const uint8_t frame[] = {
+        0x01, 0x00, 0x34, 0x12, 0xB0, 0x00, 0x1A, 0x00, 0x01,
+        0x1B, 0x00, 0x01, 0x00, 0x02, 0x00, 0x32, 0x00, 0x4E
+    };
+    char output[36];
+    uint8_t decoded[18];
     uint16_t length;
 
-    report.node_id = 0xFFFFU;
-    report.timestamp = 0xFFFFFFFFUL;
-    report.room_temp_x10 = INT16_MIN;
-    report.run_minutes = 0xFFFFFFFFUL;
-    report.energy_wh = 0xFFFFFFFFUL;
-    report.command_id = 0xFFFFFFFFUL;
-    report.set_temp_x10 = 65535U;
-    report.power_w_x10 = 65535U;
-    report.fault_code = 65535U;
-    report.power = 1U;
-    report.mode = 255U;
-    report.fan = 255U;
-    report.command_result = 8U;
-    report.has_command_result = 1U;
-    length = Ml307Codec_BuildReport(&report, output, sizeof(output));
-    assert(length > 0U && length < sizeof(output));
-    assert(strstr(output, "\"id\":\"FFFF\"") != 0);
-    assert(strstr(output, "\"c\":4294967295,\"x\":8") != 0);
-    assert(length == Ml307Codec_BuildReport(&report, 0, 0U));
+    length = Ml307Codec_HexEncode(frame, sizeof(frame), output, sizeof(output));
+    assert(length == sizeof(output));
+    assert(memcmp(output, "01003412B0001A00011B000100020032004E", length) == 0);
+    assert(Ml307Codec_HexDecode(output, length, decoded, sizeof(decoded)) == sizeof(decoded));
+    assert(memcmp(decoded, frame, sizeof(frame)) == 0);
+    assert(Ml307Codec_HexDecode("0d01420a3412150000000000002a000000cb", 36U,
+                                decoded, sizeof(decoded)) == sizeof(decoded));
 }
 
 static void test_network_clock_parses_timezone_quarters(void)
@@ -82,9 +72,9 @@ static void test_network_clock_parses_timezone_quarters(void)
 
 int main(void)
 {
-    test_publish_urc_and_command();
-    test_fragment_and_invalid_command_are_rejected();
-    test_report_is_compact_and_contains_result();
+    test_publish_urc_and_lora_frame();
+    test_fragment_and_invalid_hex_are_rejected();
+    test_hex_round_trip();
     test_network_clock_parses_timezone_quarters();
     puts("ml307r_codec tests passed");
     return 0;

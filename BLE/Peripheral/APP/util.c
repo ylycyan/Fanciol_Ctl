@@ -40,15 +40,6 @@ volatile uint32_t Timer_Lora = 0; // Lora state timer, LORA_POLL_INTERVAL_MS/tic
 #define LORA_RADIO_PROFILE_REGISTER 1U
 #define LORA_RADIO_PROFILE_WORK     2U
 
-typedef struct {
-    uint32_t token;
-    uint32_t parameter_value;
-    uint16_t operate_tag;
-    uint8_t operation;
-    uint8_t result;
-    uint8_t valid;
-} lora_control_cache_t;
-
 typedef enum {
     RELAY_STATE_IDLE = 0,
     RELAY_STATE_TX_REG_TO_GW,
@@ -70,9 +61,7 @@ static uint8_t relayPendingIsControl = 0;
 static uint8_t relaySeq = 0;
 static uint8_t relayPendingSeq = 0;
 static uint8_t childLastInnerSeq = 0;
-static lora_control_cache_t controlCache = {0};
 static uint16_t controlExecutedCount = 0;
-static uint16_t controlDuplicateCount = 0;
 static uint16_t controlRejectedCount = 0;
 static lora_recovery_v2_t loraRecovery;
 static uint8_t loraRadioProfile = LORA_RADIO_PROFILE_UNKNOWN;
@@ -92,7 +81,9 @@ static uint32_t Lora_GetU32Le(const uint8_t *data)
 }
 
 uint16_t Lora_GetControlExecutedCount(void) { return controlExecutedCount; }
-uint16_t Lora_GetControlDuplicateCount(void) { return controlDuplicateCount; }
+/* Retained in the diagnostic schema for compatibility. Commands are no longer
+ * deduplicated, so this counter is always zero and consumes no RAM. */
+uint16_t Lora_GetControlDuplicateCount(void) { return 0U; }
 uint16_t Lora_GetControlRejectedCount(void) { return controlRejectedCount; }
 uint16_t Lora_GetRecoveryAttemptCount(void) { return loraRecoveryAttemptCount; }
 uint16_t Lora_GetRecoverySuccessCount(void) { return loraRecoverySuccessCount; }
@@ -292,6 +283,11 @@ static uint8_t BuildDataPacket(uint8_t *buf, uint8_t tag, uint16_t nodeId, uint8
 
     return GatewayLora_BuildFancoilReport(buf, tag, nodeId,
                                           Lora_GetRssi(), errorInfo, &state);
+}
+
+uint8_t Lora_BuildNodeReport(uint8_t *buf, uint8_t tag, uint8_t errorInfo)
+{
+    return BuildDataPacket(buf, tag, Dev.nodeId, errorInfo);
 }
 
 static uint8_t Lora_IsConfigForNode(uint8_t *buf, uint8_t len, uint16_t nodeId)
@@ -636,46 +632,52 @@ static uint8_t Lora_ParseGatewayControl(const uint8_t *buf,
     return 1;
 }
 
-static uint8_t Lora_ExecuteGatewayControlCached(const uint8_t *buf, uint8_t len, uint8_t tag)
+uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len)
 {
-    uint8_t operation;
-    uint8_t result;
-    uint16_t operateTag;
     uint32_t parameterValue;
     uint32_t token;
+    uint16_t operateTag;
+    uint16_t targetNodeId;
+    uint8_t operation;
+    uint8_t result;
+    uint8_t tag;
 
-    if(!Lora_ParseGatewayControl(buf, len, tag, &operation, &operateTag, &parameterValue, &token)) {
-        if(controlRejectedCount != 0xFFFFU) controlRejectedCount++;
-        return 2;
+    if(!buf || len < 6U || !GatewayLora_Validate(buf, len) || buf[0] != LORA_CMD_OPERATE)
+        return 0xFFU;
+    tag = buf[1];
+    targetNodeId = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+    if(((uint16_t)buf[2] | ((uint16_t)buf[3] << 8)) != Dev.gatewayId ||
+       targetNodeId != Dev.nodeId ||
+       (tag != LORA_TAG_FANCOIL_CONTROL && tag != LORA_TAG_SPLITAC_CONTROL) ||
+       !Lora_ParseGatewayControl(buf, len, tag, &operation, &operateTag,
+                                 &parameterValue, &token)) {
+        return 0xFFU;
     }
 
-    if(controlCache.valid && controlCache.token == token) {
-        if(controlCache.operation != operation || controlCache.operate_tag != operateTag ||
-           controlCache.parameter_value != parameterValue) {
-            if(controlRejectedCount != 0xFFFFU) controlRejectedCount++;
-            PRINT("LoRa control token conflict: %08lx\n", (unsigned long)token);
-            return 2;
-        }
-        if(controlDuplicateCount != 0xFFFFU) controlDuplicateCount++;
-        PRINT("LoRa duplicate control: token=%08lx result=%d\n", (unsigned long)token, controlCache.result);
-        return controlCache.result;
-    }
-
+    /* LoRa and MQTT both use command-as-action semantics. The fixed protocol
+     * token is retained on the wire, but never suppresses an operation. */
     result = ExecuteGatewayControl(operation, operateTag, parameterValue);
-    controlCache.token = token;
-    controlCache.parameter_value = parameterValue;
-    controlCache.operate_tag = operateTag;
-    controlCache.operation = operation;
-    controlCache.result = result;
-    controlCache.valid = 1;
-    if(result == 0) {
+    if(result == 0U) {
         if(controlExecutedCount != 0xFFFFU) controlExecutedCount++;
     } else if(controlRejectedCount != 0xFFFFU) {
         controlRejectedCount++;
     }
-    PRINT("LoRa control: op=%d operateTag=%u token=%08lx result=%d\n",
+    PRINT("Control: op=%d operateTag=%u token=%08lx result=%d\n",
           operation, operateTag, (unsigned long)token, result);
     return result;
+}
+
+uint8_t Lora_BuildControlResult(uint8_t *buf, uint8_t tag, uint8_t result)
+{
+    if(!buf) return 0U;
+    if(tag == LORA_TAG_FANCOIL_CONTROL) {
+        return result == 0U
+            ? Lora_BuildNodeReport(buf, tag, 0U)
+            : BuildFailPacket(buf, tag, Dev.nodeId);
+    }
+    if(tag == LORA_TAG_SPLITAC_CONTROL)
+        return BuildGatewayAckPacket(buf, tag, Dev.nodeId, result);
+    return 0U;
 }
 
 static void Lora_TxNodeResponse(uint8_t *buf, uint8_t len)
@@ -705,16 +707,10 @@ static void Lora_HandleSelfCommand(uint8_t *buf, uint8_t len, uint8_t tag)
     uint8_t result;
 
     if(tag == LORA_TAG_FANCOIL_CONTROL || tag == LORA_TAG_SPLITAC_CONTROL) {
-        result = Lora_ExecuteGatewayControlCached(buf, len, tag);
-        if(tag == LORA_TAG_FANCOIL_CONTROL) {
-            txLen = result == 0U
-                ? BuildDataPacket(buf, tag, Dev.nodeId, 0U)
-                : BuildFailPacket(buf, tag, Dev.nodeId);
-        } else {
-            txLen = BuildGatewayAckPacket(buf, tag, Dev.nodeId, result);
-        }
+        result = Lora_ExecuteNodeControl(buf, len);
+        txLen = Lora_BuildControlResult(buf, tag, result);
     } else {
-        txLen = BuildDataPacket(buf, tag, Dev.nodeId, 0);
+        txLen = Lora_BuildNodeReport(buf, tag, 0U);
     }
 
     Lora_TxNodeResponse(buf, txLen);
@@ -743,7 +739,6 @@ void Lora_Pro(void)
     if(observedNodeId != Dev.nodeId || observedChannel != Dev.channel || observedRole != Dev.linkRole) {
         Relay_ResetState();
         RelayChildTableV2_Init(&childTable, RELAY_MAX_ACTIVE_CHILD_NODES);
-        memset(&controlCache, 0, sizeof(controlCache));
         childLastInnerSeq = 0;
         observedNodeId = Dev.nodeId;
         observedChannel = Dev.channel;

@@ -117,6 +117,22 @@ static void create_initial_config(void)
     assert(ConfigV2_GetRevision() == 2u);
 }
 
+static void test_device_profile_name(void)
+{
+    reset_flash();
+    assert(DeviceProfileV2_Load() == V2_STATUS_VERIFY_FAILED);
+    assert(strcmp(DeviceProfileV2_GetName(), "SplitAC") == 0);
+    assert(DeviceProfileV2_SaveName("Plant-AC1", 9u) == V2_STATUS_OK);
+    DeviceProfileV2_FactoryDefaults();
+    assert(DeviceProfileV2_Load() == V2_STATUS_OK);
+    assert(strcmp(DeviceProfileV2_GetName(), "Plant-AC1") == 0);
+    assert(DeviceProfileV2_SaveName("Second", 6u) == V2_STATUS_OK);
+    DeviceProfileV2_FactoryDefaults();
+    assert(DeviceProfileV2_Load() == V2_STATUS_OK);
+    assert(strcmp(DeviceProfileV2_GetName(), "Second") == 0);
+    assert(DeviceProfileV2_SaveName("", 0u) == V2_STATUS_INVALID_ARG);
+}
+
 static void test_config_slot_recovery(void)
 {
     uint8_t snapshot[DATAFLASH_SIZE];
@@ -542,6 +558,7 @@ static void test_connectivity_power_loss_keeps_previous_slot(void)
 
 int main(void)
 {
+    test_device_profile_name();
     test_config_slot_recovery();
     test_config_read_error_never_overwrites_flash();
     test_runtime_rollover_power_loss();

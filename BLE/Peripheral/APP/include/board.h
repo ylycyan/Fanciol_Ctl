@@ -362,6 +362,9 @@ extern uint16_t Lora_GetControlRejectedCount(void);
 extern uint16_t Lora_GetRecoveryAttemptCount(void);
 extern uint16_t Lora_GetRecoverySuccessCount(void);
 extern uint8_t Lora_GetRecoveryFailureCount(void);
+extern uint8_t Lora_BuildNodeReport(uint8_t *buf, uint8_t tag, uint8_t errorInfo);
+extern uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len);
+extern uint8_t Lora_BuildControlResult(uint8_t *buf, uint8_t tag, uint8_t result);
 
 #define BITGET(val, bit)      (((val) >> (bit)) & 1)              // 获取 val 的第 bit 位（0 或 1）
 #define BITSET(val, bit)      ((val) |= (1U << (bit)))            // 将 val 的第 bit 位置 1

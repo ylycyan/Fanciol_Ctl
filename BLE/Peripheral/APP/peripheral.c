@@ -30,6 +30,7 @@
 #include "protocol_v2.h"
 #include "splitac_service_v2.h"
 #include "ota_guard.h"
+#include "config_store_v2.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -305,6 +306,16 @@ void Peripheral_Init()
 
     // Setup a delayed profile startup
     tmos_set_event(Peripheral_TaskID, SBP_START_DEVICE_EVT);
+}
+
+void Peripheral_RefreshDeviceName(void)
+{
+    uint8_t advLen = peripheralBuildAdvData();
+    uint8_t advStatus = GAPRole_SetParameter(GAPROLE_ADVERT_DATA, advLen, advertData);
+    uint8_t nameStatus = GGS_SetParameter(GGS_DEVICE_NAME_ATT, sizeof(attDeviceName), attDeviceName);
+    (void)advStatus;
+    (void)nameStatus;
+    PRINT("BLE name applied: %s adv=%02x gatt=%02x\r\n", attDeviceName, advStatus, nameStatus);
 }
 
 /*********************************************************************
@@ -800,7 +811,8 @@ static uint8_t peripheralBuildAdvData(void)
     uint8_t uid[8] __attribute__((aligned(4)));
     uint8_t localName[23];
     static const char hex[]="0123456789ABCDEF";
-    uint8_t nameLen = (uint8_t)strlen(BT_DEVICE_NAME);
+    const char *baseName = DeviceProfileV2_GetName();
+    uint8_t nameLen = (uint8_t)strlen(baseName);
     uint16_t shortId;
     GET_UNIQUE_ID(uid);
     /*
@@ -823,8 +835,10 @@ static uint8_t peripheralBuildAdvData(void)
     advertData[p++] = LO_UINT16(SIMPLEPROFILE_SERV_UUID);
     advertData[p++] = HI_UINT16(SIMPLEPROFILE_SERV_UUID);
 
-    memcpy(localName,BT_DEVICE_NAME,nameLen);
+    memcpy(localName,baseName,nameLen);
     if(nameLen<=17u){localName[nameLen++]='-';localName[nameLen++]=hex[(shortId>>12)&0x0Fu];localName[nameLen++]=hex[(shortId>>8)&0x0Fu];localName[nameLen++]=hex[(shortId>>4)&0x0Fu];localName[nameLen++]=hex[shortId&0x0Fu];}
+    memset(attDeviceName, 0, sizeof(attDeviceName));
+    memcpy(attDeviceName, localName, nameLen < sizeof(attDeviceName) ? nameLen : sizeof(attDeviceName));
     advertData[p++] = (uint8_t)(nameLen + 1);
     advertData[p++] = GAP_ADTYPE_LOCAL_NAME_COMPLETE;
     memcpy(&advertData[p], localName, nameLen);

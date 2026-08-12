@@ -52,6 +52,7 @@ typedef struct
  * Task Initialization for the BLE Application
  */
 extern void Peripheral_Init(void);
+extern void Peripheral_RefreshDeviceName(void);
 
 /*
  * Task Event Processor for the BLE Application

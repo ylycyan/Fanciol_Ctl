@@ -1,10 +1,9 @@
 #include "ml307r.h"
 #include "ml307r_codec.h"
 #include "config_store_v2.h"
+#include "gateway_lora_codec.h"
 #include "protocol_v2.h"
-#include "splitac_service_v2.h"
 #include "health_v2.h"
-#include "hlw8110.h"
 #include "timer.h"
 #include "time_v2.h"
 #include "board.h"
@@ -30,6 +29,9 @@
 #define ML307_AT_RETRY_MS           700U
 #define ML307_AT_RETRY_LIMIT        2U
 #define ML307_SYNC_RETRY_LIMIT      4U
+#define ML307_MQTT_FRAME_SIZE       GATEWAY_LORA_FANCOIL_REPORT_LENGTH
+#define ML307_LORA_TAG_READ         0U
+#define ML307_LORA_TAG_CONTROL      1U
 
 typedef struct {
     ml307_status_v2_t status;
@@ -38,10 +40,6 @@ typedef struct {
     uint32_t network_started_ms;
     uint32_t last_signal_ms;
     uint32_t next_clock_ms;
-    uint32_t last_command_id;
-    uint32_t pending_command_id;
-    uint32_t publishing_command_id;
-    ml307_command_v2_t queued_command;
     uint16_t tx_length;
     uint16_t tx_offset;
     uint16_t line_length;
@@ -52,9 +50,6 @@ typedef struct {
     uint8_t pending_command_valid;
     uint8_t publishing_command_result;
     uint8_t publishing_command_valid;
-    uint8_t last_command_result;
-    uint8_t last_command_valid;
-    uint8_t queued_command_valid;
     uint8_t network_command;
     uint8_t time_sync_attempts;
     uint8_t time_synced;
@@ -332,39 +327,28 @@ static uint8_t send_mqtt_subscribe(void)
     return 1U;
 }
 
-static void fill_report(ml307_report_v2_t *report)
+static uint8_t build_publish_frame(uint8_t *frame)
 {
-    const HLW8110_Status_t *meter = HLW8110_GetStatus();
-    memset(report, 0, sizeof(*report));
-    report->node_id = Dev.nodeId;
-    report->timestamp = LocalTimestamp;
-    report->power = Dev.onOff == PowerOn ? 1U : 0U;
-    report->mode = (uint8_t)Dev.ctlMode;
-    report->set_temp_x10 = (uint16_t)(Dev.temSet * 10U);
-    report->room_temp_x10 = Dev.roomTempX10;
-    report->fan = (uint8_t)Dev.wind;
-    report->run_minutes = Dev.meter.run_minutes;
-    report->power_w_x10 = meter->power_w_x10;
-    report->energy_wh = Dev.meter.energy_wh;
-    report->fault_code = Dev.errorCode.u16Val;
-    report->has_command_result = modem.publishing_command_valid;
-    report->command_id = modem.publishing_command_id;
-    report->command_result = modem.publishing_command_result;
+    if(modem.publishing_command_valid)
+        return Lora_BuildControlResult(frame, ML307_LORA_TAG_CONTROL,
+                                       modem.publishing_command_result);
+    return Lora_BuildNodeReport(frame, ML307_LORA_TAG_READ, 0U);
 }
 
 static uint8_t start_publish(void)
 {
     const connectivity_config_v2_t *config = ConnectivityV2_Get();
-    ml307_report_v2_t report;
+    uint8_t frame[ML307_MQTT_FRAME_SIZE];
+    uint8_t frame_length;
     uint16_t payload_length;
     uint16_t length = 0U;
 
     modem.publishing_command_valid = modem.pending_command_valid;
-    modem.publishing_command_id = modem.pending_command_id;
     modem.publishing_command_result = modem.pending_command_result;
-    fill_report(&report);
-    payload_length = Ml307Codec_BuildReport(&report, 0, 0U);
-    if(payload_length == 0U || payload_length >= ML307_TX_SIZE) return 0U;
+    modem.pending_command_valid = 0U;
+    frame_length = build_publish_frame(frame);
+    if(frame_length == 0U) return 0U;
+    payload_length = (uint16_t)frame_length * 2U;
     if(!tx_append_text(&length, "AT+MQTTPUB=0,\"") ||
        !tx_append_text(&length, config->publish_topic) ||
        !tx_append_text(&length, "\",") || !tx_append_u32(&length, config->mqtt_qos) ||
@@ -378,10 +362,11 @@ static uint8_t start_publish(void)
 
 static uint8_t send_publish_payload(void)
 {
-    ml307_report_v2_t report;
+    uint8_t frame[ML307_MQTT_FRAME_SIZE];
+    uint8_t frame_length;
     uint16_t length;
-    fill_report(&report);
-    length = Ml307Codec_BuildReport(&report, tx_buffer, sizeof(tx_buffer));
+    frame_length = build_publish_frame(frame);
+    length = Ml307Codec_HexEncode(frame, frame_length, tx_buffer, sizeof(tx_buffer));
     if(!length || !tx_start(length)) return 0U;
     modem.prompt_seen = 1U;
     modem.deadline_ms = CurTick + 10000U;
@@ -396,28 +381,26 @@ static uint8_t topic_matches(const ml307_publish_v2_t *publish)
            memcmp(expected, publish->topic, length) == 0;
 }
 
-static void execute_command(const ml307_command_v2_t *command)
+static uint16_t frame_u16(const uint8_t *value)
 {
-    uint8_t result;
-    if(modem.last_command_valid && command->command_id == modem.last_command_id) {
-        if(modem.status.command_duplicate_count != 0xFFFFU)
-            modem.status.command_duplicate_count++;
-        result = modem.last_command_result;
-    } else {
-        /* MQTT retries must remain idempotent: relative temperature and field
-         * learning channels are deliberately unavailable over the broker. */
-        result = command->operation >= 13U ? V2_STATUS_NOT_SUPPORTED :
-                 SplitAcControl_Execute(command->operation, command->value);
-        modem.last_command_id = command->command_id;
-        modem.last_command_result = result;
-        modem.last_command_valid = 1U;
-        if(result == V2_STATUS_OK) {
-            if(modem.status.command_executed_count != 0xFFFFU)
-                modem.status.command_executed_count++;
-        } else if(modem.status.command_rejected_count != 0xFFFFU)
+    return (uint16_t)value[0] | ((uint16_t)value[1] << 8);
+}
+
+static void execute_command(const uint8_t *frame, uint8_t length)
+{
+    uint8_t result = Lora_ExecuteNodeControl(frame, length);
+    if(result == 0xFFU) {
+        if(modem.status.command_rejected_count != 0xFFFFU)
             modem.status.command_rejected_count++;
+        modem.status.last_error = ML307_ERROR_COMMAND;
+        return;
     }
-    modem.pending_command_id = command->command_id;
+    if(result == 0U) {
+        if(modem.status.command_executed_count != 0xFFFFU)
+            modem.status.command_executed_count++;
+    } else if(modem.status.command_rejected_count != 0xFFFFU) {
+        modem.status.command_rejected_count++;
+    }
     modem.pending_command_result = result;
     modem.pending_command_valid = 1U;
     modem.report_requested = 1U;
@@ -425,33 +408,22 @@ static void execute_command(const ml307_command_v2_t *command)
 
 static void handle_downlink(const ml307_publish_v2_t *publish)
 {
-    ml307_command_v2_t command;
+    uint8_t frame[ML307_MQTT_FRAME_SIZE];
+    uint8_t frame_length;
     if(!topic_matches(publish)) return;
-    if(!Ml307Codec_ParseCommand(publish->payload, publish->payload_length, &command)) {
+    frame_length = Ml307Codec_HexDecode(publish->payload, publish->payload_length,
+                                        frame, sizeof(frame));
+    if(frame_length != ML307_MQTT_FRAME_SIZE || frame[0] != 0x0DU ||
+       frame[1] != ML307_LORA_TAG_CONTROL ||
+       frame_u16(frame + 2) != Dev.gatewayId || frame_u16(frame + 4) != Dev.nodeId ||
+       !GatewayLora_Validate(frame, frame_length)) {
         if(modem.status.command_rejected_count != 0xFFFFU)
             modem.status.command_rejected_count++;
         modem.status.last_error = ML307_ERROR_COMMAND;
         return;
     }
-    /* The module acknowledges broker delivery independently from our result
-     * publish, so keep one bounded waiting command instead of assuming that a
-     * busy-time command will be redelivered. */
-    if(modem.pending_command_valid &&
-       (!modem.last_command_valid || command.command_id != modem.last_command_id)) {
-        if(!modem.queued_command_valid) {
-            modem.queued_command = command;
-            modem.queued_command_valid = 1U;
-        } else if(command.command_id == modem.queued_command.command_id) {
-            if(modem.status.command_duplicate_count != 0xFFFFU)
-                modem.status.command_duplicate_count++;
-        } else {
-            if(modem.status.command_rejected_count != 0xFFFFU)
-                modem.status.command_rejected_count++;
-            modem.status.last_error = ML307_ERROR_COMMAND;
-        }
-        return;
-    }
-    execute_command(&command);
+    /* MQTT command-as-action: every valid frame executes immediately. */
+    execute_command(frame, frame_length);
 }
 
 static uint8_t parse_cereg(const char *line)
@@ -526,17 +498,9 @@ static void complete_publish(void)
 {
     if(modem.status.publish_count != 0xFFFFU) modem.status.publish_count++;
     modem.status.last_report_ms = CurTick;
-    if(modem.publishing_command_valid && modem.pending_command_valid &&
-       modem.publishing_command_id == modem.pending_command_id)
-        modem.pending_command_valid = 0U;
     modem.publishing_command_valid = 0U;
     modem.waiting = 0U;
     status_phase(ML307_PHASE_ONLINE);
-    if(!modem.pending_command_valid && modem.queued_command_valid) {
-        ml307_command_v2_t command = modem.queued_command;
-        modem.queued_command_valid = 0U;
-        execute_command(&command);
-    }
 }
 
 static uint8_t mqtt_urc_number(const char *line, uint8_t index, uint16_t *value)
@@ -830,8 +794,6 @@ void Ml307_ApplyConfiguration(void)
     discard_at_session();
     modem.pending_command_valid = 0U;
     modem.publishing_command_valid = 0U;
-    modem.last_command_valid = 0U;
-    modem.queued_command_valid = 0U;
     modem.report_requested = 0U;
     if(!ConnectivityV2_CellularEnabled()) {
         reset_runtime_flags();
@@ -954,6 +916,15 @@ void Ml307_Process(void)
 
     if(!ConnectivityV2_CellularEnabled()) {
         if(modem.status.phase != ML307_PHASE_DISABLED) Ml307_ApplyConfiguration();
+        return;
+    }
+    if(!config->mqtt_host[0] || !config->publish_topic[0] || !config->subscribe_topic[0]) {
+        if(modem.status.last_error != ML307_ERROR_CONFIG || modem.status.phase != ML307_PHASE_BACKOFF) {
+            uart_disable();
+            modem.waiting = 0U;
+            modem.status.last_error = ML307_ERROR_CONFIG;
+            status_phase(ML307_PHASE_BACKOFF);
+        }
         return;
     }
     if(modem.uart_enabled) {

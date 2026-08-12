@@ -10,6 +10,8 @@
 #define IR_MAGIC        0x32524953UL
 #define LORA_PARAM_MAGIC 0x3250524CUL
 #define CONNECTIVITY_MAGIC 0x324D4F43UL
+#define DEVICE_PROFILE_MAGIC 0x32465044UL
+#define DEVICE_PROFILE_SCHEMA 1U
 #define RUNTIME_SLOTS   64u
 
 typedef struct __attribute__((packed)) {
@@ -97,6 +99,20 @@ typedef char connectivity_record_must_fit_page[
     (sizeof(connectivity_record_v2_t) <= EEPROM_PAGE_SIZE) ? 1 : -1
 ];
 
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint8_t schema_version;
+    uint8_t name_length;
+    uint16_t reserved;
+    uint32_t generation;
+    char name[DEVICE_PROFILE_V2_NAME_MAX + 1U];
+    uint32_t crc32;
+} device_profile_record_v2_t;
+
+typedef char device_profile_record_must_fit_page[
+    (sizeof(device_profile_record_v2_t) <= EEPROM_PAGE_SIZE) ? 1 : -1
+];
+
 static uint32_t config_revision;
 static uint32_t config_slot;
 static uint32_t runtime_generation;
@@ -114,6 +130,7 @@ static uint8_t storage_startup_flags;
 static connectivity_config_v2_t connectivity_config;
 static uint32_t connectivity_generation;
 static uint32_t connectivity_slot;
+static char device_profile_name[DEVICE_PROFILE_V2_NAME_MAX + 1U] = "SplitAC";
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint16_t len)
 {
@@ -130,6 +147,114 @@ uint32_t ConfigV2_Crc32(const uint8_t *data, uint16_t len)
 {
     uint32_t crc = crc32_update(0xFFFFFFFFUL, data, len);
     return crc ^ 0xFFFFFFFFUL;
+}
+
+static uint8_t device_profile_name_valid(const char *name, uint8_t length)
+{
+    uint8_t i;
+    if(!name || length == 0U || length > DEVICE_PROFILE_V2_NAME_MAX)
+        return 0U;
+    for(i = 0U; i < length; ++i) {
+        uint8_t ch = (uint8_t)name[i];
+        if(ch < 0x20U || ch > 0x7EU) return 0U;
+    }
+    return 1U;
+}
+
+static uint8_t device_profile_record_valid(const device_profile_record_v2_t *record)
+{
+    return record->magic == DEVICE_PROFILE_MAGIC &&
+           record->schema_version == DEVICE_PROFILE_SCHEMA &&
+           device_profile_name_valid(record->name, record->name_length) &&
+           record->name[record->name_length] == '\0' &&
+           record->crc32 == ConfigV2_Crc32((const uint8_t *)record,
+                                            (uint16_t)offsetof(device_profile_record_v2_t, crc32));
+}
+
+void DeviceProfileV2_FactoryDefaults(void)
+{
+    memset(device_profile_name, 0, sizeof(device_profile_name));
+    memcpy(device_profile_name, "SplitAC", 7U);
+}
+
+const char *DeviceProfileV2_GetName(void)
+{
+    return device_profile_name;
+}
+
+uint8_t DeviceProfileV2_Load(void)
+{
+    device_profile_record_v2_t record;
+    uint32_t selected_generation = 0U;
+    uint8_t selected = 0U;
+    uint8_t read_error = 0U;
+
+    DeviceProfileV2_FactoryDefaults();
+    memset(&record, 0xFF, sizeof(record));
+    if(EEPROM_READ(V2_DEVICE_PROFILE_SLOT_A, &record, sizeof(record)) != 0U) read_error = 1U;
+    else if(device_profile_record_valid(&record)) {
+        memcpy(device_profile_name, record.name, sizeof(device_profile_name));
+        selected_generation = record.generation;
+        selected = 1U;
+    }
+    memset(&record, 0xFF, sizeof(record));
+    if(EEPROM_READ(V2_DEVICE_PROFILE_SLOT_B, &record, sizeof(record)) != 0U) read_error = 1U;
+    else if(device_profile_record_valid(&record) &&
+            (!selected || (int32_t)(record.generation - selected_generation) > 0)) {
+        memcpy(device_profile_name, record.name, sizeof(device_profile_name));
+        selected = 1U;
+    }
+    return read_error ? V2_STATUS_IO_ERROR : (selected ? V2_STATUS_OK : V2_STATUS_VERIFY_FAILED);
+}
+
+uint8_t DeviceProfileV2_SaveName(const char *name, uint8_t length)
+{
+    device_profile_record_v2_t record;
+    uint32_t generation = 0U;
+    uint32_t selected_slot = V2_DEVICE_PROFILE_SLOT_B;
+    uint32_t target;
+    uint8_t found = 0U;
+
+    if(!device_profile_name_valid(name, length)) return V2_STATUS_INVALID_ARG;
+    memset(&record, 0xFF, sizeof(record));
+    if(EEPROM_READ(V2_DEVICE_PROFILE_SLOT_A, &record, sizeof(record)) != 0U)
+        return V2_STATUS_IO_ERROR;
+    if(device_profile_record_valid(&record)) {
+        generation = record.generation;
+        selected_slot = V2_DEVICE_PROFILE_SLOT_A;
+        found = 1U;
+    }
+    memset(&record, 0xFF, sizeof(record));
+    if(EEPROM_READ(V2_DEVICE_PROFILE_SLOT_B, &record, sizeof(record)) != 0U)
+        return V2_STATUS_IO_ERROR;
+    if(device_profile_record_valid(&record) &&
+       (!found || (int32_t)(record.generation - generation) > 0)) {
+        generation = record.generation;
+        selected_slot = V2_DEVICE_PROFILE_SLOT_B;
+        found = 1U;
+    }
+
+    target = selected_slot == V2_DEVICE_PROFILE_SLOT_A ?
+             V2_DEVICE_PROFILE_SLOT_B : V2_DEVICE_PROFILE_SLOT_A;
+    memset(&record, 0, sizeof(record));
+    record.magic = DEVICE_PROFILE_MAGIC;
+    record.schema_version = DEVICE_PROFILE_SCHEMA;
+    record.name_length = length;
+    record.generation = generation + 1U;
+    memcpy(record.name, name, length);
+    record.crc32 = ConfigV2_Crc32((const uint8_t *)&record,
+                                  (uint16_t)offsetof(device_profile_record_v2_t, crc32));
+    if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
+       EEPROM_WRITE(target, &record, sizeof(record)) != 0U)
+        return V2_STATUS_IO_ERROR;
+    memset(&record, 0xFF, sizeof(record));
+    if(EEPROM_READ(target, &record, sizeof(record)) != 0U)
+        return V2_STATUS_IO_ERROR;
+    if(!device_profile_record_valid(&record) || record.generation != generation + 1U ||
+       record.name_length != length || memcmp(record.name, name, length) != 0)
+        return V2_STATUS_VERIFY_FAILED;
+    memcpy(device_profile_name, record.name, sizeof(device_profile_name));
+    return V2_STATUS_OK;
 }
 
 static uint32_t config_record_crc(const config_record_v2_t *record)
@@ -794,9 +919,6 @@ uint8_t ConnectivityV2_Validate(const connectivity_config_v2_t *config)
        !connectivity_string_valid(config->subscribe_topic, sizeof(config->subscribe_topic)) ||
        !connectivity_string_valid(config->apn, sizeof(config->apn)))
         return V2_STATUS_INVALID_ARG;
-    if((config->transport_mask & CONNECTIVITY_V2_CELLULAR) != 0U &&
-       (!config->mqtt_host[0] || !config->publish_topic[0] || !config->subscribe_topic[0]))
-        return V2_STATUS_INVALID_ARG;
     return V2_STATUS_OK;
 }
 
@@ -910,6 +1032,7 @@ uint8_t ConnectivityV2_Load(void)
 
 connectivity_read_error:
     connectivity_defaults(&connectivity_config);
+    DeviceProfileV2_FactoryDefaults();
     connectivity_apply(&connectivity_config);
     connectivity_generation = 0U;
     connectivity_slot = V2_CONNECTIVITY_SLOT_B;
@@ -1114,6 +1237,8 @@ uint8_t StorageV2_FactoryReset(void)
     connectivity_defaults(&connectivity_config);
     storage_startup_flags = 0U;
     if(ConnectivityV2_Save(&connectivity_config) != V2_STATUS_OK)
+        return V2_STATUS_IO_ERROR;
+    if(DeviceProfileV2_SaveName(device_profile_name, (uint8_t)strlen(device_profile_name)) != V2_STATUS_OK)
         return V2_STATUS_IO_ERROR;
     return ConfigV2_InitializeDefaults(0U);
 }

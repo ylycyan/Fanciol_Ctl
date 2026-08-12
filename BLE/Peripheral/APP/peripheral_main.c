@@ -127,6 +127,7 @@ int main(void)
     GAPRole_PeripheralInit();
     Peripheral_Init();
     LoadDevInfo();
+    Peripheral_RefreshDeviceName();
     ADC_Init();
     HLW8110_Init();
     /*

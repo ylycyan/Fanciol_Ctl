@@ -7,6 +7,8 @@
 #include "hlw8110.h"
 #include "timer.h"
 #include "ml307r.h"
+#include "peripheral.h"
+#include "lora.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -205,10 +207,13 @@ static __attribute__((noinline)) uint8_t dispatch(const v2_ble_frame_t *req,uint
     *payload_len=0;
     switch(req->opcode){
     case V2_OP_GET_CAPABILITIES:
-        put32(payload,current_capability_bitmap());payload[4]=V2_PROTOCOL_VERSION;payload[5]=2;payload[6]=17;payload[7]=1;
+        put32(payload,current_capability_bitmap());payload[4]=V2_PROTOCOL_VERSION;payload[5]=2;payload[6]=18;payload[7]=1;
         payload[8]=(uint8_t)Dev.irActType;put16(payload+9,Ir_GetLearnedMask());*payload_len=11;break;
     case V2_OP_GET_DEVICE_INFO:{
-        payload[0]=1;payload[1]=device_identity_len;memcpy(payload+2,device_identity,device_identity_len);*payload_len=(uint16_t)(2u+device_identity_len);break;}
+        const char *name=DeviceProfileV2_GetName();uint8_t name_len=(uint8_t)strlen(name);
+        payload[0]=2;payload[1]=device_identity_len;memcpy(payload+2,device_identity,device_identity_len);
+        payload[2u+device_identity_len]=name_len;memcpy(payload+3u+device_identity_len,name,name_len);
+        *payload_len=(uint16_t)(3u+device_identity_len+name_len);break;}
     case V2_OP_AUTH_BEGIN:
     case V2_OP_AUTH_PROVE:
         status=V2_STATUS_NOT_SUPPORTED;break;
@@ -373,7 +378,8 @@ static __attribute__((noinline)) uint8_t dispatch(const v2_ble_frame_t *req,uint
         payload[35]=cell->uart_active;payload[36]=cell->waiting;put16(payload+37,cell->timeout_count);
         put32(payload+39,cell->rx_bytes);put32(payload+43,cell->tx_bytes);
         put32(payload+47,cell->retry_remaining_ms);payload[51]=Ml307_AtGetStatus()->state;
-        *payload_len=52u;break;
+        payload[52]=(uint8_t)(Dev.loraStatus>=Status_Connected?Lora_GetRssi():-127);
+        *payload_len=53u;break;
     }
     case V2_OP_RESTART_CELLULAR:
         if(!SplitAcV2_MaintenanceActive()){status=V2_STATUS_UNAUTHORIZED;break;}
@@ -402,6 +408,13 @@ static __attribute__((noinline)) uint8_t dispatch(const v2_ble_frame_t *req,uint
         response_length=Ml307_AtCopyResponse(payload+15,(uint8_t)(V2_MAX_PAYLOAD-15u));
         payload[14]=response_length;*payload_len=(uint16_t)response_length+15u;break;
     }
+    case V2_OP_SET_DEVICE_NAME:
+        if(req->payload_len<2u||req->payload[0]!=(uint8_t)(req->payload_len-1u)){
+            status=V2_STATUS_INVALID_ARG;break;
+        }
+        status=DeviceProfileV2_SaveName((const char *)(req->payload+1),req->payload[0]);
+        if(status==V2_STATUS_OK){Peripheral_RefreshDeviceName();payload[0]=req->payload[0];*payload_len=1u;}
+        break;
     case V2_OP_FACTORY_RESET:
         if(!SplitAcV2_MaintenanceActive()){status=V2_STATUS_UNAUTHORIZED;break;}
         if(!Ir_PrepareConfigurationChange()){status=V2_STATUS_BUSY;break;}
