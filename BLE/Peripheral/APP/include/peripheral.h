@@ -32,6 +32,7 @@ extern "C" {
 #define SBP_PARAM_UPDATE_EVT    0x0008
 #define SBP_PHY_UPDATE_EVT      0x0010
 #define OTA_FLASH_ERASE_EVT     0x0020
+#define SBP_DEVICE_RESET_EVT    0x0040
 
 /*********************************************************************
  * MACROS
@@ -53,6 +54,7 @@ typedef struct
  */
 extern void Peripheral_Init(void);
 extern void Peripheral_RefreshDeviceName(void);
+extern void Peripheral_RequestReset(void);
 
 /*
  * Task Event Processor for the BLE Application

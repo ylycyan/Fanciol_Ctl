@@ -207,7 +207,7 @@ static __attribute__((noinline)) uint8_t dispatch(const v2_ble_frame_t *req,uint
     *payload_len=0;
     switch(req->opcode){
     case V2_OP_GET_CAPABILITIES:
-        put32(payload,current_capability_bitmap());payload[4]=V2_PROTOCOL_VERSION;payload[5]=2;payload[6]=18;payload[7]=1;
+        put32(payload,current_capability_bitmap());payload[4]=V2_PROTOCOL_VERSION;payload[5]=2;payload[6]=19;payload[7]=1;
         payload[8]=(uint8_t)Dev.irActType;put16(payload+9,Ir_GetLearnedMask());*payload_len=11;break;
     case V2_OP_GET_DEVICE_INFO:{
         const char *name=DeviceProfileV2_GetName();uint8_t name_len=(uint8_t)strlen(name);
@@ -414,6 +414,10 @@ static __attribute__((noinline)) uint8_t dispatch(const v2_ble_frame_t *req,uint
         }
         status=DeviceProfileV2_SaveName((const char *)(req->payload+1),req->payload[0]);
         if(status==V2_STATUS_OK){Peripheral_RefreshDeviceName();payload[0]=req->payload[0];*payload_len=1u;}
+        break;
+    case V2_OP_RESTART_DEVICE:
+        if(req->payload_len!=0u){status=V2_STATUS_INVALID_ARG;break;}
+        Peripheral_RequestReset();
         break;
     case V2_OP_FACTORY_RESET:
         if(!SplitAcV2_MaintenanceActive()){status=V2_STATUS_UNAUTHORIZED;break;}

@@ -128,6 +128,7 @@ void OTA_IAPReadDataComplete(unsigned char index);
 void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char w_len);
 void Rec_OTA_IAP_DataDeal(void);
 void OTA_IAP_SendCMDDealSta(uint8_t deal_status);
+void DisableAllIRQ(void);
 
 /*********************************************************************
  * PROFILE CALLBACKS
@@ -451,8 +452,23 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
         return (events ^ OTA_FLASH_ERASE_EVT);
     }
 
+    if(events & SBP_DEVICE_RESET_EVT)
+    {
+        /* The V2 response is sent before this delayed event is scheduled.
+         * Waiting here avoids turning an intentional restart into a BLE
+         * response timeout on the installer application. */
+        DisableAllIRQ();
+        SYS_ResetExecute();
+        return (events ^ SBP_DEVICE_RESET_EVT);
+    }
+
     // Discard unknown events
     return 0;
+}
+
+void Peripheral_RequestReset(void)
+{
+    tmos_start_task(Peripheral_TaskID, SBP_DEVICE_RESET_EVT, MS1_TO_SYSTEM_TIME(600));
 }
 
 /*********************************************************************
