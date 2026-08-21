@@ -84,9 +84,9 @@ typedef struct{
 
 /* Debug */
 #define _BT_INFO_ 0 // 打印蓝牙调试信息
-#define _LORA_INFO_ 1 // 打印LORA调试信息
-#define _Sensor_INFO_ 1 // 打印传感器调试信息
-#define _IR_INFO_ 1 //打印红外调试信息
+#define _LORA_INFO_ 0 // 量产固件关闭逐帧日志，保留关键状态与错误日志
+#define _Sensor_INFO_ 0
+#define _IR_INFO_ 0
 
 typedef enum{
     Status_Uninit = 0, // 未初始化
@@ -347,23 +347,15 @@ extern uint8_t Ir_ResetAllLearned(void);
 extern uint16_t Ir_GetLearnedMask(void);
 extern uint8_t Ir_PrepareConfigurationChange(void);
 extern uint8_t Ir_TransmitRawAsync(const uint8_t *data, uint16_t len);
-extern uint16_t Ir_GetSubmittedCount(void);
-extern uint16_t Ir_GetRepeatedCount(void);
-extern uint16_t Ir_GetBusyRejectedCount(void);
 extern uint8_t Ir_GetQueueDepth(void);
 extern uint8_t Ir_GetQueueHighWater(void);
 extern void Ir_Pro(void);
 extern uint8_t IrLearnChannel;
 
 // 固定网关云端控制诊断计数（RAM 内饱和计数，不增加 Flash 擦写）
-extern uint16_t Lora_GetControlExecutedCount(void);
-extern uint16_t Lora_GetControlDuplicateCount(void);
-extern uint16_t Lora_GetControlRejectedCount(void);
-extern uint16_t Lora_GetRecoveryAttemptCount(void);
-extern uint16_t Lora_GetRecoverySuccessCount(void);
-extern uint8_t Lora_GetRecoveryFailureCount(void);
 extern uint8_t Lora_BuildNodeReport(uint8_t *buf, uint8_t tag, uint8_t errorInfo);
-extern uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len);
+extern uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len,
+                                      uint8_t allow_zero_gateway);
 extern uint8_t Lora_BuildControlResult(uint8_t *buf, uint8_t tag, uint8_t result);
 
 #define BITGET(val, bit)      (((val) >> (bit)) & 1)              // 获取 val 的第 bit 位（0 或 1）

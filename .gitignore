@@ -1,2 +1,4 @@
 BLE/Peripheral/obj/*
 .pio/
+.native-test/
+.tmp-*.exe

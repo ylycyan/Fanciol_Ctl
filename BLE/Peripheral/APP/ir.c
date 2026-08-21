@@ -3,9 +3,9 @@
 #include "CONFIG.h"
 #include "peripheral.h"
 #include "gattprofile.h"
-#include "splitac_service_v2.h"
+#include "device_service.h"
 #include "ir_control_map.h"
-#include "ir_reliability_v2.h"
+#include "ir_reliability.h"
 IRBUF_t IrBuf = {0};
 uint8_t IrLearnChannel = 0; //当前正在学习的通道索引 (0-9)
 
@@ -19,7 +19,7 @@ static volatile uint16_t irTxOffset = 0;
 static volatile uint8_t irTxActive = 0;
 static volatile uint8_t irTxWaitResponse = 0;
 static uint32_t irOperationDeadline = 0;
-static ir_reliability_v2_t irReliability;
+static ir_reliability_t irReliability;
 
 static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd, uint8_t allowRepeat);
 
@@ -97,7 +97,7 @@ void Ir_Pro(void)
     }
 
     if(irReliability.repeat_cmd != 0U) {
-        if(IrReliabilityV2_TakeDueRepeat(&irReliability, CurTick, &cmd)) {
+        if(IrReliability_TakeDueRepeat(&irReliability, CurTick, &cmd)) {
             (void)Ir_SubmitInternalCommand((IR_CMD_t)cmd, 0U);
         }
     }
@@ -125,7 +125,7 @@ void Check_IrBuf(void){ //
     }
     PrintHex("uart3 rx",IrBuf.rxbuf,IrBuf.rxlen);
     GAPRole_GetParameter(GAPROLE_STATE,&state);
-    if(state == GAPROLE_CONNECTED && SplitAcV2_MaintenanceActive()){ //仅开发者维护窗口开放原始透传
+    if(state == GAPROLE_CONNECTED && DeviceService_MaintenanceActive()){ //仅开发者维护窗口开放原始透传
         peripheralCharNotify(SIMPLEPROFILE_CHAR2, IrBuf.rxbuf, IrBuf.rxlen);
     }
     #if(IR_MODULE == HXD039B)
@@ -208,7 +208,7 @@ void IR_Init(void){ //uart3
     irTxWaitResponse = 0U;
     irOperationDeadline = 0U;
     irPipelineHighWater = 0U;
-    IrReliabilityV2_Init(&irReliability);
+    IrReliability_Init(&irReliability);
     GPIOPinRemap(ENABLE,RB_PIN_UART3);
     GPIOB_SetBits(bTXD3_);
     GPIOB_ModeCfg(bRXD3_, GPIO_ModeIN_PU);      // RXD-配置上拉输入
@@ -289,10 +289,8 @@ static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd, uint8_t allowRepeat)
     IrBuf.txbuf[3] = (uint8_t)Dev.irType;
     IrBuf.txbuf[4] = (uint8_t)cmd;
     if(!Ir_TxStartCopy(IrBuf.txbuf, 5U, 0U)) return 0U;
-
-    IrReliabilityV2_RecordSubmitted(&irReliability);
     if(allowRepeat && Ir_IsIdempotentCommand(cmd)) {
-        (void)IrReliabilityV2_ScheduleRepeat(&irReliability,
+        (void)IrReliability_ScheduleRepeat(&irReliability,
                                               (uint8_t)cmd,
                                               CurTick);
     }
@@ -315,10 +313,9 @@ uint8_t Ir_ExecuteVerified(IR_CMD_t cmd)
        !Dev.irType ||
        Dev.irType == 0xFFFFu) return 0;
     if(!Ir_IsControlPathIdle()) {
-        IrReliabilityV2_RecordBusyRejected(&irReliability);
         return 0;
     }
-    IrReliabilityV2_CancelRepeat(&irReliability);
+    IrReliability_CancelRepeat(&irReliability);
     /*
      * 不同 HXD039B 固件对普通控制命令没有一致回执，因此这里的成功只表示
      * 配置有效且命令已提交到 UART；现场实施仍由用户确认空调真实响应。
@@ -358,10 +355,9 @@ uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t cmd)
 uint8_t Ir_StartMatch(void)
 {
     if(!Ir_IsControlPathIdle()) {
-        IrReliabilityV2_RecordBusyRejected(&irReliability);
         return 0;
     }
-    IrReliabilityV2_CancelRepeat(&irReliability);
+    IrReliability_CancelRepeat(&irReliability);
     Dev.errorCode.bit.irMatch = 0;
     IrBuf.rxlen = 0;
     irLastRxLen = 0;
@@ -375,7 +371,6 @@ uint8_t Ir_StartMatch(void)
         return 0;
     }
     irOperationDeadline = CurTick + 25000U;
-    IrReliabilityV2_RecordSubmitted(&irReliability);
     return 1;
 }
 
@@ -383,10 +378,9 @@ uint8_t Ir_StartLearning(uint8_t ch)
 {
     if(ch >= MAX_IR_LEARNNUM) return 0;
     if(!Ir_IsControlPathIdle()) {
-        IrReliabilityV2_RecordBusyRejected(&irReliability);
         return 0;
     }
-    IrReliabilityV2_CancelRepeat(&irReliability);
+    IrReliability_CancelRepeat(&irReliability);
     Dev.errorCode.bit.irLearn = 0;
     IrLearnChannel = ch;
     IrBuf.rxlen = 0;
@@ -401,7 +395,6 @@ uint8_t Ir_StartLearning(uint8_t ch)
         return 0;
     }
     irOperationDeadline = CurTick + 25000U;
-    IrReliabilityV2_RecordSubmitted(&irReliability);
     return 1;
 }
 
@@ -414,7 +407,6 @@ static uint8_t Ir_SubmitLearned(uint8_t ch)
     if(!Ir_TxStartCopy(Dev.learnCode[ch].cmd, IR_LEARN_REPLAY_LEN, 0U)) {
         return 0U;
     }
-    IrReliabilityV2_RecordSubmitted(&irReliability);
     #if _IR_INFO_
     PrintHex("ir learn send", IrBuf.txbuf, 10U);
     #endif
@@ -425,10 +417,9 @@ uint8_t Ir_SendLearnedVerified(uint8_t ch)
 {
     if(ch >= MAX_IR_LEARNNUM || !Dev.learnCode[ch].enable) return 0;
     if(!Ir_IsControlPathIdle()) {
-        IrReliabilityV2_RecordBusyRejected(&irReliability);
         return 0;
     }
-    IrReliabilityV2_CancelRepeat(&irReliability);
+    IrReliability_CancelRepeat(&irReliability);
     /* 学习码可能是切换/增减键，只发送一次，并由现场人员确认真实响应。 */
     return Ir_SubmitLearned(ch);
 }
@@ -438,11 +429,11 @@ uint8_t Ir_CancelOperation(void)
     if(IrBuf.type != IR_TYPE_MATCH &&
        IrBuf.type != IR_TYPE_LEARNing &&
        IrBuf.type != IR_TYPE_RAW) {
-        IrReliabilityV2_CancelRepeat(&irReliability);
+        IrReliability_CancelRepeat(&irReliability);
         return 1;
     }
     Ir_TxAbort();
-    IrReliabilityV2_CancelRepeat(&irReliability);
+    IrReliability_CancelRepeat(&irReliability);
     IrBuf.type = IR_TYPE_NORMAL;
     IrBuf.isFinish = 1;
     IrBuf.rxlen = 0;
@@ -465,7 +456,7 @@ static void Ir_RecalculateLearnNum(void)
 uint8_t Ir_ResetLearned(uint8_t ch)
 {
     if(ch >= MAX_IR_LEARNNUM || !Ir_IsControlPathIdle()) return 0;
-    IrReliabilityV2_CancelRepeat(&irReliability);
+    IrReliability_CancelRepeat(&irReliability);
     memset(&Dev.learnCode[ch], 0, sizeof(Dev.learnCode[ch]));
     Ir_RecalculateLearnNum();
     SaveIrInfo();
@@ -475,7 +466,7 @@ uint8_t Ir_ResetLearned(uint8_t ch)
 uint8_t Ir_ResetAllLearned(void)
 {
     if(!Ir_IsControlPathIdle()) return 0;
-    IrReliabilityV2_CancelRepeat(&irReliability);
+    IrReliability_CancelRepeat(&irReliability);
     memset(Dev.learnCode, 0, sizeof(Dev.learnCode));
     Dev.learnNum = 0;
     SaveIrInfo();
@@ -495,20 +486,18 @@ uint16_t Ir_GetLearnedMask(void)
 uint8_t Ir_PrepareConfigurationChange(void)
 {
     if(!Ir_IsControlPathIdle()) {
-        IrReliabilityV2_RecordBusyRejected(&irReliability);
         return 0U;
     }
-    IrReliabilityV2_CancelRepeat(&irReliability);
+    IrReliability_CancelRepeat(&irReliability);
     return 1U;
 }
 
 uint8_t Ir_TransmitRawAsync(const uint8_t *data, uint16_t len)
 {
     if(!Ir_IsControlPathIdle()) {
-        IrReliabilityV2_RecordBusyRejected(&irReliability);
         return 0U;
     }
-    IrReliabilityV2_CancelRepeat(&irReliability);
+    IrReliability_CancelRepeat(&irReliability);
     IrBuf.type = IR_TYPE_RAW;
     IrBuf.rxlen = 0U;
     irLastRxLen = 0U;
@@ -518,13 +507,9 @@ uint8_t Ir_TransmitRawAsync(const uint8_t *data, uint16_t len)
         return 0U;
     }
     irOperationDeadline = CurTick + 3000U;
-    IrReliabilityV2_RecordSubmitted(&irReliability);
     return 1U;
 }
 
-uint16_t Ir_GetSubmittedCount(void) { return irReliability.submitted_count; }
-uint16_t Ir_GetRepeatedCount(void) { return irReliability.repeated_count; }
-uint16_t Ir_GetBusyRejectedCount(void) { return irReliability.busy_rejected_count; }
 uint8_t Ir_GetQueueDepth(void)
 {
     return (irTxActive || !IrBuf.isFinish || irReliability.repeat_cmd != 0U)

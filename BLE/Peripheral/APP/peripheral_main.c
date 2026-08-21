@@ -22,10 +22,11 @@
 #include "lora.h"
 #include "board.h"
 #include "timer.h"
-#include "health_v2.h"
+#include "health.h"
 #include "hlw8110.h"
-#include "config_store_v2.h"
+#include "config_store.h"
 #include "ml307r.h"
+#include "ota_update.h"
 /*********************************************************************
  * GLOBAL TYPEDEFS
  */
@@ -47,21 +48,25 @@ void Main_Circulation()
     uint8_t ml307Initialized = 0U;
     while(1)
     {
-        Period_20ms();
-        Period_100ms();
-        Period_1s();
+        /* BLE owns the tightest deadline.  Give TMOS a scheduling point before
+         * and between peripheral jobs so LoRa/Flash/4G cannot starve it. */
         TMOS_SystemProcess();
-        HealthV2_Mark(HEALTH_V2_BLE_STACK);
+        Health_Mark(HEALTH_BLE_STACK);
+        Period_20ms();
+        TMOS_SystemProcess();
+        Period_100ms();
+        TMOS_SystemProcess();
+        Period_1s();
         /*
          * HEAD 已验证的 BLE/TMOS 启动路径必须先获得调度。新增的蜂窝硬件
-         * 只能在协议栈稳定运行后初始化；仅 LoRa 配置则不会触碰 UART1/PB22。
+         * 只能在协议栈稳定运行后初始化；仅 LoRa 配置则不会触碰 UART1/PB14。
          */
         if(!ml307Initialized && CurTick >= 1000U) {
             Ml307_Init();
             ml307Initialized = 1U;
         }
         if(ml307Initialized) Ml307_Process();
-        else HealthV2_Mark(HEALTH_V2_CELLULAR);
+        else Health_Mark(HEALTH_CELLULAR);
     }
 }
 /*********************************************************************
@@ -127,6 +132,7 @@ int main(void)
     GAPRole_PeripheralInit();
     Peripheral_Init();
     LoadDevInfo();
+    Ota_Init();
     Peripheral_RefreshDeviceName();
     ADC_Init();
     HLW8110_Init();
@@ -134,13 +140,13 @@ int main(void)
      * 复位状态必须使用时钟初始化后的第一份快照。BLE/HAL 初始化可能读取
      * 或清理相关寄存器，不能在健康模块内延迟重新读取。
      */
-    HealthV2_Init(retainedResetReason, Dev.errorCode.u16Val);
+    Health_Init(retainedResetReason, Dev.errorCode.u16Val);
     /*
      * 单槽自愈或双槽损坏后成功重建属于“已恢复历史事件”：
      * 先写入启动健康快照，再清除当前故障；仍退化/读失败则保持告警。
      */
-    if((StorageV2_GetStartupFlags() & STORAGE_V2_STARTUP_RECOVERED) != 0U &&
-       (StorageV2_GetStartupFlags() & STORAGE_V2_STARTUP_DEGRADED) == 0U) {
+    if((Storage_GetStartupFlags() & STORAGE_STARTUP_RECOVERED) != 0U &&
+       (Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED) == 0U) {
         Dev.errorCode.bit.flash = 0;
     }
     WWDG_Init();

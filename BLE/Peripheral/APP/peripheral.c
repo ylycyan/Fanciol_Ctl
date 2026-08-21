@@ -27,10 +27,11 @@
 #include "ota.h"
 #include "OTAprofile.h"
 #include "timer.h"
-#include "protocol_v2.h"
-#include "splitac_service_v2.h"
+#include "device_protocol.h"
+#include "device_service.h"
 #include "ota_guard.h"
-#include "config_store_v2.h"
+#include "ota_update.h"
+#include "config_store.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -91,12 +92,10 @@ static peripheralConnItem_t peripheralConnList;
 
 static uint16_t peripheralMTU = SIMPLEPROFILE_CHAR3_LEN;
 
-OTA_IAP_CMD_t iap_rec_data;
-
 uint32_t OpParaDataLen = 0;
 uint32_t OpAdd = 0;
 
-__attribute__((aligned(8))) uint8_t block_buf[16];
+static uint8_t localOtaActive;
 
 typedef int (*pImageTaskFn)(void);
 pImageTaskFn user_image_tasks;
@@ -107,9 +106,8 @@ uint32_t EraseBlockCnt = 0;
 
 uint8_t VerifyStatus = 0;
 static ota_guard_t otaGuard;
-static v2_ble_reassembler_t v2Reassembler;
-static uint8_t v2Request[V2_MAX_FRAME_SIZE];
-static uint8_t v2Response[V2_MAX_FRAME_SIZE];
+static device_reassembler_t deviceReassembler;
+static uint8_t deviceFrame[DEVICE_MAX_FRAME_SIZE];
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
@@ -126,7 +124,7 @@ static uint8_t peripheralBuildAdvData(void);
 static void peripheralEnableAdvertising(const char *reason);
 void OTA_IAPReadDataComplete(unsigned char index);
 void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char w_len);
-void Rec_OTA_IAP_DataDeal(void);
+static void ProcessOtaCommand(const uint8_t *command);
 void OTA_IAP_SendCMDDealSta(uint8_t deal_status);
 void DisableAllIRQ(void);
 
@@ -231,8 +229,8 @@ void Peripheral_Init()
         return;
     }
 #endif
-    V2_ReassemblerReset(&v2Reassembler);
-    SplitAcV2_Init();
+    DeviceProtocol_Reset(&deviceReassembler);
+    DeviceService_Init();
     OtaGuard_Reset(&otaGuard);
 
     {
@@ -251,7 +249,12 @@ void Peripheral_Init()
             PRINT("BLE adv cfg: task=%u len=%u scan=%02x adv=%02x min=%02x max=%02x enable=%02x\r\n",
                   Peripheral_TaskID, advLen, scanStatus, advStatus,
                   minStatus, maxStatus, enableStatus);
+            (void)enableStatus;
         }
+        (void)scanStatus;
+        (void)advStatus;
+        (void)minStatus;
+        (void)maxStatus;
         PrintHex("BLE adv data", advertData, advLen);
     }
 
@@ -289,9 +292,19 @@ void Peripheral_Init()
     PRINT("BLE services: gap=%02x gatt=%02x dev=%02x simple=%02x ota=%02x\r\n",
           gapServiceStatus, gattServiceStatus, devInfoStatus,
           simpleServiceStatus, otaServiceStatus);
+    (void)gapServiceStatus;
+    (void)gattServiceStatus;
+    (void)devInfoStatus;
+    (void)simpleServiceStatus;
+    (void)otaServiceStatus;
 
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, sizeof(attDeviceName), attDeviceName);
     PRINT("Device Name: %s\n", attDeviceName);
+    PRINT("Product firmware: %lu.%lu.%lu connectivity schema=%u\r\n",
+          (unsigned long)((FIRMWARE_BUILD_VERSION >> 16) & 0xFFU),
+          (unsigned long)((FIRMWARE_BUILD_VERSION >> 8) & 0xFFU),
+          (unsigned long)(FIRMWARE_BUILD_VERSION & 0xFFU),
+          CONNECTIVITY_SCHEMA);
 
 
     // Init Connection Item
@@ -452,9 +465,25 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
         return (events ^ OTA_FLASH_ERASE_EVT);
     }
 
+    if(events & OTA_FLASH_VERIFY_EVT)
+    {
+        uint8_t status = Ota_VerifyStep();
+        if(status == DEVICE_STATUS_BUSY) {
+            tmos_start_task(Peripheral_TaskID, OTA_FLASH_VERIFY_EVT, MS1_TO_SYSTEM_TIME(1));
+        } else if(status == DEVICE_STATUS_OK && Ota_MarkInstall() == DEVICE_STATUS_OK) {
+            localOtaActive = 0U;
+            OTA_IAP_SendCMDDealSta(0U);
+            tmos_start_task(Peripheral_TaskID, SBP_DEVICE_RESET_EVT, MS1_TO_SYSTEM_TIME(100));
+        } else {
+            localOtaActive = 0U;
+            OTA_IAP_SendCMDDealSta(0xFFU);
+        }
+        return (events ^ OTA_FLASH_VERIFY_EVT);
+    }
+
     if(events & SBP_DEVICE_RESET_EVT)
     {
-        /* The V2 response is sent before this delayed event is scheduled.
+        /* The device response is sent before this delayed event is scheduled.
          * Waiting here avoids turning an intentional restart into a BLE
          * response timeout on the installer application. */
         DisableAllIRQ();
@@ -603,9 +632,14 @@ static void Peripheral_LinkTerminated(gapRoleEvent_t *pEvent)
         tmos_stop_task(Peripheral_TaskID, SBP_PERIODIC_EVT);
         tmos_stop_task(Peripheral_TaskID, SBP_READ_RSSI_EVT);
         tmos_stop_task(Peripheral_TaskID, OTA_FLASH_ERASE_EVT);
-        V2_ReassemblerReset(&v2Reassembler);
-        SplitAcV2_ResetSession();
+        tmos_stop_task(Peripheral_TaskID, OTA_FLASH_VERIFY_EVT);
+        DeviceProtocol_Reset(&deviceReassembler);
+        DeviceService_ResetSession();
         OtaGuard_Reset(&otaGuard);
+        if(localOtaActive) {
+            Ota_Cancel();
+            localOtaActive = 0U;
+        }
 
         // Restart advertising
         {
@@ -799,14 +833,14 @@ void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len)
     }
 }
 
-static void __attribute__((noinline)) SendV2LogicalFrame(const uint8_t *frame, uint16_t frameLen)
+static void __attribute__((noinline)) SendDeviceFrame(const uint8_t *frame, uint16_t frameLen)
 {
-    uint8_t fragment[V2_MAX_FRAGMENT_CHUNK + V2_FRAGMENT_HEADER_SIZE];
+    uint8_t fragment[DEVICE_MAX_FRAGMENT_CHUNK + DEVICE_FRAGMENT_HEADER_SIZE];
     uint16_t chunkSize = (peripheralMTU > 8u) ? (uint16_t)(peripheralMTU - 8u) : 15u;
     uint8_t count;
     uint8_t index;
     uint16_t seq;
-    if(chunkSize > V2_MAX_FRAGMENT_CHUNK) chunkSize = V2_MAX_FRAGMENT_CHUNK;
+    if(chunkSize > DEVICE_MAX_FRAGMENT_CHUNK) chunkSize = DEVICE_MAX_FRAGMENT_CHUNK;
     count = (uint8_t)((frameLen + chunkSize - 1u) / chunkSize);
     seq = (frameLen >= 5u) ? ((uint16_t)frame[3] | ((uint16_t)frame[4] << 8)) : 0;
     for(index = 0; index < count; ++index) {
@@ -827,7 +861,7 @@ static uint8_t peripheralBuildAdvData(void)
     uint8_t uid[8] __attribute__((aligned(4)));
     uint8_t localName[23];
     static const char hex[]="0123456789ABCDEF";
-    const char *baseName = DeviceProfileV2_GetName();
+    const char *baseName = DeviceProfile_GetName();
     uint8_t nameLen = (uint8_t)strlen(baseName);
     uint16_t shortId;
     GET_UNIQUE_ID(uid);
@@ -836,7 +870,7 @@ static uint8_t peripheralBuildAdvData(void)
      * zero bytes. Some MAC byte positions are manufacturer/batch constants
      * (observed as 0x1970), so fold all six bytes into the installer short ID.
      */
-    shortId = V2_Crc16(uid, 6u);
+    shortId = DeviceProtocol_Crc16(uid, 6u);
     if(nameLen > 22)
     {
         nameLen = 22;
@@ -869,33 +903,33 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
     {
         case SIMPLEPROFILE_CHAR1:
         {
-            if((len >= V2_FRAGMENT_HEADER_SIZE) && ((pValue[0] & 0x80u) || v2Reassembler.active)) {
+            if((len >= DEVICE_FRAGMENT_HEADER_SIZE) && ((pValue[0] & 0x80u) || deviceReassembler.active)) {
                 uint16_t requestLen = 0;
                 uint16_t responseLen = 0;
-                uint8_t v2Status = V2_ReassemblerPush(&v2Reassembler, pValue, len, v2Request, sizeof(v2Request), &requestLen);
-                if(v2Status == V2_STATUS_BUSY) break;
-                if(v2Status == V2_STATUS_OK && SplitAcV2_HandleFrame(v2Request, requestLen, v2Response, sizeof(v2Response), &responseLen) == V2_STATUS_OK) {
-                    SendV2LogicalFrame(v2Response, responseLen);
+                uint8_t frameStatus = DeviceProtocol_Reassemble(&deviceReassembler, pValue, len, deviceFrame, sizeof(deviceFrame), &requestLen);
+                if(frameStatus == DEVICE_STATUS_BUSY) break;
+                if(frameStatus == DEVICE_STATUS_OK && DeviceService_HandleFrame(deviceFrame, requestLen, deviceFrame, sizeof(deviceFrame), &responseLen) == DEVICE_STATUS_OK) {
+                    SendDeviceFrame(deviceFrame, responseLen);
                 } else {
-                    V2_ReassemblerReset(&v2Reassembler);
-                    PRINT("BLE V2 frame rejected: %u\r\n", v2Status);
+                    DeviceProtocol_Reset(&deviceReassembler);
+                    PRINT("BLE device frame rejected: %u\r\n", frameStatus);
                 }
                 break;
             }
             /*
-             * 量产固件只接受 BLE V2。旧协议可以绕过配置版本、范围校验和原子提交，
+             * 量产固件只接受 BLE device protocol。旧协议可以绕过配置版本、范围校验和原子提交，
              * 不能作为隐藏写入口保留；旧协议处理器与 SendBtResponse 已一并删除。
              */
-            V2_ReassemblerReset(&v2Reassembler);
+            DeviceProtocol_Reset(&deviceReassembler);
             PRINT("BLE legacy frame rejected\r\n");
             break;
         }
 
         case SIMPLEPROFILE_CHAR2:
         {
-            if(!SplitAcV2_MaintenanceActive() || len == 0u || len > SIMPLEPROFILE_CHAR2_LEN) {
+            if(!DeviceService_MaintenanceActive() || len == 0u || len > SIMPLEPROFILE_CHAR2_LEN) {
                 PRINT("IR passthrough rejected: maintenance=%u len=%u\r\n",
-                       SplitAcV2_MaintenanceActive(), len);
+                       DeviceService_MaintenanceActive(), len);
                 break;
             }
             PrintHex("char2 rx",pValue,len);
@@ -929,39 +963,36 @@ void OTA_IAP_CMDErrDeal(void)
     OTA_IAP_SendCMDDealSta(0xfe);
 }
 
-uint8_t SwitchImageFlag(uint8_t new_flag)
-{
-    uint8_t verify[4];
-    if(EEPROM_READ(DATAFLASH_ADDR_OTA, (uint32_t *)&block_buf[0], 4)) return 0;
-
-    if(EEPROM_ERASE(DATAFLASH_ADDR_OTA, EEPROM_PAGE_SIZE)) return 0;
-
-    block_buf[0] = new_flag;
-
-    if(EEPROM_WRITE(DATAFLASH_ADDR_OTA, (uint32_t *)&block_buf[0], 4)) return 0;
-    if(EEPROM_READ(DATAFLASH_ADDR_OTA, verify, sizeof(verify))) return 0;
-    return memcmp(block_buf, verify, sizeof(verify)) == 0;
-}
-
 void DisableAllIRQ(void)
 {
     SYS_DisableAllIrq(NULL);
 }
 
-void Rec_OTA_IAP_DataDeal(void)
+static uint32_t ota_u32(const uint8_t *value)
 {
-    switch(iap_rec_data.other.buf[0])
+    return (uint32_t)value[0] | ((uint32_t)value[1] << 8) |
+           ((uint32_t)value[2] << 16) | ((uint32_t)value[3] << 24);
+}
+
+static uint32_t local_ota_address(uint16_t encoded)
+{
+    uint32_t linked_address = (uint32_t)encoded * 16UL;
+    if(linked_address < OTA_APP_ADDRESS) return 0U;
+    return Ota_StagingAddress() + linked_address - OTA_APP_ADDRESS;
+}
+
+static void ProcessOtaCommand(const uint8_t *command)
+{
+    switch(command[0])
     {
         case CMD_IAP_PROM:
         {
             uint8_t status;
 
-            OpParaDataLen = iap_rec_data.program.len;
-            OpAdd = (uint32_t)(iap_rec_data.program.addr[0]);
-            OpAdd |= ((uint32_t)(iap_rec_data.program.addr[1]) << 8);
-            OpAdd = OpAdd * 16;
-
-            OpAdd += IMAGE_A_SIZE;
+            OpParaDataLen = command[1];
+            OpAdd = (uint32_t)command[2];
+            OpAdd |= ((uint32_t)command[3] << 8);
+            OpAdd = local_ota_address((uint16_t)OpAdd);
 
             PRINT("IAP_PROM: %08x len:%d \r\n", (int)OpAdd, (int)OpParaDataLen);
 
@@ -970,7 +1001,7 @@ void Rec_OTA_IAP_DataDeal(void)
                 OTA_IAP_SendCMDDealSta(0xFF);
                 break;
             }
-            status = FLASH_ROM_WRITE(OpAdd, iap_rec_data.program.buf, (uint16_t)OpParaDataLen);
+            status = FLASH_ROM_WRITE(OpAdd, (uint8_t *)command + 4, (uint16_t)OpParaDataLen);
             OtaGuard_EndProgram(&otaGuard, (uint16_t)OpParaDataLen, status == SUCCESS);
             if(status) PRINT("IAP_PROM err \r\n");
             OTA_IAP_SendCMDDealSta(status);
@@ -978,14 +1009,12 @@ void Rec_OTA_IAP_DataDeal(void)
         }
         case CMD_IAP_ERASE:
         {
-            OpAdd = (uint32_t)(iap_rec_data.erase.addr[0]);
-            OpAdd |= ((uint32_t)(iap_rec_data.erase.addr[1]) << 8);
-            OpAdd = OpAdd * 16;
+            OpAdd = (uint32_t)command[2];
+            OpAdd |= ((uint32_t)command[3] << 8);
+            OpAdd = local_ota_address((uint16_t)OpAdd);
 
-            OpAdd += IMAGE_A_SIZE;
-
-            EraseBlockNum = (uint32_t)(iap_rec_data.erase.block_num[0]);
-            EraseBlockNum |= ((uint32_t)(iap_rec_data.erase.block_num[1]) << 8);
+            EraseBlockNum = (uint32_t)command[4];
+            EraseBlockNum |= ((uint32_t)command[5] << 8);
             EraseAdd = OpAdd;
             EraseBlockCnt = 0;
 
@@ -993,9 +1022,10 @@ void Rec_OTA_IAP_DataDeal(void)
 
             PRINT("IAP_ERASE start:%08x num:%d\r\n", (int)OpAdd, (int)EraseBlockNum);
 
-            if(!OtaGuard_BeginErase(&otaGuard, EraseAdd, EraseBlockNum,
-                                    FLASH_BLOCK_SIZE, IMAGE_B_START_ADD,
-                                    IMAGE_IAP_START_ADD))
+            if(!localOtaActive ||
+               !OtaGuard_BeginErase(&otaGuard, EraseAdd, EraseBlockNum,
+                                    FLASH_BLOCK_SIZE, Ota_StagingAddress(),
+                                    Ota_StagingAddress() + OTA_APP_SIZE))
             {
                 OtaGuard_Reset(&otaGuard);
                 OTA_IAP_SendCMDDealSta(0xFF);
@@ -1010,13 +1040,11 @@ void Rec_OTA_IAP_DataDeal(void)
         {
             uint8_t status = 0;
 
-            OpParaDataLen = iap_rec_data.verify.len;
+            OpParaDataLen = command[1];
 
-            OpAdd = (uint32_t)(iap_rec_data.verify.addr[0]);
-            OpAdd |= ((uint32_t)(iap_rec_data.verify.addr[1]) << 8);
-            OpAdd = OpAdd * 16;
-
-            OpAdd += IMAGE_A_SIZE;
+            OpAdd = (uint32_t)command[2];
+            OpAdd |= ((uint32_t)command[3] << 8);
+            OpAdd = local_ota_address((uint16_t)OpAdd);
             PRINT("IAP_VERIFY: %08x len:%d \r\n", (int)OpAdd, (int)OpParaDataLen);
 
             if(!OtaGuard_CanVerify(&otaGuard, OpAdd, (uint16_t)OpParaDataLen)) {
@@ -1024,7 +1052,7 @@ void Rec_OTA_IAP_DataDeal(void)
                 OTA_IAP_SendCMDDealSta(0xFF);
                 break;
             }
-            status = FLASH_ROM_VERIFY(OpAdd, iap_rec_data.verify.buf, OpParaDataLen);
+            status = FLASH_ROM_VERIFY(OpAdd, (uint8_t *)command + 4, OpParaDataLen);
             OtaGuard_EndVerify(&otaGuard, (uint16_t)OpParaDataLen, status == SUCCESS);
             if(status)
             {
@@ -1038,27 +1066,38 @@ void Rec_OTA_IAP_DataDeal(void)
         {
             PRINT("IAP_END \r\n");
 
-            if(!OtaGuard_CanFinish(&otaGuard)) {
+            if(!OtaGuard_CanFinish(&otaGuard) ||
+               otaGuard.program_next != Ota_StagingAddress() + Ota_Get()->image_size) {
                 PRINT("IAP_END rejected: image not fully verified\r\n");
                 OTA_IAP_SendCMDDealSta(0xFF);
                 break;
             }
 
-            if(!SwitchImageFlag(IMAGE_IAP_FLAG)) {
-                PRINT("IAP_END rejected: image flag verify failed\r\n");
+            if(Ota_FinishLocal() != DEVICE_STATUS_OK) {
+                PRINT("IAP_END rejected: metadata commit failed\r\n");
                 OTA_IAP_SendCMDDealSta(0xFF);
                 break;
             }
-
-            DisableAllIRQ();
-            mDelaymS(10);
-            SYS_ResetExecute();
-
+            tmos_set_event(Peripheral_TaskID, OTA_FLASH_VERIFY_EVT);
+            break;
+        }
+        case CMD_IAP_MANIFEST:
+        {
+            uint8_t status;
+            uint32_t version = ota_u32(command + 2);
+            uint32_t size = ota_u32(command + 6);
+            uint32_t crc = ota_u32(command + 10);
+            status = Ota_BeginLocal(version, size, crc);
+            if(status == DEVICE_STATUS_OK) {
+                localOtaActive = 1U;
+                OtaGuard_Reset(&otaGuard);
+                OTA_IAP_SendCMDDealSta(0U);
+            } else OTA_IAP_SendCMDDealSta(0xFFU);
             break;
         }
         case CMD_IAP_INFO:
         {
-            uint8_t send_buf[20];
+            uint8_t send_buf[20] = {0};
 
             PRINT("IAP_INFO \r\n");
 
@@ -1074,6 +1113,12 @@ void Rec_OTA_IAP_DataDeal(void)
 
             send_buf[7] = CHIP_ID & 0xFF;
             send_buf[8] = (CHIP_ID >> 8) & 0xFF;
+            send_buf[9] = 1U;
+            send_buf[10] = (uint8_t)Ota_Get()->current_version;
+            send_buf[11] = (uint8_t)(Ota_Get()->current_version >> 8);
+            send_buf[12] = (uint8_t)(Ota_Get()->current_version >> 16);
+            send_buf[13] = (uint8_t)(Ota_Get()->current_version >> 24);
+            send_buf[14] = 1U;
 
             OTA_IAP_SendData(send_buf, 20);
 
@@ -1100,19 +1145,19 @@ void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char 
 
     rec_len = w_len;
     rec_data = p_data;
-    if(!SplitAcV2_MaintenanceActive() || rec_data == NULL || rec_len == 0 || rec_len > sizeof(iap_rec_data)) {
+    if(!DeviceService_MaintenanceActive() || rec_data == NULL || rec_len == 0 || rec_len > IAP_LEN) {
         OTA_IAP_CMDErrDeal();
         return;
     }
     if((rec_data[0] == CMD_IAP_ERASE && rec_len != 6u) ||
        ((rec_data[0] == CMD_IAP_PROM || rec_data[0] == CMD_IAP_VERIFY) &&
         (rec_len < 4u || rec_len != (unsigned char)(rec_data[1] + 4u))) ||
+       (rec_data[0] == CMD_IAP_MANIFEST && (rec_len != 14u || rec_data[1] != 12u)) ||
        ((rec_data[0] == CMD_IAP_END || rec_data[0] == CMD_IAP_INFO) && rec_len != 1u)) {
         OTA_IAP_CMDErrDeal();
         return;
     }
-    tmos_memcpy((unsigned char *)&iap_rec_data, rec_data, rec_len);
-    Rec_OTA_IAP_DataDeal();
+    ProcessOtaCommand(rec_data);
 }
 
 //��֧��Characteristic1 (0xFFE1)������

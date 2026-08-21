@@ -4,12 +4,13 @@
 #include "include/flash.h"
 #include "gattprofile.h"
 #include "peripheral.h"
-#include "health_v2.h"
-#include "splitac_service_v2.h"
+#include "health.h"
+#include "device_service.h"
 #include "hlw8110.h"
-#include "time_v2.h"
-#include "config_store_v2.h"
+#include "time_utils.h"
+#include "config_store.h"
 #include "ml307r.h"
+#include "ota_update.h"
 static volatile uint8_t Flag_20ms = 0;
 static volatile uint8_t Flag_100ms = 0;
 static volatile uint8_t Flag_1s = 0;
@@ -19,7 +20,7 @@ static int32_t rtcUnixOffset = 0;
 
 static uint8_t rtc_read_hardware_timestamp(uint32_t *timestamp)
 {
-    time_v2_fields_t fields;
+    time_fields_t fields;
     uint16_t year, mon, day, hour, min, sec;
 
     if(timestamp == 0) return 0;
@@ -30,7 +31,7 @@ static uint8_t rtc_read_hardware_timestamp(uint32_t *timestamp)
     fields.hour = (uint8_t)hour;
     fields.minute = (uint8_t)min;
     fields.second = (uint8_t)sec;
-    return TimeV2_ToUnix(&fields, timestamp);
+    return TimeUtil_ToUnix(&fields, timestamp);
 }
 //??60M????????????? 131072/60000000*255=0.557056s?
 void WWDG_Init(void){
@@ -46,14 +47,14 @@ void WWDG_Refresh(void){
 // ***??!!! ???????????,????tmos?????RTC_InitTime()??????. 
 void RTC_SetTimestamp(uint32_t timestamp)
 {
-    time_v2_fields_t fields;
+    time_fields_t fields;
     uint32_t hardwareTimestamp;
     uint32_t delta;
     if ((timestamp < 1672531200u) || (timestamp > 2147483000u)) { //2023-01-01 00:00:00 ~ 2038-01-19 11:03:20
         PRINT("RTC_SetTimestamp: invalid timestamp %lu\r\n", timestamp);
         return;
     }
-    if(!TimeV2_FromUnix(timestamp, &fields)) {
+    if(!TimeUtil_FromUnix(timestamp, &fields)) {
         PRINT("RTC_SetTimestamp: conversion failed %lu\r\n", timestamp);
         return;
     }
@@ -140,8 +141,8 @@ uint32_t Rtc_GetTimestamp(void){
 uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *mon, uint16_t *day,
                         uint16_t *hour, uint16_t *min, uint16_t *sec)
 {
-    time_v2_fields_t fields;
-    if(!TimeV2_FromUnix(Rtc_GetTimestamp(), &fields)) return 0;
+    time_fields_t fields;
+    if(!TimeUtil_FromUnix(Rtc_GetTimestamp(), &fields)) return 0;
     if(year) *year = fields.year;
     if(mon) *mon = fields.month;
     if(day) *day = fields.day;
@@ -155,13 +156,13 @@ uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *mon, uint16_t *day,
 void Period_20ms(void){
     if(Flag_20ms){
         Flag_20ms = 0;
-        if(ConnectivityV2_LoraEnabled()) Lora_Pro();
+        if(Connectivity_LoraEnabled()) Lora_Pro();
         else {
             Dev.errorCode.bit.lora = 0U;
             Dev.loraStatus = Status_Logining;
         }
         HLW8110_Poll();
-        HealthV2_Mark(HEALTH_V2_LORA);
+        Health_Mark(HEALTH_LORA);
     }
 }
 
@@ -172,11 +173,11 @@ void Period_100ms(void){
         Flag_100ms = 0;
         Check_IrBuf();
         Ir_Pro();
-        HealthV2_Mark(HEALTH_V2_IR);
-        if(HealthV2_Tick100ms(Dev.errorCode.u16Val)) WWDG_Refresh();
+        Health_Mark(HEALTH_IR);
+        if(Health_Tick100ms(Dev.errorCode.u16Val)) WWDG_Refresh();
         LED_Pro();
         // LED_GREEN(LocalTimestamp % 2);
-        if(SplitAcV2_IdentifyActive()){
+        if(DeviceService_IdentifyActive()){
             LED_GREEN_BLINK(FALSE, 0);
             LED_BLUE_BLINK(FALSE, 0);
             LED_WHITE_BLINK(TRUE, 100);
@@ -202,11 +203,10 @@ void Period_1s(void){
         /* RTC 只有秒级精度，每秒换算一次即可，避免在 60 MHz MCU 上每 100 ms 调用 mktime。 */
         LocalTimestamp = Rtc_GetTimestamp();
         Flash_Poll();
-        HealthV2_Mark(HEALTH_V2_FLASH | HEALTH_V2_PERIODIC);
+        Health_Mark(HEALTH_FLASH | HEALTH_PERIODIC);
         ADC_Pro();
         Rule_Pro();       //规则引擎: 每秒评估一次触发条件
         Meter_Update(1);  //计量更新: 累计运行时间和电量
-
         /*
          * 每分钟输出一条机器可解析的健康心跳，供 7 天实验室工具判断
          * 重启、配置漂移、队列滞留、控制成功率和外设恢复情况。
@@ -218,11 +218,11 @@ void Period_1s(void){
             if(++health_log_seconds >= 60U) {
                 const HLW8110_Status_t *meter = HLW8110_GetStatus();
                 health_log_seconds = 0U;
-                const ml307_status_v2_t *cellular = Ml307_GetStatus();
-                PRINT("#HEALTH up=%lu rev=%lu reset=%u fault=%04x lora=%u loraTick=%lu cell=%u/%u cellFail=%u irQ=%u/%u irTx=%u/%u/%u meterErr=%u meterFail=%u/%u/%02x\r\n",
+                const ml307_status_t *cellular = Ml307_GetStatus();
+                PRINT("#HEALTH up=%lu rev=%lu reset=%u fault=%04x lora=%u loraTick=%lu cell=%u/%u cellFail=%u irQ=%u/%u meterErr=%u meterFail=%u/%u/%02x\r\n",
                       (unsigned long)(CurTick / 1000U),
-                      (unsigned long)ConfigV2_GetRevision(),
-                      HealthV2_ConsecutiveResets(),
+                      (unsigned long)Config_GetRevision(),
+                      Health_ConsecutiveResets(),
                       Dev.errorCode.u16Val,
                       Dev.loraStatus,
                       (unsigned long)Timer_Lora,
@@ -231,9 +231,6 @@ void Period_1s(void){
                       cellular->consecutive_failures,
                       Ir_GetQueueDepth(),
                       Ir_GetQueueHighWater(),
-                      Ir_GetSubmittedCount(),
-                      Ir_GetRepeatedCount(),
-                      Ir_GetBusyRejectedCount(),
                       meter->communication_errors,
                       meter->last_error_reason,
                       meter->last_error_state,

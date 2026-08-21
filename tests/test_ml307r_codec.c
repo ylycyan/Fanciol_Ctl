@@ -13,7 +13,7 @@ static void test_publish_urc_and_lora_frame(void)
     };
     static const char line[] =
         "+MQTTURC: \"publish\",0,0,\"splitac/cmd\",36,36,0D01420A3412150000000000002A000000CB";
-    ml307_publish_v2_t publish;
+    ml307_publish_t publish;
     uint8_t decoded[18];
 
     assert(Ml307Codec_ParsePublish(line, (uint16_t)strlen(line), &publish) == ML307_CODEC_OK);
@@ -28,7 +28,7 @@ static void test_fragment_and_invalid_hex_are_rejected(void)
 {
     static const char fragment[] =
         "+MQTTURC: \"publish\",0,0,\"cmd\",36,8,0D01420A";
-    ml307_publish_v2_t publish;
+    ml307_publish_t publish;
     uint8_t decoded[18];
 
     assert(Ml307Codec_ParsePublish(fragment, (uint16_t)strlen(fragment), &publish) ==
@@ -62,7 +62,7 @@ static void test_hex_round_trip(void)
 static void test_network_clock_parses_timezone_quarters(void)
 {
     static const char line[] = "+CCLK: \"26/08/11,10:24:30+32\"";
-    ml307_clock_v2_t clock;
+    ml307_clock_t clock;
     assert(Ml307Codec_ParseClock(line, (uint16_t)strlen(line), &clock));
     assert(clock.year == 2026U && clock.month == 8U && clock.day == 11U);
     assert(clock.hour == 10U && clock.minute == 24U && clock.second == 30U);

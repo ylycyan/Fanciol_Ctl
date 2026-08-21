@@ -54,7 +54,7 @@ static uint8_t quoted(const char **cursor, const char *end,
 }
 
 int8_t Ml307Codec_ParsePublish(const char *line, uint16_t length,
-                               ml307_publish_v2_t *publish)
+                               ml307_publish_t *publish)
 {
     static const char prefix[] = "+MQTTURC:";
     const char *cursor;
@@ -104,7 +104,7 @@ static uint8_t two_digits(const char **cursor, const char *end, uint8_t *value)
 }
 
 uint8_t Ml307Codec_ParseClock(const char *line, uint16_t length,
-                              ml307_clock_v2_t *clock)
+                              ml307_clock_t *clock)
 {
     static const char prefix[] = "+CCLK:";
     const char *cursor;

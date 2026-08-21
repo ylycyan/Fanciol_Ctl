@@ -19,7 +19,7 @@
 typedef struct {
     uint16_t set_temperature_sf;  /* v0: 温度设定，small-float */
     uint8_t power_setting;        /* v1: 开关设定，0=关、1=开 */
-    uint16_t room_temperature_sf; /* v2: 环境温度，small-float */
+    uint16_t room_temperature_sf; /* 字段 v2: 环境温度，small-float */
     uint16_t work_mode_sf;        /* v3: 工作模式，small-float */
     uint16_t fan_speed_sf;        /* v4: 风速档位，small-float */
     uint16_t run_feedback;        /* v5: 运行反馈，负载电流 mA */

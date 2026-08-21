@@ -4,7 +4,7 @@
 #include <string.h>
 #include "lora.h"
 #include "board.h"
-#include "fixed_math_v2.h"
+#include "fixed_math.h"
 
 /**
  * @brief 初始化 LoRa 模块 (SX126x) 的 SPI 接口与控制引脚
@@ -49,7 +49,10 @@ static uint8_t Lora_WaitOnBusy(void) //高电平表示忙
     }
     while( (GPIOB_ReadPortPin(GPIO_Pin_12) != 0) && (timeout > 0) ){
         timeout--;
-        mDelaymS(1);
+        /* Typical SX126x commands release BUSY within hundreds of us.  A
+         * 100 us probe keeps the same bounded retry count without blocking
+         * BLE for as much as 100 ms when the radio is faulty. */
+        mDelayuS(100);
     }
     if(timeout == 0){ // write/read 异常
         PRINT("Lora Busy Timeout.\n");
@@ -519,7 +522,7 @@ void Lora_SetDio2AsRfSwitchCtrl( uint8_t enable )
 /**
  * @brief 设置射频中心频率
  *
- * 频率先经镜像校准，再换算为 SX126x 的 PLL 分频值（见 FixedMathV2_FrequencyHzToPll）。
+ * 频率先经镜像校准，再换算为 SX126x 的 PLL 分频值（见 FixedMath_FrequencyHzToPll）。
  */
 //101////////////////////////////////////////////////////////////////////
 void Lora_SetRfFrequency( uint32_t frequency )
@@ -529,7 +532,7 @@ void Lora_SetRfFrequency( uint32_t frequency )
 
     Lora_CalibrateImage( frequency );
 
-    freq = FixedMathV2_FrequencyHzToPll(frequency);
+    freq = FixedMath_FrequencyHzToPll(frequency);
 //	switch(frequency)
 //	{
 //		case 410000000: freq = 429916160; break;
@@ -789,11 +792,13 @@ void Lora_Tx(uint8_t *data, uint8_t len){
 
 /**
  * @brief 检查并取回收到的数据
- * @param data 接收缓冲区（调用方提供，最大 255 字节）
+ * @param data 接收缓冲区（调用方提供，最大 GATEWAY_LORA_MAX_PACKET 字节）
  * @param len  输出：实际收到的 payload 长度；未收到时置 0
  *
  * RX_DONE 置位时读取 payload 与 RSSI 后重新进入监听；
  * 非 RX 中断（如超时/CRC 错误）直接重新监听。
+ * payload 长度超过协议上限（128 字节）时丢弃该帧并恢复监听，
+ * 防止对端异常超长帧写穿接收缓冲区。
  */
 void Lora_CheckData(uint8_t *data, uint8_t *len){
     if(len == 0) return;
@@ -804,8 +809,11 @@ void Lora_CheckData(uint8_t *data, uint8_t *len){
 	irqRegs = Lora_GetIrqStatus();
     if( irqRegs == 0xFFFF ) return;
 	if((irqRegs & IRQ_RX_DONE) == IRQ_RX_DONE){
-		if(Lora_GetPayload(data, len, 0xFF) != 0U || Dev.errorCode.bit.lora) {
+		if(Lora_GetPayload(data, len, GATEWAY_LORA_MAX_PACKET) != 0U || Dev.errorCode.bit.lora) {
             *len = 0;
+            /* 超长帧或射频异常：丢弃并重新进入监听。射频错误时
+             * Lora_Listening 内部会因 lora 错误码直接返回，安全。 */
+            Lora_Listening();
             return;
         }
 		Lora_GetPacketStatus( &pktStatus );
@@ -841,5 +849,4 @@ void Lora_Listening(){
 	Lora_WriteRegisters(0x08AC, buf, 1);
 	Lora_SetRx(0);
 }
-
 

@@ -3,8 +3,8 @@
 #include "lora.h"
 #include "gateway_lora_codec.h"
 #include "hlw8110.h"
-#include "lora_recovery_v2.h"
-#include "relay_child_table_v2.h"
+#include "lora_recovery.h"
+#include "relay_child_table.h"
 #include "ml307r.h"
 #include <string.h>
 
@@ -51,7 +51,7 @@ typedef enum {
     RELAY_STATE_TX_BROADCAST
 } relay_state_t;
 
-static relay_child_table_v2_t childTable;
+static relay_child_table_t childTable;
 
 static relay_state_t relayState = RELAY_STATE_IDLE;
 static uint16_t relayTimer = 0;
@@ -61,14 +61,10 @@ static uint8_t relayPendingIsControl = 0;
 static uint8_t relaySeq = 0;
 static uint8_t relayPendingSeq = 0;
 static uint8_t childLastInnerSeq = 0;
-static uint16_t controlExecutedCount = 0;
-static uint16_t controlRejectedCount = 0;
-static lora_recovery_v2_t loraRecovery;
+static lora_recovery_t loraRecovery;
 static uint8_t loraRadioProfile = LORA_RADIO_PROFILE_UNKNOWN;
 static uint8_t loraRadioSf = 0;
 static uint8_t loraRadioBw = 0;
-static uint16_t loraRecoveryAttemptCount = 0;
-static uint16_t loraRecoverySuccessCount = 0;
 
 static void Relay_SendTargetFail(uint8_t *buf, uint8_t tag, uint16_t targetNodeId);
 
@@ -79,15 +75,6 @@ static uint32_t Lora_GetU32Le(const uint8_t *data)
            ((uint32_t)data[2] << 16) |
            ((uint32_t)data[3] << 24);
 }
-
-uint16_t Lora_GetControlExecutedCount(void) { return controlExecutedCount; }
-/* Retained in the diagnostic schema for compatibility. Commands are no longer
- * deduplicated, so this counter is always zero and consumes no RAM. */
-uint16_t Lora_GetControlDuplicateCount(void) { return 0U; }
-uint16_t Lora_GetControlRejectedCount(void) { return controlRejectedCount; }
-uint16_t Lora_GetRecoveryAttemptCount(void) { return loraRecoveryAttemptCount; }
-uint16_t Lora_GetRecoverySuccessCount(void) { return loraRecoverySuccessCount; }
-uint8_t Lora_GetRecoveryFailureCount(void) { return loraRecovery.consecutive_failures; }
 
 static uint32_t Lora_RegisterFrequencyHz(void)
 {
@@ -113,7 +100,7 @@ static uint8_t Lora_SwitchRegisterFreq(void)
     loraRadioProfile = LORA_RADIO_PROFILE_REGISTER;
     loraRadioSf = Dev.loraRegisterSf;
     loraRadioBw = Dev.loraRegisterBw;
-    LoraRecoveryV2_MarkSucceeded(&loraRecovery, CurTick);
+    LoraRecovery_MarkSucceeded(&loraRecovery, CurTick);
     return 1;
 }
 
@@ -131,7 +118,7 @@ static uint8_t Lora_SwitchWorkFreq(void)
     loraRadioProfile = LORA_RADIO_PROFILE_WORK;
     loraRadioSf = Dev.loraListenSf;
     loraRadioBw = Dev.loraListenBw;
-    LoraRecoveryV2_MarkSucceeded(&loraRecovery, CurTick);
+    LoraRecovery_MarkSucceeded(&loraRecovery, CurTick);
     return 1;
 }
 
@@ -196,31 +183,31 @@ static uint32_t ChildTable_TimeoutMs(void)
 
 static int8_t ChildTable_Find(uint16_t nodeId)
 {
-    return RelayChildTableV2_Find(&childTable, nodeId);
+    return RelayChildTable_Find(&childTable, nodeId);
 }
 
 static int8_t ChildTable_Update(uint16_t nodeId, uint8_t rssi)
 {
     if(nodeId == 0U || nodeId == Dev.nodeId) return -1;
-    return RelayChildTableV2_Touch(&childTable, nodeId, rssi, CurTick,
+    return RelayChildTable_Touch(&childTable, nodeId, rssi, CurTick,
                                    ChildTable_TimeoutMs());
 }
 
 static uint8_t ChildTable_IsOnline(uint8_t idx)
 {
-    return RelayChildTableV2_IsOnline(&childTable, idx, CurTick,
+    return RelayChildTable_IsOnline(&childTable, idx, CurTick,
                                       ChildTable_TimeoutMs());
 }
 
 static uint16_t ChildTable_GetBitmap(void)
 {
-    return RelayChildTableV2_OnlineBitmap(&childTable, CurTick,
+    return RelayChildTable_OnlineBitmap(&childTable, CurTick,
                                           ChildTable_TimeoutMs());
 }
 
 uint8_t Relay_GetChildCount(void)
 {
-    return RelayChildTableV2_OnlineCount(&childTable, CurTick,
+    return RelayChildTable_OnlineCount(&childTable, CurTick,
                                          ChildTable_TimeoutMs());
 }
 
@@ -632,7 +619,8 @@ static uint8_t Lora_ParseGatewayControl(const uint8_t *buf,
     return 1;
 }
 
-uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len)
+uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len,
+                               uint8_t allow_zero_gateway)
 {
     uint32_t parameterValue;
     uint32_t token;
@@ -646,7 +634,8 @@ uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len)
         return 0xFFU;
     tag = buf[1];
     targetNodeId = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
-    if(((uint16_t)buf[2] | ((uint16_t)buf[3] << 8)) != Dev.gatewayId ||
+    if((((uint16_t)buf[2] | ((uint16_t)buf[3] << 8)) != Dev.gatewayId &&
+        !(allow_zero_gateway && buf[2] == 0U && buf[3] == 0U)) ||
        targetNodeId != Dev.nodeId ||
        (tag != LORA_TAG_FANCOIL_CONTROL && tag != LORA_TAG_SPLITAC_CONTROL) ||
        !Lora_ParseGatewayControl(buf, len, tag, &operation, &operateTag,
@@ -657,11 +646,6 @@ uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len)
     /* LoRa and MQTT both use command-as-action semantics. The fixed protocol
      * token is retained on the wire, but never suppresses an operation. */
     result = ExecuteGatewayControl(operation, operateTag, parameterValue);
-    if(result == 0U) {
-        if(controlExecutedCount != 0xFFFFU) controlExecutedCount++;
-    } else if(controlRejectedCount != 0xFFFFU) {
-        controlRejectedCount++;
-    }
     PRINT("Control: op=%d operateTag=%u token=%08lx result=%d\n",
           operation, operateTag, (unsigned long)token, result);
     return result;
@@ -707,7 +691,7 @@ static void Lora_HandleSelfCommand(uint8_t *buf, uint8_t len, uint8_t tag)
     uint8_t result;
 
     if(tag == LORA_TAG_FANCOIL_CONTROL || tag == LORA_TAG_SPLITAC_CONTROL) {
-        result = Lora_ExecuteNodeControl(buf, len);
+        result = Lora_ExecuteNodeControl(buf, len, 0U);
         txLen = Lora_BuildControlResult(buf, tag, result);
     } else {
         txLen = Lora_BuildNodeReport(buf, tag, 0U);
@@ -738,13 +722,13 @@ void Lora_Pro(void)
 
     if(observedNodeId != Dev.nodeId || observedChannel != Dev.channel || observedRole != Dev.linkRole) {
         Relay_ResetState();
-        RelayChildTableV2_Init(&childTable, RELAY_MAX_ACTIVE_CHILD_NODES);
+        RelayChildTable_Init(&childTable, RELAY_MAX_ACTIVE_CHILD_NODES);
         childLastInnerSeq = 0;
         observedNodeId = Dev.nodeId;
         observedChannel = Dev.channel;
         observedRole = Dev.linkRole;
         loraRadioProfile = LORA_RADIO_PROFILE_UNKNOWN;
-        LoraRecoveryV2_Init(&loraRecovery, CurTick);
+        LoraRecovery_Init(&loraRecovery, CurTick);
 
         /*
          * 配置提交后不能继续沿用旧频道/旧身份的 Connected 会话。
@@ -766,19 +750,17 @@ void Lora_Pro(void)
         Relay_ResetState();
         loraRadioProfile = LORA_RADIO_PROFILE_UNKNOWN;
         Dev.loraStatus = Status_Logining;
-        if(!LoraRecoveryV2_ShouldAttempt(&loraRecovery, CurTick)) return;
+        if(!LoraRecovery_ShouldAttempt(&loraRecovery, CurTick)) return;
 
-        if(loraRecoveryAttemptCount != 0xFFFFU) loraRecoveryAttemptCount++;
-        PRINT("LoRa recovery attempt %u\n", loraRecoveryAttemptCount);
+        PRINT("LoRa recovery attempt\n");
         if((Dev.linkRole == LINK_CHILD ? Lora_SwitchWorkFreq() : Lora_SwitchRegisterFreq()) == 0U) {
-            LoraRecoveryV2_MarkFailed(&loraRecovery, CurTick);
+            LoraRecovery_MarkFailed(&loraRecovery, CurTick);
             PRINT("LoRa recovery failed, retry in %lu ms\n",
-                  (unsigned long)LoraRecoveryV2_CurrentDelayMs(&loraRecovery));
+                  (unsigned long)LoraRecovery_CurrentDelayMs(&loraRecovery));
             return;
         }
 
         Timer_Lora = LORA_SEC_TO_TICKS(13);
-        if(loraRecoverySuccessCount != 0xFFFFU) loraRecoverySuccessCount++;
         PRINT("LoRa recovery succeeded, relogin\n");
         return;
     }

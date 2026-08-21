@@ -1,133 +1,144 @@
-/********************************** (C) COPYRIGHT *******************************
- * File Name          : main.c
- * Author             : WCH
- * Version            : V1.1
- * Date               : 2019/11/05
- * Description        : 判断标志以及搬运代码到APP代码区
- *********************************************************************************
- * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
- * Attention: This software (modified or not) and binary are used for 
- * microcontroller manufactured by Nanjing Qinheng Microelectronics.
- *******************************************************************************/
-
-/******************************************************************************/
-/* 头文件包含 */
 #include "CH58x_common.h"
-#include "OTA.h"
+#include "../../Peripheral/APP/include/ota_update.h"
+#include <stddef.h>
 
-/* 记录当前的Image */
-unsigned char CurrImageFlag = 0xff;
+static ota_metadata_t metadata;
+static ota_metadata_t candidate;
+static uint32_t metadata_slot;
+static uint8_t copy_buffer[256] __attribute__((aligned(4)));
 
-/* flash的数据临时存储 */
-__attribute__((aligned(8))) uint8_t block_buf[16];
-
-#define jumpApp    ((void (*)(void))((int *)IMAGE_A_START_ADD))
-
-/*********************************************************************
- * GLOBAL TYPEDEFS
- */
-
-/*********************************************************************
- * @fn      SwitchImageFlag
- *
- * @brief   切换dataflash里的ImageFlag
- *
- * @param   new_flag    - 切换的ImageFlag
- *
- * @return  none
- */
-void SwitchImageFlag(uint8_t new_flag)
+static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint16_t length)
 {
-    uint16_t i;
-    uint32_t ver_flag;
-
-    /* 读取第一块 */
-    EEPROM_READ(OTA_DATAFLASH_ADD, (uint32_t *)&block_buf[0], 4);
-
-    /* 擦除第一块 */
-    EEPROM_ERASE(OTA_DATAFLASH_ADD, EEPROM_PAGE_SIZE);
-
-    /* 更新Image信息 */
-    block_buf[0] = new_flag;
-
-    /* 编程DataFlash */
-    EEPROM_WRITE(OTA_DATAFLASH_ADD, (uint32_t *)&block_buf[0], 4);
-}
-
-/*********************************************************************
- * @fn      jump_APP
- *
- * @brief   切换APP程序
- *
- * @return  none
- */
-void jump_APP(void)
-{
-    if(CurrImageFlag == IMAGE_IAP_FLAG)
-    {
-        __attribute__((aligned(8))) uint8_t flash_Data[1024];
-
-        uint8_t i;
-        FLASH_ROM_ERASE(IMAGE_A_START_ADD, IMAGE_A_SIZE);
-        for(i = 0; i < IMAGE_A_SIZE / 1024; i++)
-        {
-            FLASH_ROM_READ(IMAGE_B_START_ADD + (i * 1024), flash_Data, 1024);
-            FLASH_ROM_WRITE(IMAGE_A_START_ADD + (i * 1024), flash_Data, 1024);
-        }
-        SwitchImageFlag(IMAGE_A_FLAG);
-        // 销毁备份代码
-        FLASH_ROM_ERASE(IMAGE_B_START_ADD, IMAGE_A_SIZE);
+    uint16_t index;
+    uint8_t bit;
+    for(index = 0U; index < length; index++) {
+        crc ^= data[index];
+        for(bit = 0U; bit < 8U; bit++)
+            crc = (crc >> 1) ^ ((crc & 1U) ? 0xEDB88320UL : 0U);
     }
-    jumpApp();
+    return crc;
 }
 
-/*********************************************************************
- * @fn      ReadImageFlag
- *
- * @brief   读取当前的程序的Image标志，DataFlash如果为空，就默认是ImageA
- *
- * @return  none
- */
-void ReadImageFlag(void)
+static uint32_t metadata_crc(const ota_metadata_t *record)
 {
-    OTADataFlashInfo_t p_image_flash;
-
-    EEPROM_READ(OTA_DATAFLASH_ADD, &p_image_flash, 4);
-    CurrImageFlag = p_image_flash.ImageFlag;
-
-    /* 程序第一次执行，或者没有更新过，以后更新后在擦除DataFlash */
-    if((CurrImageFlag != IMAGE_A_FLAG) && (CurrImageFlag != IMAGE_B_FLAG) && (CurrImageFlag != IMAGE_IAP_FLAG))
-    {
-        CurrImageFlag = IMAGE_A_FLAG;
-    }
-
-    PRINT("Image Flag %02x\n", CurrImageFlag);
+    return crc32_update(0xFFFFFFFFUL, (const uint8_t *)record,
+                        (uint16_t)offsetof(ota_metadata_t, crc32)) ^ 0xFFFFFFFFUL;
 }
 
-/*********************************************************************
- * @fn      main
- *
- * @brief   主函数
- *
- * @return  none
- */
+static uint8_t metadata_valid(const ota_metadata_t *record)
+{
+    return record->magic == OTA_METADATA_MAGIC && record->schema == 1U &&
+           record->state <= OTA_STATE_INSTALLING &&
+           record->url_length < OTA_URL_SIZE &&
+           record->image_size <= OTA_MAX_IMAGE_SIZE &&
+           record->crc32 == metadata_crc(record);
+}
+
+static uint8_t metadata_load(void)
+{
+    uint8_t found = 0U;
+
+    if(EEPROM_READ(OTA_METADATA_A, &candidate, sizeof(candidate)) == 0U &&
+       metadata_valid(&candidate)) {
+        metadata = candidate;
+        metadata_slot = OTA_METADATA_A;
+        found = 1U;
+    }
+    if(EEPROM_READ(OTA_METADATA_B, &candidate, sizeof(candidate)) == 0U &&
+       metadata_valid(&candidate) &&
+       (!found || (int32_t)(candidate.generation - metadata.generation) > 0)) {
+        metadata = candidate;
+        metadata_slot = OTA_METADATA_B;
+        found = 1U;
+    }
+    return found;
+}
+
+static uint8_t metadata_save(void)
+{
+    uint32_t target = metadata_slot == OTA_METADATA_A ? OTA_METADATA_B : OTA_METADATA_A;
+
+    metadata.generation++;
+    metadata.crc32 = metadata_crc(&metadata);
+    if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
+       EEPROM_WRITE(target, &metadata, sizeof(metadata)) != 0U ||
+       EEPROM_READ(target, &candidate, sizeof(candidate)) != 0U ||
+       !metadata_valid(&candidate) || candidate.generation != metadata.generation)
+        return 0U;
+    metadata_slot = target;
+    return 1U;
+}
+
+static uint32_t image_crc(uint32_t address, uint32_t size)
+{
+    uint32_t offset = 0U;
+    uint32_t crc = 0xFFFFFFFFUL;
+
+    while(offset < size) {
+        uint16_t length = (uint16_t)((size - offset) > sizeof(copy_buffer) ?
+                                    sizeof(copy_buffer) : size - offset);
+        FLASH_ROM_READ(address + offset, copy_buffer, length);
+        crc = crc32_update(crc, copy_buffer, length);
+        offset += length;
+    }
+    return crc ^ 0xFFFFFFFFUL;
+}
+
+static uint8_t install_image(void)
+{
+    uint32_t offset;
+    uint32_t erase_size;
+
+    /* Validate staging before touching the currently runnable image. */
+    if(metadata.image_size == 0U || metadata.image_size > OTA_MAX_IMAGE_SIZE ||
+       image_crc(OTA_STAGING_ADDRESS, metadata.image_size) != metadata.image_crc32)
+        return 0U;
+
+    erase_size = (metadata.image_size + EEPROM_BLOCK_SIZE - 1U) &
+                 ~(EEPROM_BLOCK_SIZE - 1U);
+    for(offset = 0U; offset < erase_size; offset += EEPROM_BLOCK_SIZE) {
+        if(FLASH_ROM_ERASE(OTA_APP_ADDRESS + offset, EEPROM_BLOCK_SIZE) != 0U)
+            return 0U;
+    }
+    for(offset = 0U; offset < metadata.image_size; offset += sizeof(copy_buffer)) {
+        uint16_t length = (uint16_t)((metadata.image_size - offset) > sizeof(copy_buffer) ?
+                                    sizeof(copy_buffer) : metadata.image_size - offset);
+        FLASH_ROM_READ(OTA_STAGING_ADDRESS + offset, copy_buffer, length);
+        if(FLASH_ROM_WRITE(OTA_APP_ADDRESS + offset, copy_buffer, length) != 0U ||
+           FLASH_ROM_VERIFY(OTA_APP_ADDRESS + offset, copy_buffer, length) != 0U)
+            return 0U;
+    }
+    return image_crc(OTA_APP_ADDRESS, metadata.image_size) == metadata.image_crc32;
+}
+
+static void jump_to_app(void)
+{
+    ((void (*)(void))((int *)OTA_APP_ADDRESS))();
+}
+
 int main(void)
 {
-#if(defined(DCDC_ENABLE)) && (DCDC_ENABLE == TRUE)
-    PWR_DCDCCfg(ENABLE);
-#endif
     SetSysClock(CLK_SOURCE_PLL_60MHz);
-#if(defined(HAL_SLEEP)) && (HAL_SLEEP == TRUE)
-    GPIOA_ModeCfg(GPIO_Pin_All, GPIO_ModeIN_PU);
-    GPIOB_ModeCfg(GPIO_Pin_All, GPIO_ModeIN_PU);
-#endif
-#ifdef DEBUG
-    GPIOA_SetBits(bTXD1);
-    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA);
-    UART1_DefInit();
-#endif
-    ReadImageFlag();
-    jump_APP();
-}
 
-/******************************** endfile @ main ******************************/
+    if(metadata_load() && metadata.state == OTA_STATE_INSTALLING) {
+        if(install_image()) {
+            metadata.current_version = metadata.update_version;
+            metadata.state = OTA_STATE_IDLE;
+            metadata.url_length = 0U;
+            metadata.erased_bytes = 0U;
+            metadata.downloaded_bytes = 0U;
+            (void)metadata_save();
+        } else if(image_crc(OTA_STAGING_ADDRESS, metadata.image_size) != metadata.image_crc32) {
+            /* A bad staging image must not prevent the known application from booting. */
+            metadata.state = OTA_STATE_IDLE;
+            metadata.url_length = 0U;
+            (void)metadata_save();
+        } else {
+            /* The running region may be partially copied. Retry from the intact staging image. */
+            SYS_ResetExecute();
+        }
+    }
+
+    jump_to_app();
+    while(1) {}
+}

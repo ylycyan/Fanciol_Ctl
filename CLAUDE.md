@@ -40,7 +40,7 @@ CH583M MCU ─── SX126x LoRa (421 MHz mesh → gateway)
 
 **Operating modes:** Local (mode=0, rules fire IR commands autonomously) and Remote (mode=1, LoRa gateway controls device).
 
-**OTA scheme:** A/B firmware images at flash offsets 0x1000 and 0x37000, 12 KB bootloader at 0x6D000. Firmware is received over BLE OTA profile (service 0xFEE0).
+**OTA scheme:** the application runs at 0x1000; 0x37000 is download staging only; the 12 KB updater at 0x6D000 verifies and copies a staged image. Firmware can arrive through BLE service 0xFEE0 or ML307R HTTP Range.
 
 ## Key Directories
 

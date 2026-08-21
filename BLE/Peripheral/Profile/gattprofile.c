@@ -591,6 +591,7 @@ static bStatus_t simpleProfile_WriteAttrCB(uint16_t connHandle, gattAttribute_t 
                 {
                     uint16_t cfg = BUILD_UINT16(pValue[0], pValue[1]);
                     PRINT("CCCD write: 0x%04x\n", cfg);
+                    (void)cfg;
                 }
                 break;
 

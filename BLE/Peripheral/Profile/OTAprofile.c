@@ -20,7 +20,7 @@ static uint8_t OTAProfileChar = 0;
 static uint8_t OTAProfileCharUserDesp[12] = "OTA Channel";
 
 static uint8_t OTAProfileReadLen;
-static uint8_t OTAProfileReadBuf[IAP_LEN];
+static uint8_t OTAProfileReadBuf[20];
 static uint8_t OTAProfileWriteLen;
 static uint8_t OTAProfileWriteBuf[IAP_LEN];
 
@@ -144,7 +144,7 @@ static bStatus_t OTAProfile_WriteAttrCB(uint16_t connHandle, gattAttribute_t *pA
         {
             case OTAPROFILE_CHAR_UUID:
             {
-                if(status == SUCCESS)
+                if(status == SUCCESS && len <= IAP_LEN)
                 {
                     uint16_t i;
                     uint8_t *p_rec_buf;
@@ -156,6 +156,7 @@ static bStatus_t OTAProfile_WriteAttrCB(uint16_t connHandle, gattAttribute_t *pA
                         OTAProfileWriteBuf[i] = p_rec_buf[i];
                     }
                 }
+                else status = ATT_ERR_INVALID_VALUE_SIZE;
                 break;
             }
 
@@ -192,4 +193,3 @@ bStatus_t OTAProfile_SendData(unsigned char paramID, unsigned char *p_data, unsi
 
     return status;
 }
-

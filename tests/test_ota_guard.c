@@ -1,11 +1,39 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "../BLE/Peripheral/APP/include/ota_guard.h"
+#include "../BLE/Peripheral/APP/include/ota_update.h"
+#include "../BLE/Peripheral/APP/include/device_protocol.h"
 
 #define APP_B_START 0x00037000UL
 #define IAP_START   0x0006D000UL
 #define BLOCK_SIZE  4096UL
+
+static uint8_t dataflash[0x8000];
+static uint8_t codeflash[480 * 1024];
+
+static uint32_t crc32(const uint8_t *data, uint16_t length)
+{
+    uint32_t crc = 0xFFFFFFFFUL;
+    uint16_t index;
+    uint8_t bit;
+    for(index = 0; index < length; index++) {
+        crc ^= data[index];
+        for(bit = 0; bit < 8; bit++) crc = (crc >> 1) ^ ((crc & 1U) ? 0xEDB88320UL : 0U);
+    }
+    return crc ^ 0xFFFFFFFFUL;
+}
+
+uint32_t Config_Crc32(const uint8_t *data, uint16_t length) { return crc32(data, length); }
+uint32_t Test_EepromRead(uint32_t address, void *buffer, uint32_t length) { memcpy(buffer, dataflash + address, length); return 0; }
+uint32_t Test_EepromErase(uint32_t address, uint32_t length) { memset(dataflash + address, 0xFF, length); return 0; }
+uint32_t Test_EepromWrite(uint32_t address, const void *buffer, uint32_t length) { memcpy(dataflash + address, buffer, length); return 0; }
+uint32_t Test_FlashErase(uint32_t address, uint32_t length) { memset(codeflash + address, 0xFF, length); return 0; }
+uint32_t Test_FlashWrite(uint32_t address, const void *buffer, uint32_t length) { memcpy(codeflash + address, buffer, length); return 0; }
+uint32_t Test_FlashVerify(uint32_t address, const void *buffer, uint32_t length) { return memcmp(codeflash + address, buffer, length) != 0; }
+void Test_FlashRead(uint32_t address, void *buffer, uint32_t length) { memcpy(buffer, codeflash + address, length); }
+uint32_t SYS_GetLastResetSta(void) { return 0; }
 
 static void test_partition_bounds(void)
 {
@@ -77,11 +105,47 @@ static void test_failed_operations_do_not_advance(void)
     assert(guard.state == OTA_GUARD_IDLE);
 }
 
+static void test_remote_download_install_and_cancel(void)
+{
+    uint8_t image[64];
+    uint8_t status;
+    uint8_t index;
+    memset(dataflash, 0xFF, sizeof(dataflash));
+    memset(codeflash, 0xFF, sizeof(codeflash));
+    for(index = 0; index < sizeof(image); index++) image[index] = (uint8_t)(index + 1U);
+
+    Ota_Init();
+    assert(Ota_BeginRemote(0x00021600UL, sizeof(image), crc32(image, sizeof(image)),
+                           "http://fw/device.bin", 20) == DEVICE_STATUS_OK);
+    assert(Ota_EraseStep() == DEVICE_STATUS_OK);
+    assert(Ota_EraseStep() == DEVICE_STATUS_OK);
+    assert(Ota_Write(0, image, sizeof(image)) == DEVICE_STATUS_OK);
+    Ota_Init();
+    assert(Ota_Get()->state == OTA_STATE_VERIFYING);
+    do { status = Ota_VerifyStep(); } while(status == DEVICE_STATUS_BUSY);
+    assert(status == DEVICE_STATUS_OK);
+    assert(Ota_Get()->state == OTA_STATE_READY);
+    assert(Ota_MarkInstall() == DEVICE_STATUS_OK);
+    assert(Ota_Get()->state == OTA_STATE_INSTALLING);
+    assert(Ota_Cancel() == DEVICE_STATUS_CONFLICT);
+}
+
+static void test_interrupted_local_update_is_discarded(void)
+{
+    memset(dataflash, 0xFF, sizeof(dataflash));
+    Ota_Init();
+    assert(Ota_BeginLocal(0x00021600UL, 4096U, 0x12345678UL) == DEVICE_STATUS_OK);
+    Ota_Init();
+    assert(Ota_Get()->state == OTA_STATE_IDLE);
+}
+
 int main(void)
 {
     test_partition_bounds();
     test_order_and_contiguous_ranges();
     test_failed_operations_do_not_advance();
-    puts("OTA partition/session guard: PASS");
+    test_remote_download_install_and_cancel();
+    test_interrupted_local_update_is_discarded();
+    puts("OTA partition/session and staging metadata: PASS");
     return 0;
 }

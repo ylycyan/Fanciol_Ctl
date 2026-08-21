@@ -1,47 +1,62 @@
-# ML307R 4G MQTT 集成说明
+# ML307R MQTT 与 OTA
 
-## 硬件与构建
+## 接线与产品边界
 
-| CH583 | ML307R | 用途 |
-|---|---|---|
-| PA9 / CH583 UART1 TX | UART0_RXD | 发送到 ML307R 主 AT 口 |
-| PA8 / CH583 UART1 RX | UART0_TXD | 接收 ML307R AT 响应与 MQTT URC |
-| PB22 | RESET | 低电平 350 ms，随后浮空释放（模拟开漏） |
+- CH583 UART1：PA9 TX → ML307R 主 AT 口 UART0_RXD，PA8 RX ← UART0_TXD，PB14 → RESET。
+- 使用普通 MQTT/TCP 和 HTTP，不使用 TLS、证书、用户名、密码、JSON 或 MCU 加密库。
+- MQTT 业务载荷直接复用固定 LoRa 报文的连续 Hex；LoRa 空口和网关协议不变。
+- CRC16/CRC32 只校验传输损坏，不提供公网链路防篡改能力。
 
-两端必须共地，ML307R 供电和峰值电流能力按模组硬件规格设计。CH583 使用 UART1，但 ML307R 侧必须连接主 AT 接口 UART0；不能接 ML307R 的辅助 UART1 或 DBG UART。三根线指控制信号，不包含电源和地。
+## MQTT
 
-第三根控制线必须接模组的 `RESET`，不能接 `BOOT_MODE`（有些底板丝印为 `BOOT0`）。`BOOT_MODE` 在模组启动前被拉低会进入强制下载模式，不能承担运行期故障复位。RESET 网络应按硬件手册使用外部上拉/开集电路，并预留 10 nF～0.1 μF 滤波；不要让 CH583 直接向模组 1.8 V 域推挽输出高电平。
+设备 ID 由 CH583 的 6 字节 UID 派生为 `SACxxxxxxxxxxxx`。Client ID 留空时自动使用设备 ID，也可由内部人员在管理页覆盖。
 
-若连接的是裸模组而不是已带电平转换的开发板，UART 是 1.8 V 电平，PA9/PA8 与模组 UART0_RXD/TXD 之间必须做双向电平适配。CH583 侧 PA8 使用上拉输入稳定线路，因此不能绕过电平转换直接连接裸模组；PA9 的 3.3 V 发送电平同样不能直接进入模组。
+| 主题 | QoS | 内容 |
+|---|---:|---|
+| `{prefix}/{uid}/u` | 可配置 | 固定状态/控制结果报文 Hex |
+| `{prefix}/{uid}/d` | 0 | 固定控制报文 Hex |
+| `{prefix}/{uid}/m/u` | 1 | OTA 结果 Hex |
+| `{prefix}/{uid}/m/d` | 1 | OTA 指令 Hex |
 
-- `platformio run -e ch583`：量产构建，不输出串口日志，UART1 专供 ML307R。
-- `platformio run -e ch583_debug`：调试构建，日志位于 UART2 PA6/PA7；UART1 仍专供 ML307R。
-- 原 FEE0/FEE1 OTA 服务和 Flash 分布保持不变。
+业务控制不缓存、不去重，每个节点 ID 和 CRC 有效的下行报文执行一次。管理页配置 APN、PDP 类型、Broker、端口、Client ID、主题前缀、保活、上报周期、QoS 和 Clean Session。Broker 未配置时模组仍完成基础初始化并保留 UART1 AT 调试能力。
 
-## MQTT 配置与行为
+失败恢复始终继续：5/10/20/40/60/120/240/300 秒退避，之后固定 300 秒。先重连 MQTT，再恢复网络，最后硬复位模组。管理页保留当前阶段、SIM/网络/MQTT 状态、信号、最近错误、重试时间和 UART 收发量，不周期读取 IMEI、ICCID 等非运行必需信息。
 
-设备通过 BLE V2 保存 `transportMask`、MQTT 主机/端口、QoS、客户端 ID、用户名、密码、上报/控制主题、APN、保活和上报周期。空客户端 ID 自动使用 `splitac-XXXX`，其中 `XXXX` 为节点 ID。首版使用模组的 TCP MQTT 指令，不启用 TLS/证书；服务器端口可以自定义，但不能直接填写仅接受 MQTTS 的端口。
+## 远程 OTA 管理帧
 
-MQTT 载荷不再封装 JSON，而是直接复用固定网关 LoRa 帧。为避免 ML307R 的按行 URC 被原始二进制中的 `0x00/CR/LF` 截断，线上使用连续 Hex 文本：每个 LoRa 字节编码为两个十六进制字符，不带 `0x`、空格或分隔符。18 字节状态/控制帧因此固定为 36 个 ASCII 字符。
+管理主题载荷为：
 
-- 周期状态：现有 eDeviceFancoil(20) 六值上报帧，`tag=0`。
-- 下行控制：现有固定网关 18 字节操作帧，`CMD=0x0D、tag=1、gatewayId、nodeId、operation、operateTag、parameter、token、CRC`。
-- 控制回复：成功仍为 `tag=1` 六值状态帧；失败仍为现有 5 字节失败帧，对应 10 个 Hex 字符。
+`C7 | 01 | type | flags | transactionId:u16LE | payloadLength:u16LE | payload | CRC16-CCITT-FALSE:u16LE`
 
-Hex 解码后，固件直接调用 LoRa 使用的 CRC、网关/节点 ID 校验、操作解析、红外执行和结果构造，不再保留 MQTT 独立操作码或结果模型。LoRa 与 MQTT 统一采用“指令即动作”语义：每收到一条合法控制帧都立即执行一次，即使上一条结果还在上报、或 `token` 与上一条相同，也不会等待、合并或去重。连续突发时每条动作都会执行，MQTT 状态主题只保留最新待上报结果；需要逐条确认时，服务端应等待一次回复后再发送下一条。
+| type | 用途 | payload |
+|---:|---|---|
+| 4 | 操作结果 | `requestType + status` |
+| 5 | OTA 提议 | `version:u32 + size:u32 + crc32:u32 + urlLength:u8 + httpUrl` |
+| 6 | OTA 安装 | `version:u32` |
+| 7 | OTA 取消 | 空 |
+| 8 | OTA 状态 | 空查询或状态结果 |
 
-## 长稳策略
+远程 OTA URL 必须是 `http://` 且直接指向链接地址为 `0x1000` 的应用 `.bin`。ML307R 使用 HTTP Range 分块下载，CH583 每 4 KB 保存一次断点并在完整下载后计算 CRC32。校验完成后等待安装指令。
 
-- UART RX 中断只写 128 B 环形缓冲区，解析、AT 状态迁移和 TX 均在主循环限额处理，不在中断中阻塞。
-- ML307R 主 AT UART0 默认可能工作在自适应波特率。启动阶段会有界重发裸 `AT` 完成同步；管理页手动指令在零接收时最多补发两次，并显示本次 TX/RX 字节增量。
-- 仅 LoRa 模式不初始化 UART1、不开 UART1 中断；启用 4G 时也会先完成模组复位和 6 秒启动等待，再打开 UART1。失败退避期间 UART1 再次关闭，避免未安装、未上电或复位中的模组让浮动 RX/线路错误持续抢占 BLE/TMOS。
-- 连接必须依次确认 `CPIN`、`CEREG`、MQTT `conn` 和 `suback`；QoS 1 上报必须收到 `puback` 才计为成功。
-- 4G 注册成功后读取 `AT+CCLK?`，按返回的四分之一时区换算 UTC 并校准 RTC 软件偏移；因此仅 4G 模式也能运行周定时。连续三次未取得网络时钟时先保证 MQTT 接入，后续重连再校时。
-- 失败后以 5 秒起步指数退避，最大 300 秒，再硬件复位模组重新接入；计数饱和，不会长期运行后回绕为零。
-- 4G 状态机本身纳入看门狗健康监督，运营商或 Broker 离线只触发重连，不触发整机复位。
-- 不在 Flash 排队遥测，只保存通信参数。恢复网络后发送当前最新状态，避免高频擦写和过期数据挤占有限 RAM。
-- LoRa 与 4G 完全独立；双链路任一在线即视为远程在线，两者都离线才进入现有本地自治。
+## 固件分区与安装
 
-## 现场排查顺序
+Flash 地址不变：入口 `0x00000/4 KB`、运行应用 `0x01000/216 KB`、暂存区 `0x37000/216 KB`、Updater `0x6D000/12 KB`。应用上限为 208 KB。
 
-在小程序“管理 → 4G MQTT 诊断”依次检查：模组阶段、SIM、网络注册、MQTT、RSSI、最近错误、连续失败和 UART 溢出。参数修改在“实施 → 通信”单独保存并读回。只有确需重新初始化模组时使用“重新接入 4G”，不会复位 CH583，也不会中断 LoRa。
+应用始终从 `0x1000` 运行，`0x37000` 只保存待升级镜像。收到安装指令后 updater 校验暂存镜像、复制到运行区、再次校验并启动。复制阶段掉电时安装标记仍保留，重启后从完整暂存镜像重新复制；没有试运行、健康确认、双链接镜像或运行槽切换状态机。
+
+## 构建与打包
+
+```powershell
+platformio run -e ch583 -e ch583_updater -e ch583_jump
+python tools/splitac_production.py factory --output firmware-factory.hex
+python tools/splitac_production.py package `
+  --app BLE/Peripheral/.pio/build/ch583/firmware.bin `
+  --version 2.21.0 --output firmware.sacfw `
+  --remote-output firmware.bin
+```
+
+- `firmware-factory.hex`：WCH-Link 首次烧录，包含入口、运行应用和 updater，不覆盖 DataFlash。
+- `firmware.sacfw`：微信小程序 BLE OTA 选择的单镜像升级包。
+- `firmware.bin`：放在 HTTP 服务器供 4G OTA 下载。
+
+量产配置仍可使用 `splitac_production.py provision` 生成 DataFlash 镜像；不生成密码、凭据或二维码。

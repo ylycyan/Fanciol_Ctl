@@ -13,7 +13,7 @@ typedef enum {
 } ota_guard_state_t;
 
 /*
- * OTA 只保留必要的顺序和范围状态，避免异常/乱序 BLE 包写到 AppB 之外。
+ * OTA 只保留必要的顺序和范围状态，避免异常/乱序 BLE 包写到暂存区之外。
  * 结构体无动态分配，CH583 常驻 RAM 开销不超过 20 字节。
  */
 typedef struct {

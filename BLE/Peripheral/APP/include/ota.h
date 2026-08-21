@@ -21,6 +21,7 @@
 #define CMD_IAP_VERIFY         0x82
 #define CMD_IAP_END            0x83
 #define CMD_IAP_INFO           0x84
+#define CMD_IAP_MANIFEST       0x85
 
 #define IAP_LEN                247
 

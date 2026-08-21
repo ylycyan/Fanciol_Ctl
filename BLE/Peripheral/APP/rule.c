@@ -21,7 +21,7 @@
 #include "timer.h"
 #include "gateway_lora_codec.h"
 #include "hlw8110.h"
-#include "config_store_v2.h"
+#include "config_store.h"
 #include "ml307r.h"
 
 #define METER_DAY_MAX_RUN_MINUTES 1440U
@@ -318,7 +318,7 @@ void Rule_Pro(void)
 
     /* 远程模式只要任一已选链路在线就由云端接管；本地模式始终自治。 */
     if (BITGET(Dev.mode, 0) &&
-        ((ConnectivityV2_LoraEnabled() && Dev.loraStatus >= Status_Connected) ||
+        ((Connectivity_LoraEnabled() && Dev.loraStatus >= Status_Connected) ||
          Ml307_IsOnline())) return;
     for (i = 0; i < MAX_RULES; i++) {
         DEV_RULE_T *r = &Dev.rules[i];

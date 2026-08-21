@@ -1,7 +1,7 @@
 ENTRY( _start )
 
 /*
- * The BLE callback -> V2 protocol -> configuration commit chain uses more
+ * The BLE callback -> device protocol -> configuration commit chain uses more
  * than the vendor example's 512-byte stack. Reserve the verified product
  * minimum so a control/configuration request cannot silently corrupt RAM.
  */
