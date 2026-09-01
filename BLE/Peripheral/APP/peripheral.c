@@ -104,7 +104,6 @@ uint32_t EraseAdd = 0;
 uint32_t EraseBlockNum = 0;
 uint32_t EraseBlockCnt = 0;
 
-uint8_t VerifyStatus = 0;
 static ota_guard_t otaGuard;
 static device_reassembler_t deviceReassembler;
 static uint8_t deviceFrame[DEVICE_MAX_FRAME_SIZE];
@@ -269,17 +268,13 @@ void Peripheral_Init()
         GAP_SetParamValue(TGAP_ADV_SCAN_REQ_NOTIFY, ENABLE);
     }
 
-    // Setup the GAP Bond Manager
+    // The provisioning and OTA characteristics do not require link pairing.
+    // Keep BLE connectionless from an identity perspective: the production
+    // UID remains the only device identifier and no passkey/bond is stored.
     {
-        uint32_t passkey = 0;
-        uint8_t  pairMode = GAPBOND_PAIRING_MODE_WAIT_FOR_REQ;
-        uint8_t  mitm = FALSE;
-        uint8_t  bonding = TRUE;
-        uint8_t  ioCap = GAPBOND_IO_CAP_DISPLAY_ONLY;
-        GAPBondMgr_SetParameter(GAPBOND_PERI_DEFAULT_PASSCODE, sizeof(uint32_t), &passkey);
+        uint8_t  pairMode = GAPBOND_PAIRING_MODE_NO_PAIRING;
+        uint8_t  bonding = FALSE;
         GAPBondMgr_SetParameter(GAPBOND_PERI_PAIRING_MODE, sizeof(uint8_t), &pairMode);
-        GAPBondMgr_SetParameter(GAPBOND_PERI_MITM_PROTECTION, sizeof(uint8_t), &mitm);
-        GAPBondMgr_SetParameter(GAPBOND_PERI_IO_CAPABILITIES, sizeof(uint8_t), &ioCap);
         GAPBondMgr_SetParameter(GAPBOND_PERI_BONDING_ENABLED, sizeof(uint8_t), &bonding);
     }
 
@@ -858,19 +853,14 @@ static void __attribute__((noinline)) SendDeviceFrame(const uint8_t *frame, uint
 static uint8_t peripheralBuildAdvData(void)
 {
     uint8_t p = 0;
-    uint8_t uid[8] __attribute__((aligned(4)));
     uint8_t localName[23];
     static const char hex[]="0123456789ABCDEF";
     const char *baseName = DeviceProfile_GetName();
     uint8_t nameLen = (uint8_t)strlen(baseName);
     uint16_t shortId;
-    GET_UNIQUE_ID(uid);
-    /*
-     * GET_UNIQUE_ID() returns the six-byte factory BLE MAC followed by two
-     * zero bytes. Some MAC byte positions are manufacturer/batch constants
-     * (observed as 0x1970), so fold all six bytes into the installer short ID.
-     */
-    shortId = DeviceProtocol_Crc16(uid, 6u);
+    const char *deviceUid = DeviceUid_Get();
+    shortId = DeviceUid_Valid(deviceUid) ?
+              DeviceProtocol_Crc16((const uint8_t *)deviceUid, DEVICE_UID_LENGTH) : 0U;
     if(nameLen > 22)
     {
         nameLen = 22;
@@ -927,9 +917,8 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
 
         case SIMPLEPROFILE_CHAR2:
         {
-            if(!DeviceService_MaintenanceActive() || len == 0u || len > SIMPLEPROFILE_CHAR2_LEN) {
-                PRINT("IR passthrough rejected: maintenance=%u len=%u\r\n",
-                       DeviceService_MaintenanceActive(), len);
+            if(len == 0u || len > SIMPLEPROFILE_CHAR2_LEN) {
+                PRINT("IR passthrough rejected: len=%u\r\n", len);
                 break;
             }
             PrintHex("char2 rx",pValue,len);
@@ -1018,8 +1007,6 @@ static void ProcessOtaCommand(const uint8_t *command)
             EraseAdd = OpAdd;
             EraseBlockCnt = 0;
 
-            VerifyStatus = 0;
-
             PRINT("IAP_ERASE start:%08x num:%d\r\n", (int)OpAdd, (int)EraseBlockNum);
 
             if(!localOtaActive ||
@@ -1038,28 +1025,9 @@ static void ProcessOtaCommand(const uint8_t *command)
         }
         case CMD_IAP_VERIFY:
         {
-            uint8_t status = 0;
-
-            OpParaDataLen = command[1];
-
-            OpAdd = (uint32_t)command[2];
-            OpAdd |= ((uint32_t)command[3] << 8);
-            OpAdd = local_ota_address((uint16_t)OpAdd);
-            PRINT("IAP_VERIFY: %08x len:%d \r\n", (int)OpAdd, (int)OpParaDataLen);
-
-            if(!OtaGuard_CanVerify(&otaGuard, OpAdd, (uint16_t)OpParaDataLen)) {
-                PRINT("IAP_VERIFY rejected: state/range/order\r\n");
-                OTA_IAP_SendCMDDealSta(0xFF);
-                break;
-            }
-            status = FLASH_ROM_VERIFY(OpAdd, (uint8_t *)command + 4, OpParaDataLen);
-            OtaGuard_EndVerify(&otaGuard, (uint16_t)OpParaDataLen, status == SUCCESS);
-            if(status)
-            {
-                PRINT("IAP_VERIFY err \r\n");
-            }
-            VerifyStatus = status;
-            OTA_IAP_SendCMDDealSta(status);
+            /* Legacy client compatibility.  New clients skip this command;
+             * the complete image receives one CRC32 check at IAP_END. */
+            OTA_IAP_SendCMDDealSta(localOtaActive ? 0U : 0xFFU);
             break;
         }
         case CMD_IAP_END:
@@ -1068,7 +1036,7 @@ static void ProcessOtaCommand(const uint8_t *command)
 
             if(!OtaGuard_CanFinish(&otaGuard) ||
                otaGuard.program_next != Ota_StagingAddress() + Ota_Get()->image_size) {
-                PRINT("IAP_END rejected: image not fully verified\r\n");
+                PRINT("IAP_END rejected: image not fully programmed\r\n");
                 OTA_IAP_SendCMDDealSta(0xFF);
                 break;
             }
@@ -1145,7 +1113,7 @@ void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char 
 
     rec_len = w_len;
     rec_data = p_data;
-    if(!DeviceService_MaintenanceActive() || rec_data == NULL || rec_len == 0 || rec_len > IAP_LEN) {
+    if(rec_data == NULL || rec_len == 0 || rec_len > IAP_LEN) {
         OTA_IAP_CMDErrDeal();
         return;
     }

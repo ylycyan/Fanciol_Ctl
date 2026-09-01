@@ -162,7 +162,6 @@ void Period_20ms(void){
             Dev.loraStatus = Status_Logining;
         }
         HLW8110_Poll();
-        Health_Mark(HEALTH_LORA);
     }
 }
 
@@ -173,8 +172,7 @@ void Period_100ms(void){
         Flag_100ms = 0;
         Check_IrBuf();
         Ir_Pro();
-        Health_Mark(HEALTH_IR);
-        if(Health_Tick100ms(Dev.errorCode.u16Val)) WWDG_Refresh();
+        WWDG_Refresh();
         LED_Pro();
         // LED_GREEN(LocalTimestamp % 2);
         if(DeviceService_IdentifyActive()){
@@ -203,10 +201,9 @@ void Period_1s(void){
         /* RTC 只有秒级精度，每秒换算一次即可，避免在 60 MHz MCU 上每 100 ms 调用 mktime。 */
         LocalTimestamp = Rtc_GetTimestamp();
         Flash_Poll();
-        Health_Mark(HEALTH_FLASH | HEALTH_PERIODIC);
         ADC_Pro();
         Rule_Pro();       //规则引擎: 每秒评估一次触发条件
-        Meter_Update(1);  //计量更新: 累计运行时间和电量
+        Meter_Update(1);  //计量更新: 汇总 HLW8110 累计电量
         /*
          * 每分钟输出一条机器可解析的健康心跳，供 7 天实验室工具判断
          * 重启、配置漂移、队列滞留、控制成功率和外设恢复情况。

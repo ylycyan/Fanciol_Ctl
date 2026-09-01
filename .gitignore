@@ -2,3 +2,4 @@ BLE/Peripheral/obj/*
 .pio/
 .native-test/
 .tmp-*.exe
+__pycache__/

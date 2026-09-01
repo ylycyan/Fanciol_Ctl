@@ -6,8 +6,8 @@
  * 主循环每 20ms 调用 HLW8110_Poll() 推进状态机：
  *   - 上电/故障后先拉低 RX 引脚复位芯片（手册要求 >9.15ms）
  *   - 依次读取并回写 SYSCON/EMUCON/EMUCON2 配置并回读校验
- *   - 校准系数（RMS_IAC / RMS_UC / POWER_PAC）后进入周期采样
- *   - 每 2 秒采样 功率/电流/电压 一组，全部通过范围校验后才对外发布
+ *   - 读取校准系数（RMS_IAC / RMS_UC / POWER_PAC / EnergyAC）后进入周期采样
+ *   - 每 2 秒采样功率/电流/电压，并读取 Energy_PA 的硬件累计增量
  * 通信异常自动整芯片复位重连；连续失败达到阈值后置位功率故障码。
  */
 #include "CH58x_common.h"
@@ -25,13 +25,16 @@
 
 #define HLW_REG_SYSCON                0x00U
 #define HLW_REG_EMUCON                0x01U
+#define HLW_REG_HFCONST               0x02U
 #define HLW_REG_EMUCON2               0x13U
 #define HLW_REG_RMS_IA                0x24U
 #define HLW_REG_RMS_U                 0x26U
+#define HLW_REG_ENERGY_PA             0x28U
 #define HLW_REG_POWER_PA              0x2CU
 #define HLW_REG_RMS_IAC               0x70U
 #define HLW_REG_RMS_UC                0x72U
 #define HLW_REG_POWER_PAC             0x73U
+#define HLW_REG_ENERGY_AC             0x76U
 
 #define HLW_SYSCON_ADC1ON             (1U << 9)
 #define HLW_SYSCON_ADC2ON             (1U << 10)
@@ -42,10 +45,12 @@
 #define HLW_EMUCON_HPFU_OFF           (1U << 4)
 #define HLW_EMUCON_HPFIA_OFF          (1U << 5)
 #define HLW_EMUCON_DC_MODE            (1U << 9)
+#define HLW_EMUCON_PARUN              (1U << 0)
 #define HLW_EMUCON2_VREF_SEL          (1U << 0)
 #define HLW_EMUCON2_PEAK_EN           (1U << 1)
 #define HLW_EMUCON2_WAVE_EN           (1U << 5)
 #define HLW_EMUCON2_CHS_IB            (1U << 7)
+#define HLW_EMUCON2_ENERGY_PA_KEEP    (1U << 10)
 
 #define HLW_RESPONSE_TIMEOUT_MS       80UL
 #define HLW_BOOT_WAIT_MS              100UL
@@ -70,14 +75,17 @@ typedef enum {
     HLW_STATE_CONFIG_VERIFY_SYSCON,
     HLW_STATE_CONFIG_VERIFY_EMUCON,
     HLW_STATE_CONFIG_VERIFY_EMUCON2,
+    HLW_STATE_CAL_HFCONST,
     HLW_STATE_CAL_RMS_IAC,
     HLW_STATE_CAL_RMS_UC,
     HLW_STATE_CAL_POWER_PAC,
+    HLW_STATE_CAL_ENERGY_AC,
     HLW_STATE_SELECT_A,
     HLW_STATE_IDLE,
     HLW_STATE_SAMPLE_POWER,
     HLW_STATE_SAMPLE_CURRENT,
-    HLW_STATE_SAMPLE_VOLTAGE
+    HLW_STATE_SAMPLE_VOLTAGE,
+    HLW_STATE_SAMPLE_ENERGY
 } hlw_state_t;
 
 typedef enum {
@@ -93,6 +101,11 @@ static uint32_t next_sample_ms;
 static uint16_t rms_iac;
 static uint16_t rms_uc;
 static uint16_t power_pac;
+static uint16_t energy_ac;
+static uint16_t hfconst;
+static uint64_t energy_fraction;
+static uint64_t pending_energy_tenth_ws;
+static uint8_t discard_next_energy;
 static uint16_t config_syscon;
 static uint16_t config_emucon;
 static uint16_t config_emucon2;
@@ -373,19 +386,21 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
         meter_state = HLW_STATE_CONFIG_READ_EMUCON;
         break;
     case HLW_STATE_CONFIG_READ_EMUCON:
-        /* EMUCON：关闭直流模式与高低通滤波器旁路，恢复交流测量 */
+        /* EMUCON：交流测量，并开启 A 通道硬件电量累计。 */
         config_emucon = parse_be16(response);
         desired_emucon = (uint16_t)(config_emucon &
                                     (uint16_t)~(HLW_EMUCON_DC_MODE | HLW_EMUCON_HPFIA_OFF |
                                                 HLW_EMUCON_HPFU_OFF));
+        desired_emucon = (uint16_t)(desired_emucon | HLW_EMUCON_PARUN);
         meter_state = HLW_STATE_CONFIG_READ_EMUCON2;
         break;
     case HLW_STATE_CONFIG_READ_EMUCON2:
-        /* EMUCON2：选内部基准，关闭波形/峰值捕获与 B 通道 */
+        /* Energy_PA 使用读后清零模式，每轮读到的就是新增电量。 */
         config_emucon2 = parse_be16(response);
         desired_emucon2 = (uint16_t)((config_emucon2 &
                                       (uint16_t)~(HLW_EMUCON2_CHS_IB | HLW_EMUCON2_WAVE_EN |
-                                                  HLW_EMUCON2_PEAK_EN)) |
+                                                  HLW_EMUCON2_PEAK_EN |
+                                                  HLW_EMUCON2_ENERGY_PA_KEEP)) |
                                      HLW_EMUCON2_VREF_SEL);
         meter_state = HLW_STATE_CONFIG_UNLOCK;
         break;
@@ -402,6 +417,11 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
     case HLW_STATE_CONFIG_VERIFY_EMUCON2:
         raw = parse_be16(response);
         if(raw != desired_emucon2) { begin_recovery(now, HLW8110_ERROR_CONFIG_VERIFY, (raw << 16) | desired_emucon2); return; }
+        meter_state = HLW_STATE_CAL_HFCONST;
+        break;
+    case HLW_STATE_CAL_HFCONST:
+        hfconst = parse_be16(response);
+        if(hfconst == 0U) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, hfconst); return; }
         meter_state = HLW_STATE_CAL_RMS_IAC;
         break;
     case HLW_STATE_CAL_RMS_IAC:
@@ -420,6 +440,12 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
         /* 校准系数：功率 */
         power_pac = parse_be16(response);
         if(power_pac == 0U || power_pac == 0xFFFFU) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, power_pac); return; }
+        meter_state = HLW_STATE_CAL_ENERGY_AC;
+        break;
+    case HLW_STATE_CAL_ENERGY_AC:
+        /* 0xFFFF 是 EnergyAC 的合法出厂默认值。 */
+        energy_ac = parse_be16(response);
+        if(energy_ac == 0U) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, energy_ac); return; }
         meter_state = HLW_STATE_SELECT_A;
         break;
     case HLW_STATE_SAMPLE_POWER:
@@ -457,6 +483,20 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
         meter_status.last_sample_ms = now;
         Dev.loadPower = meter_status.power_w_x10;
         Dev.errorCode.bit.power = 0;
+        meter_state = HLW_STATE_SAMPLE_ENERGY;
+        break;
+    case HLW_STATE_SAMPLE_ENERGY:
+        raw = parse_be24(response);
+        if(discard_next_energy) {
+            /* 清零边界前的芯片脉冲不能重新计入新的累计值。 */
+            discard_next_energy = 0U;
+            energy_fraction = 0U;
+        } else if(raw != 0U) {
+            uint64_t delta = HLW8110_CalcEnergyTenthWattSeconds(raw, energy_ac, hfconst,
+                                                                &energy_fraction);
+            if(UINT64_MAX - pending_energy_tenth_ws < delta) pending_energy_tenth_ws = UINT64_MAX;
+            else pending_energy_tenth_ws += delta;
+        }
         meter_state = HLW_STATE_IDLE;
         next_sample_ms = now + HLW_SAMPLE_INTERVAL_MS;
         break;
@@ -476,6 +516,11 @@ void HLW8110_Init(void)
     rms_iac = 0;
     rms_uc = 0;
     power_pac = 0;
+    energy_ac = 0;
+    hfconst = 0;
+    energy_fraction = 0;
+    pending_energy_tenth_ws = 0;
+    discard_next_energy = 0;
     sample_power_w_x10 = 0;
     sample_current_ma = 0;
     sample_voltage_dv = 0;
@@ -580,6 +625,9 @@ void HLW8110_Poll(void)
     case HLW_STATE_CONFIG_VERIFY_EMUCON2:
         service_read_state(HLW_REG_EMUCON2, 2U, now);
         return;
+    case HLW_STATE_CAL_HFCONST:
+        service_read_state(HLW_REG_HFCONST, 2U, now);
+        return;
     case HLW_STATE_CAL_RMS_IAC:
         service_read_state(HLW_REG_RMS_IAC, 2U, now);
         return;
@@ -588,6 +636,9 @@ void HLW8110_Poll(void)
         return;
     case HLW_STATE_CAL_POWER_PAC:
         service_read_state(HLW_REG_POWER_PAC, 2U, now);
+        return;
+    case HLW_STATE_CAL_ENERGY_AC:
+        service_read_state(HLW_REG_ENERGY_AC, 2U, now);
         return;
     case HLW_STATE_SELECT_A:
         /* 校准完成后再次选通道 A，进入空闲采样 */
@@ -611,6 +662,9 @@ void HLW8110_Poll(void)
     case HLW_STATE_SAMPLE_VOLTAGE:
         service_read_state(HLW_REG_RMS_U, 3U, now);
         return;
+    case HLW_STATE_SAMPLE_ENERGY:
+        service_read_state(HLW_REG_ENERGY_PA, 3U, now);
+        return;
     default:
         begin_recovery(now, HLW8110_ERROR_STATE, meter_state);
         return;
@@ -623,4 +677,26 @@ void HLW8110_Poll(void)
 const HLW8110_Status_t *HLW8110_GetStatus(void)
 {
     return &meter_status;
+}
+
+uint64_t HLW8110_TakeEnergyTenthWattSeconds(void)
+{
+    uint64_t value = pending_energy_tenth_ws;
+    pending_energy_tenth_ws = 0U;
+    return value;
+}
+
+void HLW8110_ClearEnergyAccumulator(void)
+{
+    pending_energy_tenth_ws = 0U;
+    energy_fraction = 0U;
+    discard_next_energy = 1U;
+
+    /* 空闲时立刻读清 Energy_PA，缩短清零边界；采样中则在本轮末尾处理。 */
+    if(meter_state == HLW_STATE_IDLE) {
+        request_active = 0U;
+        response_count = 0U;
+        meter_state = HLW_STATE_SAMPLE_ENERGY;
+        state_started_ms = CurTick;
+    }
 }

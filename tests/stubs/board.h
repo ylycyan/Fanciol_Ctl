@@ -164,7 +164,7 @@ typedef struct {
 } t_dev;
 
 void Meter_Update(uint32_t dt_sec);
-uint16_t Meter_GetTodayRunMinutes(void);
+uint8_t Meter_ClearEnergy(void);
 
 extern t_dev Dev;
 

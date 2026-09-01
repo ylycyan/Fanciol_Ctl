@@ -3,9 +3,7 @@
 #include "CONFIG.h"
 #include "peripheral.h"
 #include "gattprofile.h"
-#include "device_service.h"
 #include "ir_control_map.h"
-#include "ir_reliability.h"
 IRBUF_t IrBuf = {0};
 uint8_t IrLearnChannel = 0; //当前正在学习的通道索引 (0-9)
 
@@ -19,21 +17,12 @@ static volatile uint16_t irTxOffset = 0;
 static volatile uint8_t irTxActive = 0;
 static volatile uint8_t irTxWaitResponse = 0;
 static uint32_t irOperationDeadline = 0;
-static ir_reliability_t irReliability;
-
-static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd, uint8_t allowRepeat);
+static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd);
 
 static uint8_t Ir_IsControlPathIdle(void)
 {
     return !irTxActive &&
-           IrBuf.isFinish &&
-           irReliability.repeat_cmd == 0U;
-}
-
-static uint8_t Ir_IsIdempotentCommand(IR_CMD_t cmd)
-{
-    /* 相对温度键重复发送会多加/减一度，其余内部码均表示绝对状态。 */
-    return cmd != IR_CMD_TEMP_UP && cmd != IR_CMD_TEMP_DOWN;
+           IrBuf.isFinish;
 }
 
 static void Ir_TxFillFifo(void)
@@ -75,8 +64,6 @@ static void Ir_TxAbort(void)
 
 void Ir_Pro(void)
 {
-    uint8_t cmd;
-
     /*
      * 匹配、学习、原始透传以及正在发送的长帧拥有红外模块独占权。
      * 旧逻辑在“尚未收到第一个字节”时会误发规则命令并覆盖 IrBuf.type。
@@ -96,11 +83,6 @@ void Ir_Pro(void)
         return;
     }
 
-    if(irReliability.repeat_cmd != 0U) {
-        if(IrReliability_TakeDueRepeat(&irReliability, CurTick, &cmd)) {
-            (void)Ir_SubmitInternalCommand((IR_CMD_t)cmd, 0U);
-        }
-    }
 }
 
 //检测红外模块接收缓冲区数据
@@ -125,7 +107,7 @@ void Check_IrBuf(void){ //
     }
     PrintHex("uart3 rx",IrBuf.rxbuf,IrBuf.rxlen);
     GAPRole_GetParameter(GAPROLE_STATE,&state);
-    if(state == GAPROLE_CONNECTED && DeviceService_MaintenanceActive()){ //仅开发者维护窗口开放原始透传
+    if(state == GAPROLE_CONNECTED){
         peripheralCharNotify(SIMPLEPROFILE_CHAR2, IrBuf.rxbuf, IrBuf.rxlen);
     }
     #if(IR_MODULE == HXD039B)
@@ -208,7 +190,6 @@ void IR_Init(void){ //uart3
     irTxWaitResponse = 0U;
     irOperationDeadline = 0U;
     irPipelineHighWater = 0U;
-    IrReliability_Init(&irReliability);
     GPIOPinRemap(ENABLE,RB_PIN_UART3);
     GPIOB_SetBits(bTXD3_);
     GPIOB_ModeCfg(bRXD3_, GPIO_ModeIN_PU);      // RXD-配置上拉输入
@@ -267,7 +248,7 @@ void UART3_IRQHandler(void){
      }
 }
 
-static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd, uint8_t allowRepeat)
+static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd)
 {
     #if(IR_MODULE == HXD039B)
     if(Dev.errorCode.bit.irMatch ||
@@ -289,18 +270,12 @@ static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd, uint8_t allowRepeat)
     IrBuf.txbuf[3] = (uint8_t)Dev.irType;
     IrBuf.txbuf[4] = (uint8_t)cmd;
     if(!Ir_TxStartCopy(IrBuf.txbuf, 5U, 0U)) return 0U;
-    if(allowRepeat && Ir_IsIdempotentCommand(cmd)) {
-        (void)IrReliability_ScheduleRepeat(&irReliability,
-                                              (uint8_t)cmd,
-                                              CurTick);
-    }
     #if _IR_INFO_
     PrintHex("ir tx", IrBuf.txbuf, 5U);
     #endif
     return 1U;
     #elif (IR_MODULE == xx)
     (void)cmd;
-    (void)allowRepeat;
     return 0U;
     #endif
 }
@@ -315,12 +290,11 @@ uint8_t Ir_ExecuteVerified(IR_CMD_t cmd)
     if(!Ir_IsControlPathIdle()) {
         return 0;
     }
-    IrReliability_CancelRepeat(&irReliability);
     /*
      * 不同 HXD039B 固件对普通控制命令没有一致回执，因此这里的成功只表示
      * 配置有效且命令已提交到 UART；现场实施仍由用户确认空调真实响应。
      */
-    return Ir_SubmitInternalCommand(cmd, 1U);
+    return Ir_SubmitInternalCommand(cmd);
 }
 
 uint8_t Ir_ConfiguredCommandSupported(IR_CMD_t cmd)
@@ -357,7 +331,6 @@ uint8_t Ir_StartMatch(void)
     if(!Ir_IsControlPathIdle()) {
         return 0;
     }
-    IrReliability_CancelRepeat(&irReliability);
     Dev.errorCode.bit.irMatch = 0;
     IrBuf.rxlen = 0;
     irLastRxLen = 0;
@@ -380,7 +353,6 @@ uint8_t Ir_StartLearning(uint8_t ch)
     if(!Ir_IsControlPathIdle()) {
         return 0;
     }
-    IrReliability_CancelRepeat(&irReliability);
     Dev.errorCode.bit.irLearn = 0;
     IrLearnChannel = ch;
     IrBuf.rxlen = 0;
@@ -419,7 +391,6 @@ uint8_t Ir_SendLearnedVerified(uint8_t ch)
     if(!Ir_IsControlPathIdle()) {
         return 0;
     }
-    IrReliability_CancelRepeat(&irReliability);
     /* 学习码可能是切换/增减键，只发送一次，并由现场人员确认真实响应。 */
     return Ir_SubmitLearned(ch);
 }
@@ -429,11 +400,9 @@ uint8_t Ir_CancelOperation(void)
     if(IrBuf.type != IR_TYPE_MATCH &&
        IrBuf.type != IR_TYPE_LEARNing &&
        IrBuf.type != IR_TYPE_RAW) {
-        IrReliability_CancelRepeat(&irReliability);
         return 1;
     }
     Ir_TxAbort();
-    IrReliability_CancelRepeat(&irReliability);
     IrBuf.type = IR_TYPE_NORMAL;
     IrBuf.isFinish = 1;
     IrBuf.rxlen = 0;
@@ -456,7 +425,6 @@ static void Ir_RecalculateLearnNum(void)
 uint8_t Ir_ResetLearned(uint8_t ch)
 {
     if(ch >= MAX_IR_LEARNNUM || !Ir_IsControlPathIdle()) return 0;
-    IrReliability_CancelRepeat(&irReliability);
     memset(&Dev.learnCode[ch], 0, sizeof(Dev.learnCode[ch]));
     Ir_RecalculateLearnNum();
     SaveIrInfo();
@@ -466,7 +434,6 @@ uint8_t Ir_ResetLearned(uint8_t ch)
 uint8_t Ir_ResetAllLearned(void)
 {
     if(!Ir_IsControlPathIdle()) return 0;
-    IrReliability_CancelRepeat(&irReliability);
     memset(Dev.learnCode, 0, sizeof(Dev.learnCode));
     Dev.learnNum = 0;
     SaveIrInfo();
@@ -488,7 +455,6 @@ uint8_t Ir_PrepareConfigurationChange(void)
     if(!Ir_IsControlPathIdle()) {
         return 0U;
     }
-    IrReliability_CancelRepeat(&irReliability);
     return 1U;
 }
 
@@ -497,7 +463,6 @@ uint8_t Ir_TransmitRawAsync(const uint8_t *data, uint16_t len)
     if(!Ir_IsControlPathIdle()) {
         return 0U;
     }
-    IrReliability_CancelRepeat(&irReliability);
     IrBuf.type = IR_TYPE_RAW;
     IrBuf.rxlen = 0U;
     irLastRxLen = 0U;
@@ -512,7 +477,7 @@ uint8_t Ir_TransmitRawAsync(const uint8_t *data, uint16_t len)
 
 uint8_t Ir_GetQueueDepth(void)
 {
-    return (irTxActive || !IrBuf.isFinish || irReliability.repeat_cmd != 0U)
+    return (irTxActive || !IrBuf.isFinish)
         ? 1U
         : 0U;
 }

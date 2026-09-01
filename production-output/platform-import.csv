@@ -1,0 +1,3 @@
+﻿device_id,node_id,firmware_version,production_batch,module_at_version,mqtt_client_id,upload_topic,control_topic,dataflash_address,dataflash_file
+SAC2608A0000001,0x1001,2.21.6,202608-A,MBRH0S01,SAC2608A0000001,sac/v1/SAC2608A0000001/u,sac/v1/SAC2608A0000001/d,0x70000,SAC2608A0000001-dataflash.bin
+SAC2608A0000002,0x1002,2.21.6,202608-A,MBRH0S01,SAC2608A0000002,sac/v1/SAC2608A0000002/u,sac/v1/SAC2608A0000002/d,0x70000,SAC2608A0000002-dataflash.bin

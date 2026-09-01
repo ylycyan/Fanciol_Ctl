@@ -8,5 +8,7 @@ typedef struct {
 } HLW8110_Status_t;
 
 const HLW8110_Status_t *HLW8110_GetStatus(void);
+uint64_t HLW8110_TakeEnergyTenthWattSeconds(void);
+void HLW8110_ClearEnergyAccumulator(void);
 
 #endif

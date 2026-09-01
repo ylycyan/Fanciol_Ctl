@@ -28,22 +28,14 @@ typedef struct __attribute__((packed)) {
     uint8_t ir_action_type;
     uint16_t ir_type;
     uint8_t ir_index;
-    uint32_t expected_revision;
 } staged_config_t;
 
-static staged_config_t staged_config;
-static uint8_t staged_config_valid;
-static char device_identity[16];
-static uint8_t device_identity_len;
 static uint32_t identify_until;
-static uint32_t maintenance_until;
 
 static uint16_t get16(const uint8_t *p){return (uint16_t)p[0]|((uint16_t)p[1]<<8);}
-static uint32_t get32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
 static void put16(uint8_t *p,uint16_t v){p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);}
 static void put32(uint8_t *p,uint32_t v){p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);p[2]=(uint8_t)(v>>16);p[3]=(uint8_t)(v>>24);}
 static uint8_t before(uint32_t a,uint32_t b){return (int32_t)(a-b)<0;}
-static char hex_digit(uint8_t value){value&=0x0Fu;return (char)(value<10u?'0'+value:'A'+value-10u);}
 
 static uint32_t current_capability_bitmap(void)
 {
@@ -65,36 +57,31 @@ static uint32_t current_capability_bitmap(void)
 
 void DeviceService_Init(void)
 {
-    uint8_t uid[8] __attribute__((aligned(4)));
-    uint16_t short_id;
-    staged_config_valid=0;identify_until=0;maintenance_until=0;
-    GET_UNIQUE_ID(uid);short_id=DeviceProtocol_Crc16(uid,6u);memcpy(device_identity,"SplitAC-",8);device_identity[8]=hex_digit((uint8_t)(short_id>>12));device_identity[9]=hex_digit((uint8_t)(short_id>>8));device_identity[10]=hex_digit((uint8_t)(short_id>>4));device_identity[11]=hex_digit((uint8_t)short_id);device_identity_len=12;
+    identify_until=0;
 }
-void DeviceService_ResetSession(void){staged_config_valid=0;identify_until=0;maintenance_until=0;}
+void DeviceService_ResetSession(void){identify_until=0;}
 uint8_t DeviceService_IdentifyActive(void){if(!identify_until)return 0;if(!before(CurTick,identify_until)){identify_until=0;return 0;}return 1;}
-uint8_t DeviceService_MaintenanceActive(void){if(!maintenance_until)return 0;if(!before(CurTick,maintenance_until)){maintenance_until=0;return 0;}return 1;}
 
 static uint8_t parse_config(const uint8_t *p,uint16_t len,staged_config_t *cfg)
 {
     if(len!=15u)return DEVICE_STATUS_INVALID_ARG;
     memset(cfg,0,sizeof(*cfg));
     cfg->node_id=get16(p);cfg->channel=p[2];cfg->link_role=p[3];cfg->parent_id=get16(p+4);cfg->work_mode=p[6];
-    cfg->ir_action_type=p[7];cfg->ir_type=get16(p+8);cfg->ir_index=p[10];cfg->expected_revision=get32(p+11);
+    cfg->ir_action_type=p[7];cfg->ir_type=get16(p+8);cfg->ir_index=p[10];
     if(!cfg->node_id||cfg->channel>32u||cfg->link_role>LINK_CHILD||cfg->work_mode>1u||cfg->ir_action_type>ACT_TYPE_LEARN)return DEVICE_STATUS_INVALID_ARG;
     if(cfg->link_role==LINK_CHILD&&(!cfg->parent_id||cfg->parent_id==cfg->node_id))return DEVICE_STATUS_INVALID_ARG;
     if(cfg->link_role!=LINK_CHILD)cfg->parent_id=0;
     if(cfg->ir_index!=0xFFu&&cfg->ir_index>=IR_BRAND_COUNT)return DEVICE_STATUS_INVALID_ARG;
-    if(cfg->expected_revision!=Config_GetRevision())return DEVICE_STATUS_CONFLICT;
     return DEVICE_STATUS_OK;
 }
 
 static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules)
 {
-    uint8_t count,i;uint16_t off=1;uint32_t revision;
+    uint8_t count,i;uint16_t off=1;
     if(len<5u)return DEVICE_STATUS_INVALID_ARG;
     count=p[0];
     if(count>MAX_RULES||len!=(uint16_t)(1u+(uint16_t)count*14u+4u))return DEVICE_STATUS_INVALID_ARG;
-    revision=get32(p+len-4u);if(revision!=Config_GetRevision())return DEVICE_STATUS_CONFLICT;
+    /* The trailing revision is retained for wire compatibility only. */
     memset(rules,0,sizeof(Dev.rules));
     for(i=0;i<count;i++,off=(uint16_t)(off+14u)){
         DEV_RULE_T *r=&rules[i];uint16_t start=get16(p+off+3),end=get16(p+off+5),threshold=get16(p+off+7),hysteresis=get16(p+off+9),minimum=get16(p+off+11);
@@ -213,39 +200,40 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         payload[8]=(uint8_t)Dev.irActType;put16(payload+9,Ir_GetLearnedMask());*payload_len=11;break;
     case DEVICE_OP_GET_DEVICE_INFO:{
         const char *name=DeviceProfile_GetName();uint8_t name_len=(uint8_t)strlen(name);
-        payload[0]=2;payload[1]=device_identity_len;memcpy(payload+2,device_identity,device_identity_len);
-        payload[2u+device_identity_len]=name_len;memcpy(payload+3u+device_identity_len,name,name_len);
-        *payload_len=(uint16_t)(3u+device_identity_len+name_len);break;}
+        const char *device_uid=DeviceUid_Get();
+        uint8_t device_uid_len=DeviceUid_Valid(device_uid)?DEVICE_UID_LENGTH:0u;
+        payload[0]=2;payload[1]=device_uid_len;memcpy(payload+2,device_uid,device_uid_len);
+        payload[2u+device_uid_len]=name_len;memcpy(payload+3u+device_uid_len,name,name_len);
+        *payload_len=(uint16_t)(3u+device_uid_len+name_len);break;}
     case DEVICE_OP_IDENTIFY:{
         uint8_t mode=req->payload_len?req->payload[0]:1u;if(req->payload_len>1u||(mode!=1u&&mode!=2u)){status=DEVICE_STATUS_INVALID_ARG;break;}
-        identify_until=CurTick+10000u;if(mode==2u)maintenance_until=CurTick+1800000u;payload[0]=mode;*payload_len=1;break;}
+        identify_until=CurTick+10000u;payload[0]=mode;*payload_len=1;break;}
     case DEVICE_OP_GET_STATE:{
         const HLW8110_Status_t *meter=HLW8110_GetStatus();
         int16_t room=Dev.roomTempX10;
         payload[0]=(Dev.onOff==PowerOn)?1u:0u;payload[1]=(uint8_t)Dev.ctlMode;put16(payload+2,(uint16_t)(Dev.temSet*10u));put16(payload+4,(uint16_t)room);
         payload[6]=(uint8_t)Dev.wind;put16(payload+7,Dev.errorCode.u16Val);payload[9]=(uint8_t)Dev.loraStatus;
-        payload[10]=(Dev.mode==0u||!transport_online())?1u:0u;put32(payload+11,Dev.meter.run_minutes);put32(payload+15,Config_GetRevision());
+        payload[10]=(Dev.mode==0u||!transport_online())?1u:0u;put32(payload+11,0u);put32(payload+15,Config_GetRevision());
         payload[19]=meter->valid;put16(payload+20,meter->voltage_dv);put16(payload+22,meter->current_ma);put16(payload+24,meter->power_w_x10);
         put32(payload+26,Dev.meter.energy_wh);put16(payload+30,meter->communication_errors);*payload_len=32;break;}
     case DEVICE_OP_GET_CONFIG:
         put16(payload,Dev.nodeId);payload[2]=(uint8_t)Dev.channel;payload[3]=Dev.linkRole;put16(payload+4,Dev.parentRelayId);payload[6]=Dev.mode;
         payload[7]=(uint8_t)Dev.irActType;put16(payload+8,Dev.irType);payload[10]=Dev.irIdx;put32(payload+11,Config_GetRevision());*payload_len=15;break;
     case DEVICE_OP_VALIDATE_CONFIG:
-        status=parse_config(req->payload,req->payload_len,&staged_config);if(status==DEVICE_STATUS_OK)staged_config_valid=1;break;
+        status=parse_config(req->payload,req->payload_len,&cfg);break;
     case DEVICE_OP_COMMIT_CONFIG:
     {
         DEV_RULE_T rollback_rules[MAX_RULES];
         status=parse_config(req->payload,req->payload_len,&cfg);if(status!=DEVICE_STATUS_OK)break;
-        if(staged_config_valid&&memcmp(&cfg,&staged_config,sizeof(cfg))!=0){status=DEVICE_STATUS_CONFLICT;break;}
         if((cfg.ir_action_type!=(uint8_t)Dev.irActType||cfg.ir_type!=Dev.irType||cfg.ir_index!=Dev.irIdx)&&
            !Ir_PrepareConfigurationChange()){status=DEVICE_STATUS_BUSY;break;}
-        staged_config_t previous={Dev.nodeId,(uint8_t)Dev.channel,Dev.linkRole,Dev.parentRelayId,Dev.mode,(uint8_t)Dev.irActType,Dev.irType,Dev.irIdx,Config_GetRevision()};
+        staged_config_t previous={Dev.nodeId,(uint8_t)Dev.channel,Dev.linkRole,Dev.parentRelayId,Dev.mode,(uint8_t)Dev.irActType,Dev.irType,Dev.irIdx};
         memcpy(rollback_rules,Dev.rules,sizeof(rollback_rules));
         Dev.nodeId=cfg.node_id;Dev.channel=cfg.channel;Dev.linkRole=cfg.link_role;Dev.parentRelayId=cfg.parent_id;Dev.mode=cfg.work_mode;
         Dev.irActType=(ActType_t)cfg.ir_action_type;Dev.irType=cfg.ir_type;Dev.irIdx=cfg.ir_index;
         Dev.errorCode.bit.irMatch=(Dev.irActType==ACT_TYPE_IR&&
             (Dev.irIdx>=IR_BRAND_COUNT||!Dev.irType||Dev.irType==0xFFFFu))?1u:0u;
-        status=Config_Commit(cfg.expected_revision);if(status==DEVICE_STATUS_OK){revision=Config_GetRevision();put32(payload,revision);*payload_len=4;staged_config_valid=0;Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
+        status=Config_Commit(Config_GetRevision());if(status==DEVICE_STATUS_OK){revision=Config_GetRevision();put32(payload,revision);*payload_len=4;Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
         else {Dev.nodeId=previous.node_id;Dev.channel=previous.channel;Dev.linkRole=previous.link_role;Dev.parentRelayId=previous.parent_id;Dev.mode=previous.work_mode;Dev.irActType=(ActType_t)previous.ir_action_type;Dev.irType=previous.ir_type;Dev.irIdx=previous.ir_index;
             Dev.errorCode.bit.irMatch=(Dev.irActType==ACT_TYPE_IR&&
                 (Dev.irIdx>=IR_BRAND_COUNT||!Dev.irType||Dev.irType==0xFFFFu))?1u:0u;
@@ -266,10 +254,9 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
     case DEVICE_OP_SET_RULES:
     {
         DEV_RULE_T previous_rules[MAX_RULES];
-        uint32_t expected=req->payload_len>=4u?get32(req->payload+req->payload_len-4u):0u;
         memcpy(previous_rules,Dev.rules,sizeof(previous_rules));
         status=parse_rules(req->payload,req->payload_len,Dev.rules);
-        if(status==DEVICE_STATUS_OK)status=Config_Commit(expected);
+        if(status==DEVICE_STATUS_OK)status=Config_Commit(Config_GetRevision());
         if(status!=DEVICE_STATUS_OK)memcpy(Dev.rules,previous_rules,sizeof(previous_rules));
         else{put32(payload,Config_GetRevision());*payload_len=4u;}
         break;
@@ -306,14 +293,16 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         put16(payload+24,meter->communication_errors);put32(payload+26,Dev.meter.energy_wh);
         *payload_len=30;break;}
     case DEVICE_OP_GET_LORA_PARAMS:
-        if(!DeviceService_MaintenanceActive()){status=DEVICE_STATUS_UNAUTHORIZED;break;}
         payload[0]=Dev.loraRegisterSf;payload[1]=Dev.loraRegisterBw;
         payload[2]=Dev.loraListenSf;payload[3]=Dev.loraListenBw;*payload_len=4;break;
     case DEVICE_OP_SET_LORA_PARAMS:
-        if(!DeviceService_MaintenanceActive()){status=DEVICE_STATUS_UNAUTHORIZED;break;}
         if(req->payload_len!=4u){status=DEVICE_STATUS_INVALID_ARG;break;}
         status=LoraParams_Save(req->payload[0],req->payload[1],req->payload[2],req->payload[3]);
         if(status==DEVICE_STATUS_OK){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
+        break;
+    case DEVICE_OP_CLEAR_ENERGY:
+        if(req->payload_len!=0u){status=DEVICE_STATUS_INVALID_ARG;break;}
+        status=Meter_ClearEnergy()==0u?DEVICE_STATUS_OK:DEVICE_STATUS_IO_ERROR;
         break;
     case DEVICE_OP_GET_CONNECTIVITY_CONFIG:
         status=Connectivity_Encode(payload,DEVICE_MAX_PAYLOAD,payload_len);
@@ -363,14 +352,12 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         payload[56]=15u;memcpy(payload+57,Ml307_GetDeviceId(),15u);*payload_len=72u;break;
     }
     case DEVICE_OP_RESTART_CELLULAR:
-        if(!DeviceService_MaintenanceActive()){status=DEVICE_STATUS_UNAUTHORIZED;break;}
         if(req->payload_len!=0u){status=DEVICE_STATUS_INVALID_ARG;break;}
         Ml307_Restart();break;
     case DEVICE_OP_CELLULAR_AT:
     {
         const ml307_at_status_t *at;
         uint8_t response_length;
-        if(!DeviceService_MaintenanceActive()){status=DEVICE_STATUS_UNAUTHORIZED;break;}
         if(req->payload_len<1u){status=DEVICE_STATUS_INVALID_ARG;break;}
         if(req->payload[0]==1u)
             status=Ml307_AtStart(req->payload+1,(uint8_t)(req->payload_len-1u));
@@ -403,19 +390,16 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
     case DEVICE_OP_GET_REMOTE_OTA_STATUS:
     {
         const ota_metadata_t *ota=Ota_Get();
-        if(!DeviceService_MaintenanceActive()){status=DEVICE_STATUS_UNAUTHORIZED;break;}
         payload[0]=1u;payload[1]=ota->state;
         put32(payload+2,ota->current_version);put32(payload+6,ota->update_version);
         put32(payload+10,ota->image_size);put32(payload+14,ota->downloaded_bytes);
         put32(payload+18,ota->image_crc32);*payload_len=22u;break;
     }
     case DEVICE_OP_FACTORY_RESET:
-        if(!DeviceService_MaintenanceActive()){status=DEVICE_STATUS_UNAUTHORIZED;break;}
         if(Ota_Get()->state!=OTA_STATE_IDLE){status=DEVICE_STATUS_CONFLICT;break;}
         if(!Ir_PrepareConfigurationChange()){status=DEVICE_STATUS_BUSY;break;}
         status=Storage_FactoryReset();
         if(status==DEVICE_STATUS_OK){
-            staged_config_valid=0u;
             Dev.loraStatus=Status_Logining;Timer_Lora=0u;
             Ml307_ApplyConfiguration();
         }

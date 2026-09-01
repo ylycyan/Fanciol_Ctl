@@ -877,6 +877,18 @@ static uint8_t connectivity_topic_valid(const char *value, uint16_t capacity)
     return length > 0U && length < capacity && value[0] != '/' && value[length - 1U] != '/';
 }
 
+uint8_t DeviceUid_Valid(const char *uid)
+{
+    uint8_t index;
+    if(!uid || memcmp(uid, "SAC", 3U) != 0 || uid[DEVICE_UID_LENGTH] != '\0') return 0U;
+    for(index = 3U; index < DEVICE_UID_LENGTH; ++index) {
+        if(index == 7U) {
+            if(uid[index] < 'A' || uid[index] > 'Z') return 0U;
+        } else if(uid[index] < '0' || uid[index] > '9') return 0U;
+    }
+    return 1U;
+}
+
 static uint8_t connectivity_record_erased(const connectivity_record_t *record)
 {
     const uint8_t *bytes = (const uint8_t *)record;
@@ -935,6 +947,8 @@ uint8_t Connectivity_Validate(const connectivity_config_t *config)
        !connectivity_string_valid(config->mqtt_client_id, sizeof(config->mqtt_client_id)) ||
        !connectivity_topic_valid(config->mqtt_topic_prefix, sizeof(config->mqtt_topic_prefix)))
         return DEVICE_STATUS_INVALID_ARG;
+    if((config->transport_mask & CONNECTIVITY_CELLULAR) != 0U &&
+       !DeviceUid_Valid(config->mqtt_client_id)) return DEVICE_STATUS_INVALID_ARG;
     return DEVICE_STATUS_OK;
 }
 
@@ -1239,6 +1253,10 @@ uint8_t LoraParams_Save(uint8_t register_sf, uint8_t register_bw,
 
 uint8_t Storage_FactoryReset(void)
 {
+    char device_uid[DEVICE_UID_LENGTH + 1U];
+    memset(device_uid, 0, sizeof(device_uid));
+    if(DeviceUid_Valid(connectivity_config.mqtt_client_id))
+        memcpy(device_uid, connectivity_config.mqtt_client_id, sizeof(device_uid));
     /*
      * 先清运行分区，最后清配置双槽并提交默认值。任一步失败都返回错误，
      * 避免小程序显示“恢复成功”但旧计量/学习码仍在。健康与复位历史保留，
@@ -1266,6 +1284,7 @@ uint8_t Storage_FactoryReset(void)
     connectivity_generation = 0U;
     connectivity_slot = CONNECTIVITY_SLOT_B;
     connectivity_defaults(&connectivity_config);
+    memcpy(connectivity_config.mqtt_client_id, device_uid, sizeof(device_uid));
     storage_startup_flags = 0U;
     if(Connectivity_Save(&connectivity_config) != DEVICE_STATUS_OK)
         return DEVICE_STATUS_IO_ERROR;

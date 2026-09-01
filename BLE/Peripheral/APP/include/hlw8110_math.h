@@ -14,6 +14,8 @@
 uint16_t HLW8110_CalcPowerX10(uint32_t raw, uint16_t coefficient);
 uint8_t HLW8110_CalcCurrentMa(uint32_t raw, uint16_t coefficient, uint16_t *result);
 uint8_t HLW8110_CalcVoltageDv(uint32_t raw, uint16_t coefficient, uint16_t *result);
+uint64_t HLW8110_CalcEnergyTenthWattSeconds(uint32_t pulses, uint16_t energy_coefficient,
+                                           uint16_t hfconst, uint64_t *fraction);
 uint8_t HLW8110_UartChecksum(uint8_t command, const uint8_t *data, uint8_t length);
 
 #endif

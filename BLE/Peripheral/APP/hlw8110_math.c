@@ -10,6 +10,14 @@
 #define HLW_K1_NUM              2ULL
 #define HLW_K2_NUM              1ULL
 #define HLW_POWER_NOISE_X10     20ULL
+/*
+ * kWh -> 0.1 W*s 需要乘 36,000,000。与能量公式分母共同约去 256 后：
+ *   36,000,000 / (K1*K2*2^29*4096)
+ * = 140,625 / (K1*K2*2^33)
+ * 先做商和余数可保证最坏 24 位脉冲值也不会使 uint64_t 中间结果溢出。
+ */
+#define HLW_ENERGY_SCALE_NUM    140625ULL
+#define HLW_ENERGY_SCALE_DEN    (HLW_K1_NUM * HLW_K2_NUM * (1ULL << 33))
 
 /**
  * @brief 计算 HLW8110 帧校验和（帧头 0xA5 + 命令 + 数据，取反）
@@ -86,4 +94,30 @@ uint8_t HLW8110_CalcVoltageDv(uint32_t raw, uint16_t coefficient, uint16_t *resu
     if(value > 3000ULL) return 0U;
     *result = (uint16_t)value;
     return 1U;
+}
+
+/**
+ * @brief Energy_PA 脉冲数转换为 0.1 W*s
+ *
+ * fraction 保存不足 0.1 W*s 的定点余数，避免频繁读取少量脉冲时反复截断。
+ * EnergyAC 的出厂默认值 0xFFFF 是合法系数，不能按“全 FF 通信错误”拒绝。
+ */
+uint64_t HLW8110_CalcEnergyTenthWattSeconds(uint32_t pulses, uint16_t energy_coefficient,
+                                           uint16_t hfconst, uint64_t *fraction)
+{
+    uint64_t pulse_product;
+    uint64_t quotient;
+    uint64_t remainder;
+    uint64_t scaled_remainder;
+    uint64_t carry;
+
+    if(!fraction || pulses == 0U || energy_coefficient == 0U || hfconst == 0U) return 0U;
+
+    pulse_product = (uint64_t)(pulses & 0xFFFFFFUL) * energy_coefficient * hfconst;
+    quotient = pulse_product / HLW_ENERGY_SCALE_DEN;
+    remainder = pulse_product % HLW_ENERGY_SCALE_DEN;
+    scaled_remainder = remainder * HLW_ENERGY_SCALE_NUM + *fraction;
+    carry = scaled_remainder / HLW_ENERGY_SCALE_DEN;
+    *fraction = scaled_remainder % HLW_ENERGY_SCALE_DEN;
+    return quotient * HLW_ENERGY_SCALE_NUM + carry;
 }

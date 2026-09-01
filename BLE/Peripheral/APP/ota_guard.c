@@ -2,9 +2,8 @@
  * @file ota_guard.c
  * @brief OTA 流程状态机保护（防越界/乱序写入）
  *
- * 强制 OTA 按"擦除 → 顺序编程 → 顺序校验 → 完成"推进：
- *   ERASING → READY → PROGRAMMING → VERIFYING → VERIFIED
- * 任何越界、乱序、跳过步骤的请求一律拒绝；校验未完成不允许 IAP_END。
+ * OTA 只按"擦除 → 顺序编程 → 完成"推进。完整镜像由
+ * Ota_VerifyStep() 在切换前统一做 CRC32 校验。
  */
 #include "ota_guard.h"
 #include <string.h>
@@ -44,7 +43,6 @@ uint8_t OtaGuard_BeginErase(ota_guard_t *guard,
     guard->range_start = start;
     guard->range_end = start + length;
     guard->program_next = start;
-    guard->verify_next = start;
     guard->state = OTA_GUARD_ERASING;
     return 1;
 }
@@ -90,41 +88,15 @@ void OtaGuard_EndProgram(ota_guard_t *guard, uint16_t length, uint8_t success)
 }
 
 /**
- * @brief 是否允许校验：只能校验已编程区域（address < program_next），且顺序推进
- */
-uint8_t OtaGuard_CanVerify(const ota_guard_t *guard, uint32_t address, uint16_t length)
-{
-    if(guard == 0 || length == 0u ||
-       (guard->state != OTA_GUARD_PROGRAMMING && guard->state != OTA_GUARD_VERIFYING) ||
-       address != guard->verify_next || address < guard->range_start ||
-       address >= guard->program_next) {
-        return 0;
-    }
-    return (uint32_t)length <= (guard->program_next - address);
-}
-
-/**
- * @brief 记录一段校验完成；全部校验完进入 VERIFIED
- */
-void OtaGuard_EndVerify(ota_guard_t *guard, uint16_t length, uint8_t success)
-{
-    if(guard == 0 || !success ||
-       (guard->state != OTA_GUARD_PROGRAMMING && guard->state != OTA_GUARD_VERIFYING)) {
-        return;
-    }
-    guard->verify_next += length;
-    guard->state = (guard->verify_next == guard->program_next)
-        ? OTA_GUARD_VERIFIED
-        : OTA_GUARD_VERIFYING;
-}
-
-/**
- * @brief 是否允许结束 OTA：必须已全部校验且确有写入
+ * @brief 是否允许结束 OTA：必须完成连续编程且确有写入
+ *
+ * 调用方还会用 manifest 中的 image_size 检查 program_next，并在切换
+ * 前执行整镜像 CRC32。因此不再要求客户端把整份固件重新上传一遍
+ * 做逐块 VERIFY。
  */
 uint8_t OtaGuard_CanFinish(const ota_guard_t *guard)
 {
     return guard != 0 &&
-           guard->state == OTA_GUARD_VERIFIED &&
-           guard->program_next > guard->range_start &&
-           guard->verify_next == guard->program_next;
+           guard->state == OTA_GUARD_PROGRAMMING &&
+           guard->program_next > guard->range_start;
 }

@@ -159,7 +159,7 @@ typedef enum {
     TRIG_TEMP_ABOVE  = 2, // 环境温度 > 阈值
     TRIG_TEMP_BELOW  = 3, // 环境温度 < 阈值
     TRIG_POWER_ABOVE = 4, // 实时功率 > 阈值(单位:W)
-    TRIG_RUNTIME     = 5, // 累计运行时间 > 阈值(单位:分钟)
+    TRIG_RUNTIME     = 5, // 已停用，保留枚举值兼容旧配置
     TRIG_ENERGY      = 6, // 累计电量 > 阈值(单位:0.1kWh)
     TRIG_COMBINED    = 7, // 时间窗口 + 条件同时满足(AND)
 } TrigType_t;
@@ -195,7 +195,7 @@ typedef struct {
     // TRIG_TIME:        自00:00起的分钟数(0~1439, 精度1分钟)
     // TRIG_TEMP_ABOVE/BELOW: 温度×10 (200~350 = 20.0°C~35.0°C)
     // TRIG_POWER_ABOVE: 功率×10 (0~65535 = 0~6553.5W)
-    // TRIG_RUNTIME:     累计分钟数(0~65535)
+    // TRIG_RUNTIME:     已停用
     // TRIG_ENERGY:      累计0.1kWh(0~6553.5)
     // TRIG_COMBINED:    起始时间(分钟)
 
@@ -237,13 +237,13 @@ typedef struct {
 //本地规则引擎 - 计量数据结构体(12字节)
 typedef struct {
     uint32_t energy_wh;                 // 累计电量，单位 0.1 kWh（保留旧字段名）
-    uint32_t energy_watt_tenth_seconds; // 未满 0.1 kWh 的余数，单位 0.1 W*s
-    uint32_t run_minutes;               // 累计运行时间，分钟
+    uint32_t energy_watt_tenth_seconds; // 芯片累计但未满 0.1 kWh 的余数，单位 0.1 W*s
+    uint32_t run_minutes;               // 保留字段：兼容既有 Flash 布局，不再累计
     uint32_t last_save_ts;              // 上次保存时间戳，秒
     uint16_t onoff_count;                // 开关机次数
     uint16_t fault_count;                // 计量故障次数
-    uint16_t run_seconds_remainder;
-    uint16_t today_run_minutes;          // 当天运行分钟，固定网关 v2 使用，范围 0~1440
+    uint16_t run_seconds_remainder;      // 保留字段，不再使用
+    uint16_t today_run_minutes;          // 保留字段，不再使用
 } DEV_METER_T;                          // 24字节
 
 //设备结构体,存入DataFlash,掉电保存
@@ -253,7 +253,7 @@ typedef struct{
     uint16_t channel;  //lora通道(0~32)？
     LoraStatus_t loraStatus; // lora状态
     uint32_t lastReportTime; // 上次上报时间戳
-    uint32_t lastOnTime; // 上次空调开机时间,用于计算运行时间(由负载进行计算)
+    uint32_t lastOnTime; // 上次空调开机时间，用于最短启停间隔
     uint32_t lastPowerChange; // 最近一次已提交开/关命令时间，用于跨复位保持最短启停间隔
     uint32_t loraFrequencyHz; // LoRa 当前频率，单位 Hz
     uint16_t gatewayId; //网关Id
@@ -272,7 +272,7 @@ typedef struct{
     Mode_t ctlMode; // 空调运行模式
     uint16_t temSet; // 设定温度
     Wind_t wind; // 风速
-    uint16_t runTime; // 空调运行时间,单位:分钟
+    uint16_t runTime; // 已停用，保留结构布局
     uint16_t loadPower; // 负载功率,单位:W*10
     uint8_t mode; // 控制模式(0:本地 1:远程)
     // LoRa 多跳中继角色 (BLE写入, 掉电保存)
@@ -372,7 +372,7 @@ extern void LED_Pro(void);
 extern void Rule_Pro(void);
 extern void Rule_DailyReset(void);
 extern void Meter_Update(uint32_t dt_sec);
-extern uint16_t Meter_GetTodayRunMinutes(void);
+extern uint8_t Meter_ClearEnergy(void);
 void LED_GREEN_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 void LED_RED_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 void LED_BLUE_BLINK(bool IsBlinking, uint32_t BlinkInterval);

@@ -6,8 +6,22 @@
 static volatile uint16_t Flash_Delay;
 static volatile uint8_t Ir_Save_Pending;
 
-/* Legacy callers express delay in 10 ms ticks; Flash_Poll runs once per second. */
-void SaveDevInfo(uint16_t delay) { Flash_Delay = delay ? (uint16_t)((delay + 99u) / 100u) : 1u; }
+/*
+ * Legacy callers express delay in 10 ms ticks; Flash_Poll runs once per second.
+ * Ordinary controls are coalesced for at least three seconds so a burst of
+ * button presses writes only the final runtime state.  A zero delay remains
+ * the explicit next-poll/critical-save path.
+ */
+void SaveDevInfo(uint16_t delay)
+{
+    uint16_t seconds;
+    if(delay == 0U) {
+        Flash_Delay = 1U;
+        return;
+    }
+    seconds = (uint16_t)((delay + 99U) / 100U);
+    Flash_Delay = seconds < 3U ? 3U : seconds;
+}
 void SaveIrInfo(void) { Ir_Save_Pending = 1u; }
 
 void Flash_Poll(void)
@@ -22,9 +36,11 @@ void Flash_Poll(void)
     if(Ir_Save_Pending) {
         uint8_t ir_status;
         attempted = 1;
+        /* One failed Flash operation is reported, not retried every second.
+         * A later user change schedules a fresh save. */
+        Ir_Save_Pending = 0U;
         ir_status = IrStore_SaveIfChanged();
-        if(ir_status == DEVICE_STATUS_OK) Ir_Save_Pending = 0;
-        else status = ir_status;
+        if(ir_status != DEVICE_STATUS_OK) status = ir_status;
     }
     if(!attempted) return;
     if(status != DEVICE_STATUS_OK) {

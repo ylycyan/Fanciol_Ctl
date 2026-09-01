@@ -546,6 +546,9 @@ static uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t p
             Dev.errorCode.bit.irMatch = 0;
             SaveDevInfo(50u);
             return 0;
+        case 27:
+            if(operateTag != 0U || parameterValue != 0U) return 2;
+            return Meter_ClearEnergy() == 0U ? 0U : 1U;
         default:
             return 2;
     }

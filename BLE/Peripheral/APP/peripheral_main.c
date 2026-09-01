@@ -51,7 +51,6 @@ void Main_Circulation()
         /* BLE owns the tightest deadline.  Give TMOS a scheduling point before
          * and between peripheral jobs so LoRa/Flash/4G cannot starve it. */
         TMOS_SystemProcess();
-        Health_Mark(HEALTH_BLE_STACK);
         Period_20ms();
         TMOS_SystemProcess();
         Period_100ms();
@@ -66,7 +65,6 @@ void Main_Circulation()
             ml307Initialized = 1U;
         }
         if(ml307Initialized) Ml307_Process();
-        else Health_Mark(HEALTH_CELLULAR);
     }
 }
 /*********************************************************************

@@ -14,9 +14,13 @@ static uint8_t lora_enabled = 1U;
 static uint8_t cellular_online;
 static IR_CMD_t last_ir_cmd;
 static HLW8110_Status_t meter_status;
+static uint64_t meter_energy_delta;
+static uint8_t meter_clear_calls;
+static uint8_t runtime_append_calls;
 
 uint8_t Connectivity_LoraEnabled(void) { return lora_enabled; }
 uint8_t Ml307_IsOnline(void) { return cellular_online; }
+void Ml307_RequestReport(void) {}
 
 uint8_t ADC_IsValid(void)
 {
@@ -62,6 +66,25 @@ uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *month, uint16_t *day,
 const HLW8110_Status_t *HLW8110_GetStatus(void)
 {
     return &meter_status;
+}
+
+uint64_t HLW8110_TakeEnergyTenthWattSeconds(void)
+{
+    uint64_t value = meter_energy_delta;
+    meter_energy_delta = 0U;
+    return value;
+}
+
+void HLW8110_ClearEnergyAccumulator(void)
+{
+    meter_clear_calls++;
+    meter_energy_delta = 0U;
+}
+
+uint8_t Runtime_Append(void)
+{
+    runtime_append_calls++;
+    return 0U;
 }
 
 void Rule_Pro(void);
@@ -138,28 +161,50 @@ int main(void)
     assert(Dev.onOff == PowerOn);
     lora_enabled = 1U;
 
-    /* 云端字段 v2 是当天运行分钟；终身累计仍单独保留给本地规则。 */
+    /* 运行时间统计已停用；即使开机一小时也不再修改兼容占位字段。 */
     memset(&Dev, 0, sizeof(Dev));
     memset(&meter_status, 0, sizeof(meter_status));
     Dev.onOff = PowerOn;
-    Dev.meter.run_seconds_remainder = 59u;
-    Dev.meter.run_minutes = 1000u;
-    Dev.meter.today_run_minutes = 120u;
     LocalTimestamp = 1785456000u + 12u * 3600u; /* 2026-07-31 12:00 UTC */
     Dev.meter.last_save_ts = LocalTimestamp - 60u;
-    Meter_Update(1u);
-    assert(Dev.meter.run_minutes == 1001u);
-    assert(Meter_GetTodayRunMinutes() == 121u);
+    Meter_Update(3600u);
+    assert(Dev.meter.run_minutes == 0u);
+    assert(Dev.meter.today_run_minutes == 0u);
+    assert(Dev.meter.run_seconds_remainder == 0u);
 
-    LocalTimestamp = 1785542400u; /* 次日 00:00 UTC */
-    Dev.meter.run_seconds_remainder = 0u;
-    Meter_Update(60u);
-    assert(Dev.meter.run_minutes == 1002u);
-    assert(Meter_GetTodayRunMinutes() == 1u);
+    /* 电量必须来自 HLW8110 寄存器增量，而不是 Dev.loadPower 软件积分。 */
+    Dev.loadPower = 60000u;
+    meter_energy_delta = 3600000u;
+    Meter_Update(0u);
+    assert(Dev.meter.energy_wh == 1u);
+    Meter_Update(0u);
+    assert(Dev.meter.energy_wh == 1u);
 
-    Dev.meter.today_run_minutes = 1440u;
-    Meter_Update(60u);
-    assert(Meter_GetTodayRunMinutes() == 1440u);
+    /* Flash 定时保存边界：第 599 秒不保存，第 600 秒才安排一次保存。 */
+    memset(&Dev, 0, sizeof(Dev));
+    save_calls = 0u;
+    LocalTimestamp = 20000u;
+    Dev.meter.last_save_ts = LocalTimestamp - 599u;
+    Meter_Update(0u);
+    assert(save_calls == 0u);
+    LocalTimestamp++;
+    Meter_Update(0u);
+    assert(save_calls == 1u);
+    assert(Dev.meter.last_save_ts == LocalTimestamp);
+
+    /* 清累计只影响电量，运行时长、次数等寿命统计必须保留。 */
+    Dev.meter.energy_wh = 1234U;
+    Dev.meter.energy_watt_tenth_seconds = 5678U;
+    Dev.meter.onoff_count = 17U;
+    meter_energy_delta = 900U;
+    meter_clear_calls = 0U;
+    runtime_append_calls = 0U;
+    assert(Meter_ClearEnergy() == 0U);
+    assert(Dev.meter.energy_wh == 0U);
+    assert(Dev.meter.energy_watt_tenth_seconds == 0U);
+    assert(Dev.meter.onoff_count == 17U);
+    assert(meter_clear_calls == 1U);
+    assert(runtime_append_calls == 1U);
 
     puts("rule IR submission reliability: PASS");
     return 0;

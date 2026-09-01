@@ -35,5 +35,9 @@ typedef struct {
 void HLW8110_Init(void);
 void HLW8110_Poll(void);
 const HLW8110_Status_t *HLW8110_GetStatus(void);
+/* 取出芯片 Energy_PA 自上次调用以来累计的能量，单位 0.1 W*s。 */
+uint64_t HLW8110_TakeEnergyTenthWattSeconds(void);
+/* 清空尚未汇总的能量，并丢弃芯片 Energy_PA 当前残留的一次读数。 */
+void HLW8110_ClearEnergyAccumulator(void);
 
 #endif

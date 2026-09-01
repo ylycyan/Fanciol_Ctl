@@ -427,8 +427,13 @@ static void test_lora_parameter_read_error_is_visible_and_non_destructive(void)
 
 static void test_factory_reset_reports_partial_failure(void)
 {
+    connectivity_config_t connectivity;
     reset_flash();
     create_initial_config();
+    assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    memcpy(&connectivity, Connectivity_Get(), sizeof(connectivity));
+    strcpy(connectivity.mqtt_client_id, "SAC2608A0000001");
+    assert(Connectivity_Save(&connectivity) == DEVICE_STATUS_OK);
     assert(Runtime_Load() == DEVICE_STATUS_VERIFY_FAILED);
     assert(IrStore_Load() == DEVICE_STATUS_VERIFY_FAILED);
     Dev.nodeId = 0x4567u;
@@ -460,6 +465,7 @@ static void test_factory_reset_reports_partial_failure(void)
     assert(LoraParams_Load() == DEVICE_STATUS_OK);
     assert(Connectivity_LoraEnabled());
     assert(!Connectivity_CellularEnabled());
+    assert(strcmp(DeviceUid_Get(), "SAC2608A0000001") == 0);
 }
 
 static void test_legacy_lora_defaults_migrate_without_overwriting_custom_profile(void)
@@ -511,12 +517,13 @@ static void test_connectivity_round_trip_and_conflict(void)
     next.mqtt_qos = 1U;
     strcpy(next.mqtt_host, "broker.example.com");
     strcpy(next.apn, "iot");
-    strcpy(next.mqtt_client_id, "plant-ac-01");
+    strcpy(next.mqtt_client_id, "SAC2608A0000002");
     strcpy(next.mqtt_topic_prefix, "factory/splitac");
     assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
     assert(Connectivity_GetGeneration() == 1U);
     assert(Connectivity_LoraEnabled());
     assert(Connectivity_CellularEnabled());
+    assert(DeviceUid_Valid(DeviceUid_Get()));
 
     assert(Connectivity_Encode(wire, sizeof(wire), &length) == DEVICE_STATUS_OK);
     assert(length < sizeof(wire));
@@ -540,6 +547,7 @@ static void test_connectivity_power_loss_keeps_previous_slot(void)
     memcpy(&next, Connectivity_Get(), sizeof(next));
     next.transport_mask |= CONNECTIVITY_CELLULAR;
     strcpy(next.mqtt_host, "broker.example.com");
+    strcpy(next.mqtt_client_id, "SAC2608A0000003");
     assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
     assert(Connectivity_GetGeneration() == 1U);
 
@@ -551,6 +559,21 @@ static void test_connectivity_power_loss_keeps_previous_slot(void)
     assert(Connectivity_GetGeneration() == 2U); /* 单有效槽启动时自动重建冗余。 */
     assert(Connectivity_Get()->mqtt_port == 1883U);
     assert(strcmp(Connectivity_Get()->mqtt_host, "broker.example.com") == 0);
+}
+
+static void test_device_uid_format_is_required_for_cellular(void)
+{
+    connectivity_config_t next;
+    reset_flash();
+    assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    memcpy(&next, Connectivity_Get(), sizeof(next));
+    next.transport_mask |= CONNECTIVITY_CELLULAR;
+    strcpy(next.mqtt_host, "broker.example.com");
+    assert(Connectivity_Save(&next) == DEVICE_STATUS_INVALID_ARG);
+    strcpy(next.mqtt_client_id, "SAC2608a0000001");
+    assert(Connectivity_Save(&next) == DEVICE_STATUS_INVALID_ARG);
+    strcpy(next.mqtt_client_id, "SAC2608A0000001");
+    assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
 }
 
 int main(void)
@@ -567,6 +590,7 @@ int main(void)
     test_legacy_lora_defaults_migrate_without_overwriting_custom_profile();
     test_connectivity_round_trip_and_conflict();
     test_connectivity_power_loss_keeps_previous_slot();
+    test_device_uid_format_is_required_for_cellular();
     puts("Config/runtime/IR/connectivity power-loss recovery: PASS");
     return 0;
 }

@@ -5,6 +5,7 @@
 
 int main(void)
 {
+    uint64_t energy_fraction = 0;
     uint16_t value = 0;
     const uint8_t unlock = 0xE5U;
     const uint8_t lock = 0xDCU;
@@ -32,6 +33,13 @@ int main(void)
     assert(HLW8110_CalcCurrentMa(1U, 0U, &value) == 0U);
     assert(HLW8110_CalcVoltageDv(0x7FFFFFUL, 65534U, &value) == 0U);
     assert(HLW8110_CalcPowerX10(1U, 1U) == 0U);
+
+    /* 32768 个脉冲在此系数组合下恰好为 1kWh，即 36,000,000 个 0.1W*s。 */
+    assert(HLW8110_CalcEnergyTenthWattSeconds(32768U, 0x8000U, 0x1000U,
+                                              &energy_fraction) == 36000000ULL);
+    assert(energy_fraction == 0U);
+    assert(HLW8110_CalcEnergyTenthWattSeconds(1U, 0xFFFFU, 0x1000U,
+                                              &energy_fraction) > 0U);
 
     puts("HLW8110 datasheet conversion vectors: PASS");
     return 0;

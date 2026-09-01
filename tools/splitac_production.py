@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""SplitAC factory image, OTA package and configuration tool."""
+"""SplitAC factory image, raw BIN OTA and configuration tool."""
 
 import argparse
 import csv
+import re
 import struct
 import zlib
 from pathlib import Path
 
 APP_LIMIT = 208 * 1024
-HEADER_SIZE = 32
 APP_ADDRESS = 0x00001000
 UPDATER_ADDRESS = 0x0006D000
 CONNECTIVITY_MAGIC = 0x324D4F43
@@ -17,6 +17,7 @@ CONNECTIVITY_SCHEMA = 3
 CONFIG_MAGIC = 0x32434153
 CONFIG_SCHEMA = 3
 DATAFLASH_SIZE = 32 * 1024
+DEVICE_UID_PATTERN = re.compile(r'^SAC\d{2}(?:0[1-9]|1[0-2])[A-Z]\d{7}$')
 
 
 def crc32(data):
@@ -33,25 +34,16 @@ def parse_version(text):
     return (values[0] << 16) | (values[1] << 8) | values[2]
 
 
-def package(args):
+def ota(args):
     image = Path(args.app).read_bytes()
     if not 64 <= len(image) <= APP_LIMIT:
         raise SystemExit(f'application size {len(image)} is outside 64..{APP_LIMIT} bytes')
-    header = bytearray(HEADER_SIZE)
-    header[0:4] = b'SACF'
-    header[4] = 2
-    struct.pack_into('<H', header, 5, 20)  # eDeviceFancoil
-    header[7] = args.hardware_min
-    header[8] = args.hardware_max
-    struct.pack_into('<H', header, 9, HEADER_SIZE)
-    struct.pack_into('<I', header, 12, args.version)
-    struct.pack_into('<III', header, 16, HEADER_SIZE, len(image), crc32(image))
-    struct.pack_into('<I', header, 28, crc32(header[:28]))
     output = Path(args.output)
+    version_text = f'{args.version >> 16}.{(args.version >> 8) & 0xFF}.{args.version & 0xFF}'
+    if output.suffix.lower() != '.bin' or not re.search(rf'(?:^|[-_v]){re.escape(version_text)}$', output.stem, re.IGNORECASE):
+        raise SystemExit(f'OTA output must be a versioned .bin file, for example firmware-{version_text}.bin')
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(header + image)
-    if args.remote_output:
-        Path(args.remote_output).write_bytes(image)
+    output.write_bytes(image)
     print(f'{output}: image={len(image)} crc={crc32(image):08X}')
 
 
@@ -110,7 +102,7 @@ def connectivity_record(row, args):
         args.report_interval, args.network_timeout,
         fixed_text(args.broker, 48, 'broker'),
         fixed_text(row.get('apn') or args.apn, 20, 'apn'),
-        fixed_text(row.get('mqtt_client_id') or '', 32, 'mqtt_client_id'),
+        fixed_text(row['device_uid'], 32, 'device_uid'),
         fixed_text(args.topic_prefix, 32, 'topic_prefix')
     )
     prefix = struct.pack('<IBBIH', CONNECTIVITY_MAGIC, CONNECTIVITY_SCHEMA,
@@ -133,33 +125,37 @@ def provision(args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     rows_out = []
+    seen_uids = set()
     with Path(args.input).open(newline='', encoding='utf-8-sig') as source:
         for row in csv.DictReader(source):
-            uid = ''.join(row['uid'].split()).upper()
-            if len(uid) != 12 or any(ch not in '0123456789ABCDEF' for ch in uid):
-                raise SystemExit(f'invalid six-byte UID: {row.get("uid", "")}')
+            device_uid = ''.join(row.get('device_uid', '').split()).upper()
+            if not DEVICE_UID_PATTERN.fullmatch(device_uid):
+                raise SystemExit(f'invalid device_uid: {row.get("device_uid", "")}')
+            if device_uid in seen_uids:
+                raise SystemExit(f'duplicate device_uid: {device_uid}')
+            seen_uids.add(device_uid)
+            row['device_uid'] = device_uid
             module_version = row.get('module_at_version', '').strip()
             if module_version != args.module_version:
-                raise SystemExit(f'{uid}: ML307R firmware must be {args.module_version}, got {module_version or "empty"}')
+                raise SystemExit(f'{device_uid}: ML307R firmware must be {args.module_version}, got {module_version or "empty"}')
             node_id, record = connectivity_record(row, args)
             channel_value = row.get('channel') or args.channel
             channel = int(channel_value, 0) if isinstance(channel_value, str) else int(channel_value)
-            device_id = 'SAC' + uid
-            filename = f'{device_id}-dataflash.bin'
+            filename = f'{device_uid}-dataflash.bin'
             dataflash = bytearray(b'\xFF' * DATAFLASH_SIZE)
             config = device_config_record(node_id, channel)
             dataflash[:len(config)] = config
             dataflash[0x2000:0x2000 + len(record)] = record
             (output_dir / filename).write_bytes(dataflash)
             rows_out.append({
-                'device_id': device_id,
+                'device_id': device_uid,
                 'node_id': f'0x{node_id:04X}',
                 'firmware_version': args.firmware,
                 'production_batch': row.get('production_batch') or args.batch,
                 'module_at_version': module_version,
-                'mqtt_client_id': row.get('mqtt_client_id') or device_id,
-                'upload_topic': f'{args.topic_prefix}/{device_id}/u',
-                'control_topic': f'{args.topic_prefix}/{device_id}/d',
+                'mqtt_client_id': device_uid,
+                'upload_topic': f'{args.topic_prefix}/{device_uid}/u',
+                'control_topic': f'{args.topic_prefix}/{device_uid}/d',
                 'dataflash_address': '0x70000',
                 'dataflash_file': filename,
             })
@@ -176,14 +172,11 @@ def provision(args):
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest='command', required=True)
-    pack = commands.add_parser('package', help='create a compact single-image .sacfw package')
-    pack.add_argument('--app', required=True)
-    pack.add_argument('--version', required=True, type=parse_version)
-    pack.add_argument('--hardware-min', type=int, default=1)
-    pack.add_argument('--hardware-max', type=int, default=1)
-    pack.add_argument('--output', required=True)
-    pack.add_argument('--remote-output', help='also copy the raw image for HTTP OTA')
-    pack.set_defaults(func=package)
+    ota_cmd = commands.add_parser('ota', help='export one versioned raw .bin for BLE and HTTP OTA')
+    ota_cmd.add_argument('--app', required=True)
+    ota_cmd.add_argument('--version', required=True, type=parse_version)
+    ota_cmd.add_argument('--output', required=True)
+    ota_cmd.set_defaults(func=ota)
 
     full = commands.add_parser('factory', help='create one Intel HEX image for direct WCH-Link programming')
     full.add_argument('--jump', default='BLE/Peripheral/.pio/build/ch583_jump/firmware.bin')
@@ -193,7 +186,7 @@ def main():
     full.set_defaults(func=factory)
 
     provision_cmd = commands.add_parser('provision', help='generate per-device DataFlash and platform CSV')
-    provision_cmd.add_argument('--input', required=True, help='CSV with uid,node_id and optional batch/APN columns')
+    provision_cmd.add_argument('--input', required=True, help='CSV with device_uid,node_id,module_at_version and optional batch/APN columns')
     provision_cmd.add_argument('--output-dir', required=True)
     provision_cmd.add_argument('--broker', default='', help='optional initial Broker; may be configured later in the mini program')
     provision_cmd.add_argument('--port', type=int, default=1883)
@@ -211,7 +204,7 @@ def main():
     provision_cmd.add_argument('--register-bw', type=int, default=4)
     provision_cmd.add_argument('--listen-sf', type=int, default=10)
     provision_cmd.add_argument('--listen-bw', type=int, default=5)
-    provision_cmd.add_argument('--firmware', default='2.21.6')
+    provision_cmd.add_argument('--firmware', default='2.21.7')
     provision_cmd.add_argument('--module-version', default='MBRH0S01')
     provision_cmd.add_argument('--batch', default='')
     provision_cmd.set_defaults(func=provision)

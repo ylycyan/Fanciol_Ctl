@@ -15,7 +15,11 @@
 #define OTA_METADATA_MAGIC        0x3154414FUL
 
 #ifndef FIRMWARE_BUILD_VERSION
-#define FIRMWARE_BUILD_VERSION    0x00021506UL
+#define FIRMWARE_BUILD_VERSION    0x0002160CUL
+#endif
+
+#ifndef HARDWARE_BUILD_VERSION
+#define HARDWARE_BUILD_VERSION    "HW1.0"
 #endif
 
 typedef enum {
@@ -53,6 +57,7 @@ uint8_t Ota_BeginLocal(uint32_t version, uint32_t image_size, uint32_t image_crc
 uint8_t Ota_FinishLocal(void);
 uint8_t Ota_EraseStep(void);
 uint8_t Ota_Write(uint32_t offset, const uint8_t *data, uint16_t length);
+uint8_t Ota_RewindDownload(void);
 uint8_t Ota_BeginVerify(void);
 uint8_t Ota_VerifyStep(void);
 uint8_t Ota_MarkInstall(void);

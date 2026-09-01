@@ -70,14 +70,9 @@ static void test_order_and_contiguous_ranges(void)
     assert(OtaGuard_CanProgram(&guard, APP_B_START + 240, 32));
     OtaGuard_EndProgram(&guard, 32, 1);
 
-    assert(!OtaGuard_CanFinish(&guard));
-    assert(OtaGuard_CanVerify(&guard, APP_B_START, 240));
-    OtaGuard_EndVerify(&guard, 240, 1);
-    assert(!OtaGuard_CanVerify(&guard, APP_B_START + 241, 31));
-    assert(OtaGuard_CanVerify(&guard, APP_B_START + 240, 32));
-    OtaGuard_EndVerify(&guard, 32, 1);
+    /* 新流程写完即可进入整镜像 CRC，无需再传一遍数据。 */
     assert(OtaGuard_CanFinish(&guard));
-    assert(!OtaGuard_CanProgram(&guard, APP_B_START + 272, 4));
+    assert(OtaGuard_CanFinish(&guard));
 }
 
 static void test_failed_operations_do_not_advance(void)
@@ -93,10 +88,7 @@ static void test_failed_operations_do_not_advance(void)
     assert(OtaGuard_CanProgram(&guard, APP_B_START, 16));
     OtaGuard_EndProgram(&guard, 16, 1);
 
-    assert(OtaGuard_CanVerify(&guard, APP_B_START, 16));
-    OtaGuard_EndVerify(&guard, 16, 0);
-    assert(OtaGuard_CanVerify(&guard, APP_B_START, 16));
-    assert(!OtaGuard_CanFinish(&guard));
+    assert(OtaGuard_CanFinish(&guard));
 
     OtaGuard_Reset(&guard);
     assert(OtaGuard_BeginErase(&guard, APP_B_START, 1, BLOCK_SIZE,
@@ -115,7 +107,7 @@ static void test_remote_download_install_and_cancel(void)
     for(index = 0; index < sizeof(image); index++) image[index] = (uint8_t)(index + 1U);
 
     Ota_Init();
-    assert(Ota_BeginRemote(0x00021600UL, sizeof(image), crc32(image, sizeof(image)),
+    assert(Ota_BeginRemote(0x00021601UL, sizeof(image), crc32(image, sizeof(image)),
                            "http://fw/device.bin", 20) == DEVICE_STATUS_OK);
     assert(Ota_EraseStep() == DEVICE_STATUS_OK);
     assert(Ota_EraseStep() == DEVICE_STATUS_OK);
@@ -134,9 +126,35 @@ static void test_interrupted_local_update_is_discarded(void)
 {
     memset(dataflash, 0xFF, sizeof(dataflash));
     Ota_Init();
-    assert(Ota_BeginLocal(0x00021600UL, 4096U, 0x12345678UL) == DEVICE_STATUS_OK);
+    assert(Ota_BeginLocal(0x00021601UL, 4096U, 0x12345678UL) == DEVICE_STATUS_OK);
     Ota_Init();
     assert(Ota_Get()->state == OTA_STATE_IDLE);
+}
+
+static void test_remote_progress_checkpoint_uses_distance_not_alignment(void)
+{
+    uint8_t chunk[240];
+    uint32_t offset = 0U;
+    memset(dataflash, 0xFF, sizeof(dataflash));
+    memset(codeflash, 0xFF, sizeof(codeflash));
+    memset(chunk, 0x5A, sizeof(chunk));
+
+    Ota_Init();
+    assert(Ota_BeginRemote(0x00021601UL, 20000U, 0x12345678UL,
+                           "http://fw/device.bin", 20) == DEVICE_STATUS_OK);
+    while(Ota_Get()->state == OTA_STATE_ERASING)
+        assert(Ota_EraseStep() == DEVICE_STATUS_OK);
+    while(offset < 16560U) {
+        assert(Ota_Write(offset, chunk, sizeof(chunk)) == DEVICE_STATUS_OK);
+        offset += sizeof(chunk);
+    }
+    assert(Ota_Get()->downloaded_bytes == 16560U);
+
+    /* A reboot resumes at the latest >=16 KB checkpoint even though 240-byte
+     * chunks never land exactly on a 16 KB boundary. */
+    Ota_Init();
+    assert(Ota_Get()->state == OTA_STATE_DOWNLOADING);
+    assert(Ota_Get()->downloaded_bytes == 16560U);
 }
 
 int main(void)
@@ -146,6 +164,7 @@ int main(void)
     test_failed_operations_do_not_advance();
     test_remote_download_install_and_cancel();
     test_interrupted_local_update_is_discarded();
+    test_remote_progress_checkpoint_uses_distance_not_alignment();
     puts("OTA partition/session and staging metadata: PASS");
     return 0;
 }

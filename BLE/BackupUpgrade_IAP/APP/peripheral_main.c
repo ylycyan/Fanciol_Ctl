@@ -104,8 +104,7 @@ static uint8_t install_image(void)
         uint16_t length = (uint16_t)((metadata.image_size - offset) > sizeof(copy_buffer) ?
                                     sizeof(copy_buffer) : metadata.image_size - offset);
         FLASH_ROM_READ(OTA_STAGING_ADDRESS + offset, copy_buffer, length);
-        if(FLASH_ROM_WRITE(OTA_APP_ADDRESS + offset, copy_buffer, length) != 0U ||
-           FLASH_ROM_VERIFY(OTA_APP_ADDRESS + offset, copy_buffer, length) != 0U)
+        if(FLASH_ROM_WRITE(OTA_APP_ADDRESS + offset, copy_buffer, length) != 0U)
             return 0U;
     }
     return image_crc(OTA_APP_ADDRESS, metadata.image_size) == metadata.image_crc32;

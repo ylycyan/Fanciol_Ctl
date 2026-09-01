@@ -3,7 +3,6 @@
 #include "config_store.h"
 #include "gateway_lora_codec.h"
 #include "device_protocol.h"
-#include "health.h"
 #include "timer.h"
 #include "time_utils.h"
 #include "board.h"
@@ -12,7 +11,7 @@
 #include <string.h>
 
 #define ML307_RESET_PIN            GPIO_Pin_14
-#define ML307_RX_RING_SIZE         256U
+#define ML307_RX_RING_SIZE         1024U
 #define ML307_LINE_SIZE            512U
 #define ML307_TX_SIZE              192U
 #define ML307_RESET_LOW_MS         600U
@@ -32,7 +31,7 @@
 #define ML307_MQTT_FRAME_SIZE       GATEWAY_LORA_FANCOIL_REPORT_LENGTH
 #define ML307_LORA_TAG_READ         0U
 #define ML307_LORA_TAG_CONTROL      1U
-#define ML307_DEVICE_ID_LENGTH      15U
+#define ML307_DEVICE_ID_LENGTH      DEVICE_UID_LENGTH
 #define ML307_MGMT_MAX_FRAME        160U
 #define ML307_MGMT_TX_FRAME          40U
 #define ML307_MGMT_MAGIC            0xC7U
@@ -44,16 +43,25 @@
 #define ML307_MGMT_OTA_CANCEL           0x07U
 #define ML307_MGMT_OTA_STATUS           0x08U
 
+#define ML307_IDENTITY_SIM          0U
+#define ML307_IDENTITY_IMEI         1U
+#define ML307_IDENTITY_ICCID        2U
+#define ML307_IDENTITY_OPERATOR     3U
+#define ML307_IDENTITY_COMPLETE     4U
+#define ML307_IMEI_LENGTH          15U
+#define ML307_ICCID_MAX_LENGTH     22U
+#define ML307_OPERATOR_MAX_LENGTH  31U
+
 #define ML307_HTTP_IDLE             0U
 #define ML307_HTTP_CREATE           1U
 #define ML307_HTTP_CACHE            2U
-#define ML307_HTTP_ENCODING         3U
-#define ML307_HTTP_HEADER           4U
-#define ML307_HTTP_REQUEST          5U
-#define ML307_HTTP_WAIT             6U
-#define ML307_HTTP_READ             7U
-#define ML307_HTTP_READ_DONE        8U
-#define ML307_HTTP_DESTROY          9U
+#define ML307_HTTP_HEADER           3U
+#define ML307_HTTP_REQUEST          4U
+#define ML307_HTTP_WAIT             5U
+#define ML307_HTTP_READ             6U
+#define ML307_HTTP_TERM             7U
+#define ML307_HTTP_DELETE           8U
+#define ML307_HTTP_RETRY_LIMIT      3U
 
 typedef struct {
     ml307_status_t status;
@@ -87,13 +95,25 @@ typedef struct {
     uint8_t recovery_level;
     uint8_t management_pending;
     uint8_t publishing_management;
+    uint8_t info_pending;
+    uint8_t publishing_info;
+    uint8_t identity_step;
     uint8_t management_length;
     uint8_t http_step;
     uint8_t http_id;
+    uint8_t http_raw_state;
+    uint8_t http_raw_comma_count;
+    uint8_t http_read_type;
+    uint8_t ota_retry_count;
+    uint8_t ota_retry_blocked;
     uint8_t ota_activate_after_publish;
     uint16_t http_range_size;
     uint16_t http_range_received;
+    uint16_t http_header_remaining;
+    uint16_t http_raw_length;
+    uint16_t http_raw_received;
     uint32_t ota_write_offset;
+    uint32_t ota_retry_at_ms;
     uint32_t at_started_ms;
     uint16_t at_start_tx_bytes;
     uint16_t at_start_rx_bytes;
@@ -104,13 +124,19 @@ extern volatile uint32_t CurTick;
 
 static ml307_context_t modem;
 static volatile uint8_t rx_ring[ML307_RX_RING_SIZE];
-static volatile uint8_t rx_head;
-static volatile uint8_t rx_tail;
+static volatile uint16_t rx_head;
+static volatile uint16_t rx_tail;
 static char rx_line[ML307_LINE_SIZE];
 static char tx_buffer[ML307_TX_SIZE];
 static char device_id[ML307_DEVICE_ID_LENGTH + 1U];
+static char module_imei[ML307_IMEI_LENGTH + 1U];
+static char sim_iccid[ML307_ICCID_MAX_LENGTH + 1U];
+static char operator_name[ML307_OPERATOR_MAX_LENGTH + 1U];
+static char registration_payload[ML307_TX_SIZE];
+static uint16_t registration_length;
 static uint16_t device_jitter_ms;
 static uint8_t management_frame[ML307_MGMT_TX_FRAME];
+static uint8_t http_raw_data[240] __attribute__((aligned(4)));
 
 static void queue_ota_status(uint16_t transaction, uint8_t status);
 
@@ -119,25 +145,13 @@ static uint8_t reached(uint32_t now, uint32_t target)
     return (int32_t)(now - target) >= 0;
 }
 
-static char hex_digit(uint8_t value)
-{
-    value &= 0x0FU;
-    return (char)(value < 10U ? '0' + value : 'A' + value - 10U);
-}
-
 static void build_device_id(void)
 {
-    uint8_t uid[8] __attribute__((aligned(4)));
-    uint8_t index;
     uint16_t crc;
-    GET_UNIQUE_ID(uid);
-    memcpy(device_id, "SAC", 3U);
-    for(index = 0U; index < 6U; index++) {
-        device_id[3U + index * 2U] = hex_digit(uid[index] >> 4);
-        device_id[4U + index * 2U] = hex_digit(uid[index]);
-    }
+    const char *uid = DeviceUid_Get();
+    memcpy(device_id, uid, ML307_DEVICE_ID_LENGTH);
     device_id[ML307_DEVICE_ID_LENGTH] = '\0';
-    crc = DeviceProtocol_Crc16(uid, 6U);
+    crc = DeviceProtocol_Crc16((const uint8_t *)device_id, ML307_DEVICE_ID_LENGTH);
     device_jitter_ms = (uint16_t)(crc % 5000U);
 }
 
@@ -159,6 +173,102 @@ static uint16_t bounded_length(const char *text, uint16_t capacity)
     uint16_t length = 0U;
     while(length < capacity && text[length]) length++;
     return length;
+}
+
+static uint8_t registration_append_char(char value)
+{
+    if(registration_length >= sizeof(registration_payload)) return 0U;
+    registration_payload[registration_length++] = value;
+    return 1U;
+}
+
+static uint8_t registration_append_text(const char *text)
+{
+    while(*text) if(!registration_append_char(*text++)) return 0U;
+    return 1U;
+}
+
+static uint8_t registration_append_u8(uint8_t value)
+{
+    char digits[3];
+    uint8_t count = 0U;
+    do {
+        digits[count++] = (char)('0' + value % 10U);
+        value /= 10U;
+    } while(value && count < sizeof(digits));
+    while(count) if(!registration_append_char(digits[--count])) return 0U;
+    return 1U;
+}
+
+static uint8_t registration_append_safe(const char *text)
+{
+    while(*text) {
+        char value = *text++;
+        if(!((value >= '0' && value <= '9') ||
+             (value >= 'A' && value <= 'Z') ||
+             (value >= 'a' && value <= 'z') || value == ' ' ||
+             value == '.' || value == '-' || value == '_')) value = '_';
+        if(!registration_append_char(value)) return 0U;
+    }
+    return 1U;
+}
+
+static void build_registration_payload(void)
+{
+    registration_length = 0U;
+    if(!registration_append_text("{\"schema\":1,\"firmware\":\"") ||
+       !registration_append_u8((uint8_t)(FIRMWARE_BUILD_VERSION >> 16)) ||
+       !registration_append_char('.') ||
+       !registration_append_u8((uint8_t)(FIRMWARE_BUILD_VERSION >> 8)) ||
+       !registration_append_char('.') ||
+       !registration_append_u8((uint8_t)FIRMWARE_BUILD_VERSION) ||
+       !registration_append_text("\",\"hardware\":\"") ||
+       !registration_append_safe(HARDWARE_BUILD_VERSION) ||
+       !registration_append_text("\",\"imei\":\"") ||
+       !registration_append_safe(module_imei) ||
+       !registration_append_text("\",\"iccid\":\"") ||
+       !registration_append_safe(sim_iccid) ||
+       !registration_append_text("\",\"operator\":\"") ||
+       !registration_append_safe(operator_name) ||
+       !registration_append_text("\"}")) registration_length = 0U;
+}
+
+static uint8_t parse_digits_field(const char *line, const char *prefix,
+                                  char *output, uint8_t capacity,
+                                  uint8_t minimum, uint8_t maximum)
+{
+    const char *cursor = strstr(line, prefix);
+    uint8_t length = 0U;
+    if(!cursor || !output || capacity < maximum + 1U) return 0U;
+    cursor += bounded_length(prefix, 32U);
+    while(*cursor == ':' || *cursor == ' ' || *cursor == '\"') cursor++;
+    while(*cursor >= '0' && *cursor <= '9' && length < maximum)
+        output[length++] = *cursor++;
+    output[length] = '\0';
+    if(length < minimum || (*cursor >= '0' && *cursor <= '9')) {
+        output[0] = '\0';
+        return 0U;
+    }
+    return 1U;
+}
+
+static void parse_operator_name(const char *line)
+{
+    const char *cursor = strstr(line, "+COPS:");
+    uint8_t length = 0U;
+    if(!cursor) return;
+    cursor = strchr(cursor, '\"');
+    if(!cursor) return;
+    cursor++;
+    while(*cursor && *cursor != '\"' && length < ML307_OPERATOR_MAX_LENGTH) {
+        char value = *cursor++;
+        if((value >= '0' && value <= '9') ||
+           (value >= 'A' && value <= 'Z') ||
+           (value >= 'a' && value <= 'z') || value == ' ' ||
+           value == '.' || value == '-' || value == '_')
+            operator_name[length++] = value;
+    }
+    operator_name[length] = '\0';
 }
 
 static void status_phase(ml307_phase_t phase)
@@ -224,12 +334,27 @@ static void reset_runtime_flags(void)
     modem.response_seen = 0U;
     modem.prompt_seen = 0U;
     modem.network_command = 0U;
+    modem.identity_step = ML307_IDENTITY_SIM;
+    modem.info_pending = 0U;
+    modem.publishing_info = 0U;
+    registration_length = 0U;
+    module_imei[0] = '\0';
+    sim_iccid[0] = '\0';
+    operator_name[0] = '\0';
     modem.time_sync_attempts = 0U;
     modem.time_synced = 0U;
     modem.mqtt_config_step = 0U;
     modem.subscribe_index = 0U;
     modem.tx_length = 0U;
     modem.tx_offset = 0U;
+    modem.http_raw_state = 0U;
+    modem.http_raw_comma_count = 0U;
+    modem.http_read_type = 0U;
+    modem.http_header_remaining = 0U;
+    modem.http_raw_length = 0U;
+    modem.http_raw_received = 0U;
+    modem.http_step = ML307_HTTP_IDLE;
+    modem.http_id = 0U;
 }
 
 static void start_hardware_reset(void)
@@ -394,12 +519,11 @@ static uint8_t send_mqtt_config(void)
 static uint8_t send_mqtt_connect(void)
 {
     const connectivity_config_t *config = Connectivity_Get();
-    const char *client_id = config->mqtt_client_id[0] ? config->mqtt_client_id : device_id;
     uint16_t length = 0U;
     if(!tx_append_text(&length, "AT+MQTTCONN=0,\"") ||
        !tx_append_text(&length, config->mqtt_host) ||
        !tx_append_text(&length, "\",") || !tx_append_u32(&length, config->mqtt_port) ||
-       !tx_append_text(&length, ",\"") || !tx_append_text(&length, client_id) ||
+       !tx_append_text(&length, ",\"") || !tx_append_text(&length, device_id) ||
        !tx_append_text(&length, "\",\"\",\"\"\r\n") || !tx_start(length)) return 0U;
     transition_wait(ML307_PHASE_MQTT_CONNECT, ML307_MQTT_TIMEOUT_MS);
     return 1U;
@@ -449,17 +573,41 @@ static uint8_t send_http_create(void)
     return 1U;
 }
 
-static uint8_t send_http_setting(const char *name, uint8_t first, uint8_t second)
+static uint8_t send_http_cache(void)
 {
     uint16_t length = 0U;
-    if(!tx_append_text(&length, "AT+MHTTPCFG=\"") ||
-       !tx_append_text(&length, name) || !tx_append_text(&length, "\",") ||
-       !tx_append_u32(&length, modem.http_id) || !tx_append_text(&length, ",") ||
-       !tx_append_u32(&length, first) ||
-       (second != 0xFFU && (!tx_append_text(&length, ",") ||
-                            !tx_append_u32(&length, second))) ||
-       !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
+    if(!tx_append_text(&length, "AT+MHTTPCFG=\"cached\",") ||
+       !tx_append_u32(&length, modem.http_id) ||
+       /* The cache contains both the HTTP header and the response body.
+        * A 4096-byte Range therefore needs more than 4096 bytes of cache. */
+       !tx_append_text(&length, ",1,8192\r\n") || !tx_start(length)) return 0U;
     http_wait(ML307_COMMAND_TIMEOUT_MS);
+    return 1U;
+}
+
+static uint8_t send_http_read(void)
+{
+    uint16_t remaining = modem.http_read_type == 0U ?
+                         modem.http_header_remaining :
+                         (uint16_t)(modem.http_range_size - modem.http_range_received);
+    uint16_t amount = remaining > sizeof(http_raw_data) ? sizeof(http_raw_data) : remaining;
+    uint16_t length = 0U;
+    if(!amount || !tx_append_text(&length, "AT+MHTTPREAD=") ||
+       !tx_append_u32(&length, modem.http_id) ||
+       !tx_append_char(&length, ',') ||
+       !tx_append_u32(&length, modem.http_read_type) ||
+       !tx_append_char(&length, ',') ||
+       !tx_append_u32(&length, amount) ||
+       !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
+    /* MHTTPREAD returns an ASCII prefix followed immediately by binary data.
+     * Switch the UART consumer before the response can arrive so 0x00/CR/LF
+     * bytes from the firmware are never treated as line delimiters. */
+    modem.http_raw_state = 1U;
+    modem.http_raw_comma_count = 0U;
+    modem.http_raw_length = 0U;
+    modem.http_raw_received = 0U;
+    modem.line_length = 0U;
+    http_wait(5000U);
     return 1U;
 }
 
@@ -472,6 +620,8 @@ static uint8_t send_http_header(void)
     uint16_t length = 0U;
 
     modem.http_range_received = 0U;
+    modem.http_header_remaining = 0U;
+    modem.http_read_type = 0U;
     modem.ota_write_offset = ota->downloaded_bytes;
     remaining = ota->image_size - modem.ota_write_offset;
     modem.http_range_size = (uint16_t)(remaining > EEPROM_BLOCK_SIZE ?
@@ -507,23 +657,20 @@ static uint8_t send_http_request(void)
     return 1U;
 }
 
-static uint8_t send_http_read(void)
+static uint8_t send_http_term(void)
 {
-    uint16_t remaining = (uint16_t)(modem.http_range_size - modem.http_range_received);
-    uint16_t amount = remaining > 240U ? 240U : remaining;
     uint16_t length = 0U;
-    if(!amount || !tx_append_text(&length, "AT+MHTTPREAD=") ||
+    if(!tx_append_text(&length, "AT+MHTTPTERM=") ||
        !tx_append_u32(&length, modem.http_id) ||
-       !tx_append_text(&length, ",1,") || !tx_append_u32(&length, amount) ||
        !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
     http_wait(ML307_COMMAND_TIMEOUT_MS);
     return 1U;
 }
 
-static uint8_t send_http_destroy(void)
+static uint8_t send_http_delete(void)
 {
     uint16_t length = 0U;
-    if(!tx_append_text(&length, "AT+MHTTPDESTROY=") ||
+    if(!tx_append_text(&length, "AT+MHTTPDEL=") ||
        !tx_append_u32(&length, modem.http_id) ||
        !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
     http_wait(ML307_COMMAND_TIMEOUT_MS);
@@ -541,12 +688,14 @@ static uint8_t build_publish_frame(uint8_t *frame)
 static uint8_t start_publish(void)
 {
     uint8_t frame[ML307_MQTT_FRAME_SIZE];
-    uint8_t frame_length;
+    uint16_t frame_length;
     uint16_t payload_length;
     uint16_t length = 0U;
 
     modem.publishing_management = modem.management_pending;
+    modem.publishing_info = !modem.publishing_management && modem.info_pending;
     if(modem.publishing_management) frame_length = modem.management_length;
+    else if(modem.publishing_info) frame_length = registration_length;
     else {
         modem.publishing_command_valid = modem.pending_command_valid;
         modem.publishing_command_result = modem.pending_command_result;
@@ -554,15 +703,18 @@ static uint8_t start_publish(void)
         frame_length = build_publish_frame(frame);
         if(frame_length == 0U) return 0U;
     }
-    payload_length = (uint16_t)frame_length * 2U;
+    payload_length = modem.publishing_info ? frame_length : frame_length * 2U;
     if(!tx_append_text(&length, "AT+MQTTPUB=0,\"") ||
-       !tx_append_topic(&length, modem.publishing_management ? "/m/u" : "/u") ||
+       !tx_append_topic(&length, modem.publishing_management ? "/m/u" :
+                                modem.publishing_info ? "/info" : "/u") ||
        !tx_append_text(&length, "\",") ||
-       !tx_append_u32(&length, modem.publishing_management ? 1U :
+       !tx_append_u32(&length, (modem.publishing_management || modem.publishing_info) ? 1U :
                       Connectivity_Get()->mqtt_qos) ||
-       !tx_append_text(&length, ",0,0,") || !tx_append_u32(&length, payload_length) ||
+       !tx_append_text(&length, ",0,0,") ||
+       !tx_append_u32(&length, payload_length) ||
        !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
-    if(!modem.publishing_management) modem.report_requested = 0U;
+    if(!modem.publishing_management && !modem.publishing_info)
+        modem.report_requested = 0U;
     modem.prompt_seen = 0U;
     transition_wait(ML307_PHASE_PUBLISH, 5000U);
     return 1U;
@@ -573,7 +725,10 @@ static uint8_t send_publish_payload(void)
     uint8_t frame[ML307_MQTT_FRAME_SIZE];
     uint8_t frame_length;
     uint16_t length;
-    if(modem.publishing_management) {
+    if(modem.publishing_info) {
+        length = registration_length;
+        if(length) memcpy(tx_buffer, registration_payload, length);
+    } else if(modem.publishing_management) {
         frame_length = modem.management_length;
         length = Ml307Codec_HexEncode(management_frame, frame_length,
                                       tx_buffer, sizeof(tx_buffer));
@@ -684,6 +839,12 @@ static void handle_management(const ml307_publish_t *publish)
             status = Ota_BeginRemote(frame_u32(frame + 8), frame_u32(frame + 12),
                                      frame_u32(frame + 16),
                                      (const char *)(frame + 21), frame[20]);
+            if(status == DEVICE_STATUS_OK) {
+                modem.ota_retry_count = 0U;
+                modem.ota_retry_blocked = 0U;
+                modem.ota_retry_at_ms = 0U;
+                modem.status.last_error = ML307_ERROR_NONE;
+            }
         }
         break;
     case ML307_MGMT_OTA_ACTIVATE:
@@ -695,7 +856,25 @@ static void handle_management(const ml307_publish_t *publish)
     case ML307_MGMT_OTA_CANCEL:
         if(payload_length == 0U) {
             status = Ota_Cancel();
-            if(status == DEVICE_STATUS_OK) modem.http_step = ML307_HTTP_IDLE;
+            if(status == DEVICE_STATUS_OK) {
+                modem.ota_retry_count = 0U;
+                modem.ota_retry_blocked = 0U;
+                modem.ota_retry_at_ms = 0U;
+                modem.status.last_error = ML307_ERROR_NONE;
+            }
+            if(status == DEVICE_STATUS_OK && modem.http_step != ML307_HTTP_IDLE) {
+                /* Stop the transfer without resetting MQTT.  Destroying the
+                 * HTTP instance releases the module-side cache as well. */
+                modem.waiting = 0U;
+                modem.http_raw_state = 0U;
+                modem.http_raw_comma_count = 0U;
+                modem.http_read_type = 0U;
+                modem.http_header_remaining = 0U;
+                modem.http_raw_length = 0U;
+                modem.http_raw_received = 0U;
+                modem.line_length = 0U;
+                modem.http_step = ML307_HTTP_TERM;
+            }
         }
         break;
     case ML307_MGMT_OTA_STATUS:
@@ -856,6 +1035,13 @@ static void complete_publish(void)
         } else status_phase(ML307_PHASE_ONLINE);
         return;
     }
+    if(modem.publishing_info) {
+        modem.info_pending = 0U;
+        modem.publishing_info = 0U;
+        modem.waiting = 0U;
+        status_phase(ML307_PHASE_ONLINE);
+        return;
+    }
     modem.status.last_report_ms = CurTick;
     modem.publishing_command_valid = 0U;
     modem.waiting = 0U;
@@ -902,52 +1088,105 @@ static void queue_ota_status(uint16_t transaction, uint8_t status)
     queue_management_frame(ML307_MGMT_OTA_STATUS, transaction, payload, sizeof(payload));
 }
 
-static void http_fail(ml307_error_t error)
+static uint8_t mqtt_urc_number(const char *line, uint8_t index, uint16_t *value);
+
+static uint32_t http_retry_delay(uint8_t attempt)
 {
-    modem.http_step = ML307_HTTP_IDLE;
-    modem.waiting = 0U;
-    enter_backoff(error);
+    if(attempt <= 1U) return 2000UL;
+    if(attempt == 2U) return 5000UL;
+    return 10000UL;
 }
 
-static uint8_t parse_http_read(char *line, uint16_t length)
+static void http_fail_status(ml307_error_t error, uint8_t operation_status)
 {
-    char *comma = line;
-    char *previous = 0;
-    char *data;
-    uint16_t data_length = 0U;
-    uint8_t index;
-    uint8_t decoded[240];
-    uint8_t decoded_length;
-    for(index = 0U; index < 4U; index++) {
-        previous = comma;
-        comma = strchr(comma, ',');
-        if(!comma) return 0U;
-        comma++;
+    uint8_t ota_state = Ota_Get()->state;
+    uint8_t failed_step = modem.http_step;
+
+    modem.waiting = 0U;
+    modem.http_raw_state = 0U;
+    modem.http_raw_comma_count = 0U;
+    modem.http_read_type = 0U;
+    modem.http_header_remaining = 0U;
+    modem.http_raw_length = 0U;
+    modem.http_raw_received = 0U;
+    modem.line_length = 0U;
+    rx_tail = rx_head;
+    modem.status.last_error = (uint8_t)error;
+
+    /* A cleanup command may itself time out on older module firmware.  Move
+     * forward instead of counting cleanup as another download attempt. */
+    if(failed_step == ML307_HTTP_TERM) {
+        modem.http_step = ML307_HTTP_DELETE;
+        return;
     }
-    data = comma;
-    comma = previous;
-    while(comma < data - 1 && *comma >= '0' && *comma <= '9')
-        data_length = (uint16_t)(data_length * 10U + (uint8_t)(*comma++ - '0'));
-    if(data_length == 0U || data_length > sizeof(decoded) ||
-       (uint16_t)(line + length - data) != data_length * 2U) return 0U;
-    decoded_length = Ml307Codec_HexDecode(data, data_length * 2U,
-                                          decoded, sizeof(decoded));
-    if(decoded_length != data_length ||
-       modem.http_range_received + data_length > modem.http_range_size) return 0U;
-    if(Ota_Write(modem.ota_write_offset + modem.http_range_received,
-                 decoded, data_length) != DEVICE_STATUS_OK) return 0U;
-    modem.http_range_received = (uint16_t)(modem.http_range_received + data_length);
-    if(modem.http_range_received == modem.http_range_size)
-        modem.http_step = ML307_HTTP_READ_DONE;
-    return 1U;
+    if(failed_step == ML307_HTTP_DELETE) {
+        modem.http_step = ML307_HTTP_IDLE;
+        return;
+    }
+
+    /* Keep the last committed 4 KB checkpoint.  Three bounded retries rebuild
+     * the module HTTP session; after that the OTA pauses while normal MQTT and
+     * device control stay online.  Reissuing the same offer resumes it. */
+    if(ota_state == OTA_STATE_DOWNLOADING &&
+       modem.ota_retry_count < ML307_HTTP_RETRY_LIMIT) {
+        modem.ota_retry_count++;
+        modem.ota_retry_at_ms = CurTick + http_retry_delay(modem.ota_retry_count);
+    } else {
+        modem.ota_retry_blocked = 1U;
+        if(ota_state == OTA_STATE_ERASING || ota_state == OTA_STATE_DOWNLOADING ||
+           ota_state == OTA_STATE_VERIFYING)
+            queue_ota_status(0U, operation_status);
+    }
+    modem.http_step = ML307_HTTP_TERM;
+}
+
+static void http_fail(ml307_error_t error)
+{
+    http_fail_status(error, error == ML307_ERROR_OTA ?
+                            DEVICE_STATUS_IO_ERROR : DEVICE_STATUS_TIMEOUT);
+}
+
+static uint8_t parse_http_read_header(const char *line, uint16_t length,
+                                      uint16_t *data_length)
+{
+    const char *cursor;
+    const char *end;
+    uint8_t field;
+
+    if(!line || !data_length || length < 12U ||
+       memcmp(line, "+MHTTPREAD:", 11U) != 0) return 0U;
+    end = line + length;
+    cursor = line + 11U;
+    for(field = 0U; field < 4U; field++) {
+        uint32_t value = 0U;
+        uint8_t digits = 0U;
+        while(cursor < end && *cursor == ' ') cursor++;
+        while(cursor < end && *cursor >= '0' && *cursor <= '9') {
+            value = value * 10U + (uint8_t)(*cursor - '0');
+            if(value > 0xFFFFU) return 0U;
+            cursor++;
+            digits = 1U;
+        }
+        if(!digits) return 0U;
+        if(field == 3U) {
+            if(cursor >= end || *cursor++ != ',') return 0U;
+            *data_length = (uint16_t)value;
+            return cursor == end;
+        }
+        while(cursor < end && *cursor == ' ') cursor++;
+        if(cursor >= end || *cursor++ != ',') return 0U;
+    }
+    return 0U;
 }
 
 static uint8_t http_process_line(char *line, uint16_t length)
 {
-    uint16_t code;
     uint16_t content_length;
-    uint8_t status;
     if(modem.http_step == ML307_HTTP_IDLE) return 0U;
+    if((modem.http_step == ML307_HTTP_TERM ||
+        modem.http_step == ML307_HTTP_DELETE) && strcmp(line, "OK") != 0 &&
+       strcmp(line, "ERROR") != 0 && strstr(line, "+CME ERROR:") == 0)
+        return 1U;
     if(strstr(line, "+MHTTPCREATE:") != 0) {
         const char *cursor = strchr(line, ':');
         if(cursor) {
@@ -956,56 +1195,98 @@ static uint8_t http_process_line(char *line, uint16_t length)
         }
         return 1U;
     }
-    if(strstr(line, "+MHTTPURC: \"err\",") != 0) {
+    if(strstr(line, "+MHTTPURC:") != 0 && strstr(line, "\"err\"") != 0) {
         uint16_t error_code = 0U;
         mqtt_urc_number(line, 1U, &error_code);
-        http_fail(error_code == 1U ? ML307_ERROR_DNS : ML307_ERROR_HTTP);
+        http_fail_status(error_code == 1U ? ML307_ERROR_DNS : ML307_ERROR_HTTP,
+                         DEVICE_STATUS_IO_ERROR);
         return 1U;
     }
-    if(strstr(line, "+MHTTPURC: \"recv\",") != 0) {
-        if(!mqtt_urc_number(line, 1U, &code) ||
-           !mqtt_urc_number(line, 3U, &content_length) || code != 206U ||
-           content_length != modem.http_range_size) {
-            http_fail(ML307_ERROR_HTTP);
+    if(strstr(line, "+MHTTPURC:") != 0 && strstr(line, "\"recv\"") != 0) {
+        uint16_t response_code = 0U;
+        uint16_t header_length = 0U;
+        uint8_t header_ok = mqtt_urc_number(line, 2U, &header_length);
+        uint8_t content_ok = mqtt_urc_number(line, 3U, &content_length);
+        /* Some early ML307R AT firmware omits header_length from the recv
+         * URC.  In that format content_length is field 2. */
+        if(!content_ok && header_ok) {
+            content_length = header_length;
+            header_length = 0U;
+            content_ok = 1U;
+        }
+        if(!mqtt_urc_number(line, 1U, &response_code) || !content_ok ||
+           response_code != 206U || content_length != modem.http_range_size) {
+            http_fail_status(ML307_ERROR_HTTP, DEVICE_STATUS_CONFLICT);
         } else {
+            /* Cached HTTP stores response headers and content separately.
+             * Drain type 0 before type 1 on every Range response; otherwise
+             * the headers accumulate until the module cache fills. */
+            modem.http_header_remaining = header_length;
+            modem.http_read_type = header_length == 0U ? 1U : 0U;
             modem.waiting = 0U;
             modem.http_step = ML307_HTTP_READ;
         }
         return 1U;
     }
-    if(strstr(line, "+MHTTPREAD:") != 0) {
-        if(!parse_http_read(line, length)) http_fail(ML307_ERROR_OTA);
+    /* The final CRLF/OK belongs to the binary-safe MHTTPREAD transaction. */
+    if(modem.http_step == ML307_HTTP_READ && modem.http_raw_state == 3U) {
+        if(strcmp(line, "OK") == 0) {
+            uint8_t status;
+            modem.http_raw_state = 0U;
+            modem.waiting = 0U;
+            if(modem.http_read_type == 0U) {
+                if(modem.http_header_remaining == 0U)
+                    modem.http_read_type = 1U;
+                modem.http_step = ML307_HTTP_READ;
+            } else if(modem.http_range_received < modem.http_range_size) {
+                modem.http_step = ML307_HTTP_READ;
+            } else {
+                /* The whole Range is now committed by Ota_Write(), including
+                 * its metadata checkpoint.  Later retries start after it. */
+                modem.ota_retry_count = 0U;
+                modem.ota_retry_at_ms = 0U;
+                modem.status.last_error = ML307_ERROR_NONE;
+                if(modem.ota_write_offset + modem.http_range_received >=
+                   Ota_Get()->image_size) {
+                    status = Ota_BeginVerify();
+                    if(status == DEVICE_STATUS_OK) modem.http_step = ML307_HTTP_TERM;
+                    else http_fail(ML307_ERROR_OTA);
+                } else {
+                    modem.http_step = ML307_HTTP_HEADER;
+                }
+            }
+        }
         return 1U;
     }
     if(strcmp(line, "ERROR") == 0 || strstr(line, "+CME ERROR:") != 0) {
-        if(modem.http_step == ML307_HTTP_DESTROY) {
+        if(modem.http_step == ML307_HTTP_TERM) {
+            modem.waiting = 0U;
+            modem.http_step = ML307_HTTP_DELETE;
+            return 1U;
+        }
+        if(modem.http_step == ML307_HTTP_DELETE) {
             modem.waiting = 0U;
             modem.http_step = ML307_HTTP_IDLE;
             return 1U;
         }
-        http_fail(ML307_ERROR_HTTP);
+        http_fail_status(ML307_ERROR_HTTP, DEVICE_STATUS_NOT_SUPPORTED);
         return 1U;
     }
     if(strcmp(line, "OK") != 0) return 1U;
     modem.waiting = 0U;
     switch(modem.http_step) {
     case ML307_HTTP_CREATE: modem.http_step = ML307_HTTP_CACHE; break;
-    case ML307_HTTP_CACHE: modem.http_step = ML307_HTTP_ENCODING; break;
-    case ML307_HTTP_ENCODING: modem.http_step = ML307_HTTP_HEADER; break;
+    case ML307_HTTP_CACHE: modem.http_step = ML307_HTTP_HEADER; break;
     case ML307_HTTP_HEADER: modem.http_step = ML307_HTTP_REQUEST; break;
     case ML307_HTTP_REQUEST:
         modem.http_step = ML307_HTTP_WAIT;
         modem.waiting = 1U;
         modem.deadline_ms = CurTick + 60000UL;
         break;
-    case ML307_HTTP_READ_DONE:
-        if(modem.ota_write_offset + modem.http_range_received >= Ota_Get()->image_size) {
-            status = Ota_BeginVerify();
-            if(status == DEVICE_STATUS_OK) modem.http_step = ML307_HTTP_DESTROY;
-            else http_fail(ML307_ERROR_OTA);
-        } else modem.http_step = ML307_HTTP_HEADER;
+    case ML307_HTTP_TERM:
+        modem.http_step = ML307_HTTP_DELETE;
         break;
-    case ML307_HTTP_DESTROY:
+    case ML307_HTTP_DELETE:
         modem.http_step = ML307_HTTP_IDLE;
         break;
     default:
@@ -1122,6 +1403,8 @@ static void process_line(char *line, uint16_t length)
             modem.status.consecutive_failures = 0U;
             modem.status.last_error = ML307_ERROR_NONE;
             modem.recovery_level = 0U;
+            build_registration_payload();
+            modem.info_pending = registration_length > 0U;
             modem.report_requested = 1U;
             modem.next_action_ms = CurTick + device_jitter_ms;
             status_phase(ML307_PHASE_ONLINE);
@@ -1135,6 +1418,17 @@ static void process_line(char *line, uint16_t length)
     }
     if(strstr(line, "+CPIN:") != 0 && strstr(line, "READY") != 0)
         modem.status.sim_ready = 1U;
+    if(phase == ML307_PHASE_SIM && modem.identity_step == ML307_IDENTITY_IMEI &&
+       strstr(line, "+CGSN:") != 0)
+        (void)parse_digits_field(line, "+CGSN", module_imei,
+                                 sizeof(module_imei), ML307_IMEI_LENGTH,
+                                 ML307_IMEI_LENGTH);
+    if(phase == ML307_PHASE_SIM && modem.identity_step == ML307_IDENTITY_ICCID &&
+       strstr(line, "+MCCID:") != 0)
+        (void)parse_digits_field(line, "+MCCID", sim_iccid,
+                                 sizeof(sim_iccid), 19U,
+                                 ML307_ICCID_MAX_LENGTH);
+    if(strstr(line, "+COPS:") != 0) parse_operator_name(line);
     if(strstr(line, "+CEREG:") != 0) {
         modem.status.network_registered = parse_cereg(line);
         if(!modem.status.network_registered &&
@@ -1148,10 +1442,22 @@ static void process_line(char *line, uint16_t length)
     if(strstr(line, "+CESQ:") != 0) parse_extended_signal(line);
     if(strstr(line, "+CCLK:") != 0) parse_network_clock(line, length);
     if(strcmp(line, "ERROR") == 0 || strstr(line, "+CME ERROR:") != 0) {
-        if(phase == ML307_PHASE_SIM) enter_backoff(ML307_ERROR_SIM);
+        if(phase == ML307_PHASE_SIM && modem.identity_step > ML307_IDENTITY_SIM) {
+            if(modem.identity_step < ML307_IDENTITY_OPERATOR)
+                modem.identity_step++;
+            modem.waiting = 0U;
+            modem.next_action_ms = CurTick;
+        }
+        else if(phase == ML307_PHASE_SIM) enter_backoff(ML307_ERROR_SIM);
         else if(phase == ML307_PHASE_NETWORK && modem.network_command == 1U) {
             modem.waiting = 0U;
             modem.next_action_ms = CurTick + 1000U;
+        }
+        else if(phase == ML307_PHASE_NETWORK && modem.network_command == 3U) {
+            modem.identity_step = ML307_IDENTITY_COMPLETE;
+            modem.network_command = 0U;
+            modem.waiting = 0U;
+            modem.next_action_ms = CurTick;
         }
         else if(phase == ML307_PHASE_NETWORK) enter_backoff(ML307_ERROR_NETWORK);
         else if(phase == ML307_PHASE_SIGNAL_QUERY) {
@@ -1196,8 +1502,16 @@ static void process_line(char *line, uint16_t length)
         if(tx_command("ATE0\r\n")) transition_wait(ML307_PHASE_SIM, ML307_COMMAND_TIMEOUT_MS);
         break;
     case ML307_PHASE_SIM:
-        if(!modem.status.sim_ready) modem.next_action_ms = CurTick + 2000U;
-        else if(!send_apn()) enter_backoff(ML307_ERROR_CONFIG);
+        if(modem.identity_step == ML307_IDENTITY_SIM) {
+            if(!modem.status.sim_ready) modem.next_action_ms = CurTick + 2000U;
+            else {
+                modem.identity_step = ML307_IDENTITY_IMEI;
+                modem.next_action_ms = CurTick;
+            }
+        } else if(modem.identity_step < ML307_IDENTITY_OPERATOR) {
+            modem.identity_step++;
+            modem.next_action_ms = CurTick;
+        }
         break;
     case ML307_PHASE_APN:
         modem.network_started_ms = CurTick;
@@ -1205,6 +1519,10 @@ static void process_line(char *line, uint16_t length)
         status_phase(ML307_PHASE_NETWORK);
         break;
     case ML307_PHASE_NETWORK:
+        if(modem.network_command == 3U) {
+            modem.identity_step = ML307_IDENTITY_COMPLETE;
+            modem.network_command = 0U;
+        }
         modem.next_action_ms = CurTick +
             (modem.status.network_registered ? 1000U : 2000U);
         break;
@@ -1221,7 +1539,8 @@ static void process_line(char *line, uint16_t length)
         break;
     case ML307_PHASE_PUBLISH:
         if(modem.prompt_seen) {
-            if(modem.publishing_management || Connectivity_Get()->mqtt_qos == 1U) {
+            if(modem.publishing_management || modem.publishing_info ||
+               Connectivity_Get()->mqtt_qos == 1U) {
                 /* QoS 1 只有收到 puback 才算完成；OK 仅表示命令已处理。 */
                 modem.response_seen = 1U;
                 modem.waiting = 1U;
@@ -1242,8 +1561,69 @@ static void consume_uart(void)
 {
     uint16_t budget = 192U;
     while(rx_tail != rx_head && budget--) {
-        char value = (char)rx_ring[rx_tail];
-        rx_tail = (uint8_t)((rx_tail + 1U) % ML307_RX_RING_SIZE);
+        uint8_t raw_value = rx_ring[rx_tail];
+        char value = (char)raw_value;
+        rx_tail = (uint16_t)((rx_tail + 1U) % ML307_RX_RING_SIZE);
+        if(modem.http_raw_state == 1U) {
+            /* Collect only the printable MHTTPREAD prefix.  The fourth comma
+             * is the delimiter immediately before the binary payload. */
+            if((value == '\r' || value == '\n') && modem.line_length == 0U) continue;
+            if(value == '\n') {
+                http_fail(ML307_ERROR_OTA);
+                continue;
+            }
+            if(modem.line_length + 1U >= sizeof(rx_line)) {
+                http_fail(ML307_ERROR_RX_OVERFLOW);
+                continue;
+            }
+            rx_line[modem.line_length++] = value;
+            if(value == ',') {
+                modem.http_raw_comma_count++;
+                if(modem.http_raw_comma_count == 4U) {
+                    uint16_t data_length = 0U;
+                    uint16_t remaining = modem.http_read_type == 0U ?
+                                         modem.http_header_remaining :
+                                         (uint16_t)(modem.http_range_size -
+                                                    modem.http_range_received);
+                    if(!parse_http_read_header(rx_line, modem.line_length,
+                                               &data_length) ||
+                       data_length == 0U || data_length > sizeof(http_raw_data) ||
+                       data_length > remaining) {
+                        http_fail(ML307_ERROR_OTA);
+                    } else {
+                        modem.http_raw_length = data_length;
+                        modem.http_raw_received = 0U;
+                        modem.http_raw_state = 2U;
+                        modem.line_length = 0U;
+                    }
+                }
+            }
+            continue;
+        }
+        if(modem.http_raw_state == 2U) {
+            if(modem.http_raw_received >= sizeof(http_raw_data)) {
+                http_fail(ML307_ERROR_OTA);
+                continue;
+            }
+            http_raw_data[modem.http_raw_received++] = raw_value;
+            if(modem.http_raw_received == modem.http_raw_length) {
+                if(modem.http_read_type == 0U) {
+                    modem.http_header_remaining = (uint16_t)(modem.http_header_remaining -
+                                                              modem.http_raw_length);
+                    modem.http_raw_state = 3U;
+                    modem.line_length = 0U;
+                } else if(Ota_Write(modem.ota_write_offset + modem.http_range_received,
+                                    http_raw_data, modem.http_raw_length) != DEVICE_STATUS_OK) {
+                    http_fail(ML307_ERROR_OTA);
+                } else {
+                    modem.http_range_received = (uint16_t)(modem.http_range_received +
+                                                           modem.http_raw_length);
+                    modem.http_raw_state = 3U;
+                    modem.line_length = 0U;
+                }
+            }
+            continue;
+        }
         if(value == '>' && modem.status.phase == ML307_PHASE_PUBLISH &&
            !modem.prompt_seen) {
             modem.line_length = 0U;
@@ -1422,7 +1802,6 @@ void Ml307_Process(void)
 {
     uint32_t now = CurTick;
     const connectivity_config_t *config = Connectivity_Get();
-    Health_Mark(HEALTH_CELLULAR);
 
     if(!Connectivity_CellularEnabled()) {
         if(modem.status.phase != ML307_PHASE_DISABLED) Ml307_ApplyConfiguration();
@@ -1458,12 +1837,12 @@ void Ml307_Process(void)
             uint8_t sent = 1U;
             switch(modem.http_step) {
             case ML307_HTTP_CREATE: sent = send_http_create(); break;
-            case ML307_HTTP_CACHE: sent = send_http_setting("cached", 1U, 0xFFU); break;
-            case ML307_HTTP_ENCODING: sent = send_http_setting("encoding", 0U, 1U); break;
+            case ML307_HTTP_CACHE: sent = send_http_cache(); break;
             case ML307_HTTP_HEADER: sent = send_http_header(); break;
             case ML307_HTTP_REQUEST: sent = send_http_request(); break;
             case ML307_HTTP_READ: sent = send_http_read(); break;
-            case ML307_HTTP_DESTROY: sent = send_http_destroy(); break;
+            case ML307_HTTP_TERM: sent = send_http_term(); break;
+            case ML307_HTTP_DELETE: sent = send_http_delete(); break;
             default: break;
             }
             if(!sent) http_fail(ML307_ERROR_HTTP);
@@ -1473,18 +1852,27 @@ void Ml307_Process(void)
     if(modem.status.phase == ML307_PHASE_ONLINE && !modem.management_pending) {
         uint8_t ota_state = Ota_Get()->state;
         if(ota_state == OTA_STATE_ERASING) {
-            uint8_t result = Ota_EraseStep();
-            if(result != DEVICE_STATUS_OK) {
-                modem.status.last_error = ML307_ERROR_OTA;
-                Ota_Cancel();
-                queue_ota_status(0U, result);
+            if(!modem.ota_retry_blocked) {
+                uint8_t result = Ota_EraseStep();
+                if(result != DEVICE_STATUS_OK) {
+                    modem.status.last_error = ML307_ERROR_OTA;
+                    modem.ota_retry_blocked = 1U;
+                    queue_ota_status(0U, result);
+                }
+                return;
             }
-            return;
         }
-        if(ota_state == OTA_STATE_DOWNLOADING) {
-            modem.http_step = ML307_HTTP_CREATE;
-            modem.http_id = 0U;
-            return;
+        if(ota_state == OTA_STATE_DOWNLOADING && Ota_Get()->url_length != 0U &&
+           !modem.ota_retry_blocked && reached(now, modem.ota_retry_at_ms)) {
+            uint8_t result = Ota_RewindDownload();
+            if(result == DEVICE_STATUS_OK) {
+                modem.http_step = ML307_HTTP_CREATE;
+                modem.http_id = 0U;
+                return;
+            }
+            modem.status.last_error = ML307_ERROR_OTA;
+            modem.ota_retry_blocked = 1U;
+            queue_ota_status(0U, result);
         }
         if(ota_state == OTA_STATE_VERIFYING) {
             uint8_t result = Ota_VerifyStep();
@@ -1497,6 +1885,14 @@ void Ml307_Process(void)
         }
     }
     if(modem.waiting && reached(now, modem.deadline_ms)) {
+        if(modem.status.phase == ML307_PHASE_SIM &&
+           modem.identity_step > ML307_IDENTITY_SIM) {
+            if(modem.identity_step < ML307_IDENTITY_OPERATOR)
+                modem.identity_step++;
+            modem.waiting = 0U;
+            modem.next_action_ms = now;
+            return;
+        }
         if(modem.status.phase == ML307_PHASE_AT_SYNC &&
            modem.time_sync_attempts < ML307_SYNC_RETRY_LIMIT) {
             modem.waiting = 0U;
@@ -1506,6 +1902,13 @@ void Ml307_Process(void)
         if(modem.status.phase == ML307_PHASE_NETWORK && modem.network_command == 1U) {
             modem.waiting = 0U;
             modem.next_action_ms = now + 1000U;
+            return;
+        }
+        if(modem.status.phase == ML307_PHASE_NETWORK && modem.network_command == 3U) {
+            modem.identity_step = ML307_IDENTITY_COMPLETE;
+            modem.network_command = 0U;
+            modem.waiting = 0U;
+            modem.next_action_ms = now;
             return;
         }
         if(modem.status.phase == ML307_PHASE_SIGNAL_QUERY) {
@@ -1546,8 +1949,19 @@ void Ml307_Process(void)
         }
         break;
     case ML307_PHASE_SIM:
-        if(!modem.waiting && reached(now, modem.next_action_ms) && tx_command("AT+CPIN?\r\n"))
-            transition_wait(ML307_PHASE_SIM, ML307_COMMAND_TIMEOUT_MS);
+        if(!modem.waiting && reached(now, modem.next_action_ms)) {
+            if(modem.identity_step == ML307_IDENTITY_SIM &&
+               tx_command("AT+CPIN?\r\n"))
+                transition_wait(ML307_PHASE_SIM, ML307_COMMAND_TIMEOUT_MS);
+            else if(modem.identity_step == ML307_IDENTITY_IMEI &&
+                    tx_command("AT+CGSN=1\r\n"))
+                transition_wait(ML307_PHASE_SIM, ML307_COMMAND_TIMEOUT_MS);
+            else if(modem.identity_step == ML307_IDENTITY_ICCID &&
+                    tx_command("AT+MCCID\r\n"))
+                transition_wait(ML307_PHASE_SIM, ML307_COMMAND_TIMEOUT_MS);
+            else if(modem.identity_step >= ML307_IDENTITY_OPERATOR &&
+                    !send_apn()) enter_backoff(ML307_ERROR_CONFIG);
+        }
         break;
     case ML307_PHASE_NETWORK:
         if((uint32_t)(now - modem.network_started_ms) >=
@@ -1556,10 +1970,18 @@ void Ml307_Process(void)
         else if(!modem.waiting && reached(now, modem.next_action_ms)) {
             if(modem.status.network_registered &&
                (modem.time_synced || modem.time_sync_attempts >= 3U)) {
-                if(!modem.time_synced)
-                    modem.next_clock_ms = now + ML307_CLOCK_RETRY_MS;
-                modem.next_action_ms = now;
-                status_phase(ML307_PHASE_MQTT_CONFIG);
+                if(modem.identity_step == ML307_IDENTITY_OPERATOR) {
+                    if(tx_command("AT+COPS?\r\n")) {
+                        modem.network_command = 3U;
+                        transition_wait(ML307_PHASE_NETWORK,
+                                        ML307_COMMAND_TIMEOUT_MS);
+                    }
+                } else {
+                    if(!modem.time_synced)
+                        modem.next_clock_ms = now + ML307_CLOCK_RETRY_MS;
+                    modem.next_action_ms = now;
+                    status_phase(ML307_PHASE_MQTT_CONFIG);
+                }
             } else if(modem.status.network_registered) {
                 if(tx_command("AT+CCLK?\r\n")) {
                     modem.network_command = 1U;
@@ -1592,8 +2014,11 @@ void Ml307_Process(void)
         break;
     case ML307_PHASE_ONLINE:
         if(modem.management_pending ||
-           (modem.report_requested && reached(now, modem.next_action_ms)) ||
-           (uint32_t)(now - modem.status.last_report_ms) >= (uint32_t)config->report_interval_sec * 1000UL) {
+           ((modem.info_pending || modem.report_requested) &&
+            reached(now, modem.next_action_ms)) ||
+           (!modem.info_pending &&
+            (uint32_t)(now - modem.status.last_report_ms) >=
+            (uint32_t)config->report_interval_sec * 1000UL)) {
             if(!start_publish()) enter_backoff(ML307_ERROR_CONFIG);
         } else if(reached(now, modem.next_clock_ms) && tx_command("AT+CCLK?\r\n")) {
             modem.network_command = 1U;
@@ -1647,7 +2072,7 @@ void UART1_IRQHandler(void)
     case UART_II_RECV_RDY:
     case UART_II_RECV_TOUT:
         while(R8_UART1_RFC) {
-            uint8_t next = (uint8_t)((rx_head + 1U) % ML307_RX_RING_SIZE);
+            uint16_t next = (uint16_t)((rx_head + 1U) % ML307_RX_RING_SIZE);
             uint8_t value = R8_UART1_RBR;
             modem.status.rx_bytes++;
             if(next == rx_tail) {

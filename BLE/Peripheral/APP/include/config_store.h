@@ -13,8 +13,6 @@
 #define DEVICE_PROFILE_SLOT_B (STORAGE_RESERVED_PAGE + 0x0300u)
 #define RUNTIME_PAGE          0x3000u
 #define IR_STORAGE_PAGE               0x4000u
-#define HEALTH_STORAGE_PAGE           0x5000u
-#define HEALTH_STORAGE_REGION_SIZE    0x0E00u
 #define RUNTIME_BACKUP_PAGE   0x5E00u
 #define IR_STORAGE_SLOT_B             0x6000u
 
@@ -46,6 +44,7 @@ typedef enum {
 #define CONNECTIVITY_APN_SIZE         20U
 #define CONNECTIVITY_CLIENT_ID_SIZE   32U
 #define CONNECTIVITY_TOPIC_SIZE       32U
+#define DEVICE_UID_LENGTH             15U
 
 #define CONNECTIVITY_PDP_IPV4         0U
 #define CONNECTIVITY_PDP_IPV4V6       1U
@@ -91,6 +90,8 @@ uint8_t Connectivity_Load(void);
 uint8_t Connectivity_Save(const connectivity_config_t *config);
 uint8_t Connectivity_Validate(const connectivity_config_t *config);
 const connectivity_config_t *Connectivity_Get(void);
+uint8_t DeviceUid_Valid(const char *uid);
+#define DeviceUid_Get() (Connectivity_Get()->mqtt_client_id)
 uint32_t Connectivity_GetGeneration(void);
 uint8_t Connectivity_Encode(uint8_t *payload, uint16_t capacity, uint16_t *length);
 uint8_t Connectivity_Decode(const uint8_t *payload, uint16_t length,
