@@ -107,7 +107,7 @@ static void test_remote_download_install_and_cancel(void)
     for(index = 0; index < sizeof(image); index++) image[index] = (uint8_t)(index + 1U);
 
     Ota_Init();
-    assert(Ota_BeginRemote(0x00021601UL, sizeof(image), crc32(image, sizeof(image)),
+    assert(Ota_BeginRemote(FIRMWARE_BUILD_VERSION + 1U, sizeof(image), crc32(image, sizeof(image)),
                            "http://fw/device.bin", 20) == DEVICE_STATUS_OK);
     assert(Ota_EraseStep() == DEVICE_STATUS_OK);
     assert(Ota_EraseStep() == DEVICE_STATUS_OK);
@@ -126,12 +126,53 @@ static void test_interrupted_local_update_is_discarded(void)
 {
     memset(dataflash, 0xFF, sizeof(dataflash));
     Ota_Init();
-    assert(Ota_BeginLocal(0x00021601UL, 4096U, 0x12345678UL) == DEVICE_STATUS_OK);
+    assert(Ota_BeginLocal(FIRMWARE_BUILD_VERSION + 1U, 4096U, 0x12345678UL) == DEVICE_STATUS_OK);
     Ota_Init();
     assert(Ota_Get()->state == OTA_STATE_IDLE);
 }
 
-static void test_remote_progress_checkpoint_uses_distance_not_alignment(void)
+static void test_same_or_older_version_is_allowed(void)
+{
+    memset(dataflash, 0xFF, sizeof(dataflash));
+    Ota_Init();
+    assert(Ota_BeginLocal(1U, 4096U, 0x12345678UL) == DEVICE_STATUS_OK);
+    assert(Ota_Cancel() == DEVICE_STATUS_OK);
+    assert(Ota_BeginRemote(1U, 4096U, 0x12345678UL,
+                           "http://fw/device.bin", 20) == DEVICE_STATUS_OK);
+}
+
+static void test_local_update_accepts_a_partial_final_dword(void)
+{
+    uint8_t image[65];
+    uint8_t status;
+    uint8_t index;
+
+    memset(dataflash, 0xFF, sizeof(dataflash));
+    memset(codeflash, 0xFF, sizeof(codeflash));
+    for(index = 0U; index < sizeof(image); index++) image[index] = (uint8_t)(index ^ 0xA5U);
+
+    Ota_Init();
+    assert(Ota_BeginLocal(FIRMWARE_BUILD_VERSION + 1U, sizeof(image), crc32(image, sizeof(image))) == DEVICE_STATUS_OK);
+    assert(Ota_Write(0U, image, sizeof(image)) == DEVICE_STATUS_OK);
+    assert(Ota_FinishLocal() == DEVICE_STATUS_OK);
+    do { status = Ota_VerifyStep(); } while(status == DEVICE_STATUS_BUSY);
+    assert(status == DEVICE_STATUS_OK);
+    assert(Ota_Get()->state == OTA_STATE_READY);
+}
+
+static void write_remote_block(uint32_t *offset, uint8_t *chunk)
+{
+    uint16_t length;
+    uint32_t end = *offset + BLOCK_SIZE;
+    while(*offset < end) {
+        length = (uint16_t)(end - *offset);
+        if(length > 240U) length = 240U;
+        assert(Ota_Write(*offset, chunk, length) == DEVICE_STATUS_OK);
+        *offset += length;
+    }
+}
+
+static void test_remote_progress_uses_live_offset_and_aligned_checkpoint(void)
 {
     uint8_t chunk[240];
     uint32_t offset = 0U;
@@ -140,21 +181,26 @@ static void test_remote_progress_checkpoint_uses_distance_not_alignment(void)
     memset(chunk, 0x5A, sizeof(chunk));
 
     Ota_Init();
-    assert(Ota_BeginRemote(0x00021601UL, 20000U, 0x12345678UL,
+    assert(Ota_BeginRemote(FIRMWARE_BUILD_VERSION + 1U, 20000U, 0x12345678UL,
                            "http://fw/device.bin", 20) == DEVICE_STATUS_OK);
     while(Ota_Get()->state == OTA_STATE_ERASING)
         assert(Ota_EraseStep() == DEVICE_STATUS_OK);
-    while(offset < 16560U) {
-        assert(Ota_Write(offset, chunk, sizeof(chunk)) == DEVICE_STATUS_OK);
-        offset += sizeof(chunk);
-    }
-    assert(Ota_Get()->downloaded_bytes == 16560U);
+    write_remote_block(&offset, chunk);
+    assert(Ota_GetWriteOffset() == BLOCK_SIZE);
+    assert(Ota_Get()->downloaded_bytes == 0U);
+    write_remote_block(&offset, chunk);
+    write_remote_block(&offset, chunk);
+    write_remote_block(&offset, chunk);
+    assert(Ota_GetWriteOffset() == 4U * BLOCK_SIZE);
+    assert(Ota_Get()->downloaded_bytes == 4U * BLOCK_SIZE);
 
-    /* A reboot resumes at the latest >=16 KB checkpoint even though 240-byte
-     * chunks never land exactly on a 16 KB boundary. */
+    /* A reboot resumes at the aligned 16 KB checkpoint, so only the following
+     * partially written erase block ever needs to be discarded. */
     Ota_Init();
     assert(Ota_Get()->state == OTA_STATE_DOWNLOADING);
-    assert(Ota_Get()->downloaded_bytes == 16560U);
+    assert(Ota_Get()->downloaded_bytes == 4U * BLOCK_SIZE);
+    assert(Ota_RewindDownload() == DEVICE_STATUS_OK);
+    assert(Ota_GetWriteOffset() == 4U * BLOCK_SIZE);
 }
 
 int main(void)
@@ -164,7 +210,9 @@ int main(void)
     test_failed_operations_do_not_advance();
     test_remote_download_install_and_cancel();
     test_interrupted_local_update_is_discarded();
-    test_remote_progress_checkpoint_uses_distance_not_alignment();
+    test_same_or_older_version_is_allowed();
+    test_local_update_accepts_a_partial_final_dword();
+    test_remote_progress_uses_live_offset_and_aligned_checkpoint();
     puts("OTA partition/session and staging metadata: PASS");
     return 0;
 }

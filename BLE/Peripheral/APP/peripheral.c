@@ -462,16 +462,19 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
 
     if(events & OTA_FLASH_VERIFY_EVT)
     {
-        uint8_t status = Ota_VerifyStep();
+        const ota_metadata_t *ota = Ota_Get();
+        /* 在线 4G 旧逻辑可能已经把本地镜像推进到 READY。READY 表示
+         * CRC 已通过，直接进入安装即可，不能再调用一次校验并报告冲突。 */
+        uint8_t status = (ota->state == OTA_STATE_READY && ota->url_length == 0U) ?
+                         DEVICE_STATUS_OK : Ota_VerifyStep();
         if(status == DEVICE_STATUS_BUSY) {
             tmos_start_task(Peripheral_TaskID, OTA_FLASH_VERIFY_EVT, MS1_TO_SYSTEM_TIME(1));
-        } else if(status == DEVICE_STATUS_OK && Ota_MarkInstall() == DEVICE_STATUS_OK) {
-            localOtaActive = 0U;
-            OTA_IAP_SendCMDDealSta(0U);
-            tmos_start_task(Peripheral_TaskID, SBP_DEVICE_RESET_EVT, MS1_TO_SYSTEM_TIME(100));
         } else {
             localOtaActive = 0U;
-            OTA_IAP_SendCMDDealSta(0xFFU);
+            if(status == DEVICE_STATUS_OK) status = Ota_MarkInstall();
+            OTA_IAP_SendCMDDealSta(status);
+            if(status == DEVICE_STATUS_OK)
+                tmos_start_task(Peripheral_TaskID, SBP_DEVICE_RESET_EVT, MS1_TO_SYSTEM_TIME(100));
         }
         return (events ^ OTA_FLASH_VERIFY_EVT);
     }
@@ -853,14 +856,8 @@ static void __attribute__((noinline)) SendDeviceFrame(const uint8_t *frame, uint
 static uint8_t peripheralBuildAdvData(void)
 {
     uint8_t p = 0;
-    uint8_t localName[23];
-    static const char hex[]="0123456789ABCDEF";
-    const char *baseName = DeviceProfile_GetName();
-    uint8_t nameLen = (uint8_t)strlen(baseName);
-    uint16_t shortId;
-    const char *deviceUid = DeviceUid_Get();
-    shortId = DeviceUid_Valid(deviceUid) ?
-              DeviceProtocol_Crc16((const uint8_t *)deviceUid, DEVICE_UID_LENGTH) : 0U;
+    const char *deviceName = DeviceProfile_GetName();
+    uint8_t nameLen = (uint8_t)strlen(deviceName);
     if(nameLen > 22)
     {
         nameLen = 22;
@@ -875,13 +872,11 @@ static uint8_t peripheralBuildAdvData(void)
     advertData[p++] = LO_UINT16(SIMPLEPROFILE_SERV_UUID);
     advertData[p++] = HI_UINT16(SIMPLEPROFILE_SERV_UUID);
 
-    memcpy(localName,baseName,nameLen);
-    if(nameLen<=17u){localName[nameLen++]='-';localName[nameLen++]=hex[(shortId>>12)&0x0Fu];localName[nameLen++]=hex[(shortId>>8)&0x0Fu];localName[nameLen++]=hex[(shortId>>4)&0x0Fu];localName[nameLen++]=hex[shortId&0x0Fu];}
     memset(attDeviceName, 0, sizeof(attDeviceName));
-    memcpy(attDeviceName, localName, nameLen < sizeof(attDeviceName) ? nameLen : sizeof(attDeviceName));
+    memcpy(attDeviceName, deviceName, nameLen < sizeof(attDeviceName) ? nameLen : sizeof(attDeviceName));
     advertData[p++] = (uint8_t)(nameLen + 1);
     advertData[p++] = GAP_ADTYPE_LOCAL_NAME_COMPLETE;
-    memcpy(&advertData[p], localName, nameLen);
+    memcpy(&advertData[p], deviceName, nameLen);
     p = (uint8_t)(p + nameLen);
 
     return p;
@@ -977,6 +972,7 @@ static void ProcessOtaCommand(const uint8_t *command)
         case CMD_IAP_PROM:
         {
             uint8_t status;
+            uint32_t offset;
 
             OpParaDataLen = command[1];
             OpAdd = (uint32_t)command[2];
@@ -990,9 +986,14 @@ static void ProcessOtaCommand(const uint8_t *command)
                 OTA_IAP_SendCMDDealSta(0xFF);
                 break;
             }
-            status = FLASH_ROM_WRITE(OpAdd, (uint8_t *)command + 4, (uint16_t)OpParaDataLen);
-            OtaGuard_EndProgram(&otaGuard, (uint16_t)OpParaDataLen, status == SUCCESS);
-            if(status) PRINT("IAP_PROM err \r\n");
+            offset = OpAdd - Ota_StagingAddress();
+            /* BLE and 4G share the same aligned Flash writer.  Passing the
+             * GATT buffer directly to ISP583 can report success even when a
+             * non-dword final packet is not programmed byte-for-byte. */
+            status = Ota_Write(offset, command + 4, (uint16_t)OpParaDataLen);
+            OtaGuard_EndProgram(&otaGuard, (uint16_t)OpParaDataLen,
+                                status == DEVICE_STATUS_OK);
+            if(status != DEVICE_STATUS_OK) PRINT("IAP_PROM err:%u\r\n", status);
             OTA_IAP_SendCMDDealSta(status);
             break;
         }

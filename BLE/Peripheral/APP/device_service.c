@@ -215,7 +215,8 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         payload[6]=(uint8_t)Dev.wind;put16(payload+7,Dev.errorCode.u16Val);payload[9]=(uint8_t)Dev.loraStatus;
         payload[10]=(Dev.mode==0u||!transport_online())?1u:0u;put32(payload+11,0u);put32(payload+15,Config_GetRevision());
         payload[19]=meter->valid;put16(payload+20,meter->voltage_dv);put16(payload+22,meter->current_ma);put16(payload+24,meter->power_w_x10);
-        put32(payload+26,Dev.meter.energy_wh);put16(payload+30,meter->communication_errors);*payload_len=32;break;}
+        put32(payload+26,Dev.meter.energy_wh);put16(payload+30,meter->communication_errors);
+        payload[32]=ADC_GetSensorStatus();put16(payload+33,ADC_GetHumidityX10());put16(payload+35,ADC_GetSht40Errors());*payload_len=37;break;}
     case DEVICE_OP_GET_CONFIG:
         put16(payload,Dev.nodeId);payload[2]=(uint8_t)Dev.channel;payload[3]=Dev.linkRole;put16(payload+4,Dev.parentRelayId);payload[6]=Dev.mode;
         payload[7]=(uint8_t)Dev.irActType;put16(payload+8,Dev.irType);payload[10]=Dev.irIdx;put32(payload+11,Config_GetRevision());*payload_len=15;break;

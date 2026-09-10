@@ -121,7 +121,7 @@
 #define BLE_SNV_NUM                         1
 #endif
 #ifndef CLK_OSC32K
-#define CLK_OSC32K                          1   // 使用内部 32K RC；与已验证可扫描的旧版固件保持一致
+#define CLK_OSC32K                          0   // 使用外部 32.768 kHz 晶振（LSE）
 #endif
 #ifndef BLE_MEMHEAP_SIZE
 #define BLE_MEMHEAP_SIZE                    (1024*6)

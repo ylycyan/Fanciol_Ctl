@@ -124,7 +124,13 @@ int main(void)
           PERIPHERAL_MAX_CONNECTION, CENTRAL_MAX_CONNECTION);
     CH58X_BLEInit();
     HAL_Init();
-    PRINT("BLE RTC clock: internal 32K RC\r\n");
+#if(CLK_OSC32K == 0)
+    PRINT("BLE RTC clock: external 32.768 kHz LSE\r\n");
+#elif(CLK_OSC32K == 1)
+    PRINT("BLE RTC clock: internal 32 kHz RC\r\n");
+#else
+    PRINT("BLE RTC clock: internal 32.768 kHz RC\r\n");
+#endif
     RTC_ProductInit(retainedResetReason, retainedTimestamp);
     LocalTimestamp = Rtc_GetTimestamp();
     GAPRole_PeripheralInit();

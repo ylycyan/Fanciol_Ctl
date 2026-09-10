@@ -132,7 +132,7 @@ static uint8_t storage_startup_flags;
 static connectivity_config_t connectivity_config;
 static uint32_t connectivity_generation;
 static uint32_t connectivity_slot;
-static char device_profile_name[DEVICE_PROFILE_NAME_MAX + 1U] = "SplitAC";
+static char device_profile_name[DEVICE_PROFILE_NAME_MAX + 1U] = BT_DEVICE_NAME;
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint16_t len)
 {
@@ -175,8 +175,10 @@ static uint8_t device_profile_record_valid(const device_profile_record_t *record
 
 void DeviceProfile_FactoryDefaults(void)
 {
+    uint8_t length = (uint8_t)strlen(BT_DEVICE_NAME);
+    if(length > DEVICE_PROFILE_NAME_MAX) length = DEVICE_PROFILE_NAME_MAX;
     memset(device_profile_name, 0, sizeof(device_profile_name));
-    memcpy(device_profile_name, "SplitAC", 7U);
+    memcpy(device_profile_name, BT_DEVICE_NAME, length);
 }
 
 const char *DeviceProfile_GetName(void)

@@ -39,9 +39,8 @@ def ota(args):
     if not 64 <= len(image) <= APP_LIMIT:
         raise SystemExit(f'application size {len(image)} is outside 64..{APP_LIMIT} bytes')
     output = Path(args.output)
-    version_text = f'{args.version >> 16}.{(args.version >> 8) & 0xFF}.{args.version & 0xFF}'
-    if output.suffix.lower() != '.bin' or not re.search(rf'(?:^|[-_v]){re.escape(version_text)}$', output.stem, re.IGNORECASE):
-        raise SystemExit(f'OTA output must be a versioned .bin file, for example firmware-{version_text}.bin')
+    if output.suffix.lower() != '.bin':
+        raise SystemExit('OTA output must use the .bin extension')
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(image)
     print(f'{output}: image={len(image)} crc={crc32(image):08X}')
@@ -172,9 +171,10 @@ def provision(args):
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest='command', required=True)
-    ota_cmd = commands.add_parser('ota', help='export one versioned raw .bin for BLE and HTTP OTA')
+    ota_cmd = commands.add_parser('ota', help='export one raw .bin for BLE and HTTP OTA')
     ota_cmd.add_argument('--app', required=True)
-    ota_cmd.add_argument('--version', required=True, type=parse_version)
+    ota_cmd.add_argument('--version', required=False, type=parse_version,
+                         help='optional build label retained for command compatibility')
     ota_cmd.add_argument('--output', required=True)
     ota_cmd.set_defaults(func=ota)
 

@@ -15,7 +15,7 @@
 #define OTA_METADATA_MAGIC        0x3154414FUL
 
 #ifndef FIRMWARE_BUILD_VERSION
-#define FIRMWARE_BUILD_VERSION    0x0002160CUL
+#define FIRMWARE_BUILD_VERSION    0x00021613UL
 #endif
 
 #ifndef HARDWARE_BUILD_VERSION
@@ -51,6 +51,7 @@ typedef struct __attribute__((packed)) {
 void Ota_Init(void);
 const ota_metadata_t *Ota_Get(void);
 uint32_t Ota_StagingAddress(void);
+uint32_t Ota_GetWriteOffset(void);
 uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_crc32,
                         const char *url, uint8_t url_length);
 uint8_t Ota_BeginLocal(uint32_t version, uint32_t image_size, uint32_t image_crc32);

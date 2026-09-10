@@ -65,18 +65,18 @@ class ProductionProvisioningTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, 'invalid device_uid'):
                 production.provision(provision_args(source, root / 'invalid'))
 
-    def test_ota_exports_the_application_as_one_versioned_raw_bin(self):
+    def test_ota_exports_the_application_with_any_bin_name(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / 'application.bin'
-            output = root / 'firmware-2.22.0.bin'
+            output = root / 'firmware.bin'
             image = bytes(range(96))
             source.write_bytes(image)
             production.ota(SimpleNamespace(app=str(source), version=0x00021600, output=str(output)))
             self.assertEqual(output.read_bytes(), image)
-            with self.assertRaisesRegex(SystemExit, 'versioned .bin'):
+            with self.assertRaisesRegex(SystemExit, '.bin extension'):
                 production.ota(SimpleNamespace(app=str(source), version=0x00021600,
-                                                output=str(root / 'firmware.bin')))
+                                                output=str(root / 'firmware.hex')))
 
 
 if __name__ == '__main__':

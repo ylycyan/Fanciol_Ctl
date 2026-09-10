@@ -37,6 +37,7 @@
 #define ML307_MGMT_MAGIC            0xC7U
 #define ML307_MGMT_VERSION          0x01U
 
+#define ML307_MGMT_REGISTRATION         0x01U
 #define ML307_MGMT_RESULT               0x04U
 #define ML307_MGMT_OTA_OFFER            0x05U
 #define ML307_MGMT_OTA_ACTIVATE         0x06U
@@ -91,7 +92,6 @@ typedef struct {
     uint8_t at_command_length;
     uint8_t at_retry_count;
     uint8_t mqtt_config_step;
-    uint8_t subscribe_index;
     uint8_t recovery_level;
     uint8_t management_pending;
     uint8_t publishing_management;
@@ -113,6 +113,7 @@ typedef struct {
     uint16_t http_raw_length;
     uint16_t http_raw_received;
     uint32_t ota_write_offset;
+    uint32_t ota_reported_bytes;
     uint32_t ota_retry_at_ms;
     uint32_t at_started_ms;
     uint16_t at_start_tx_bytes;
@@ -132,7 +133,7 @@ static char device_id[ML307_DEVICE_ID_LENGTH + 1U];
 static char module_imei[ML307_IMEI_LENGTH + 1U];
 static char sim_iccid[ML307_ICCID_MAX_LENGTH + 1U];
 static char operator_name[ML307_OPERATOR_MAX_LENGTH + 1U];
-static char registration_payload[ML307_TX_SIZE];
+static uint8_t registration_payload[ML307_TX_SIZE];
 static uint16_t registration_length;
 static uint16_t device_jitter_ms;
 static uint8_t management_frame[ML307_MGMT_TX_FRAME];
@@ -175,62 +176,47 @@ static uint16_t bounded_length(const char *text, uint16_t capacity)
     return length;
 }
 
-static uint8_t registration_append_char(char value)
+static uint8_t registration_append_field(const char *text, uint8_t maximum)
 {
-    if(registration_length >= sizeof(registration_payload)) return 0U;
-    registration_payload[registration_length++] = value;
-    return 1U;
-}
-
-static uint8_t registration_append_text(const char *text)
-{
-    while(*text) if(!registration_append_char(*text++)) return 0U;
-    return 1U;
-}
-
-static uint8_t registration_append_u8(uint8_t value)
-{
-    char digits[3];
-    uint8_t count = 0U;
-    do {
-        digits[count++] = (char)('0' + value % 10U);
-        value /= 10U;
-    } while(value && count < sizeof(digits));
-    while(count) if(!registration_append_char(digits[--count])) return 0U;
-    return 1U;
-}
-
-static uint8_t registration_append_safe(const char *text)
-{
-    while(*text) {
-        char value = *text++;
-        if(!((value >= '0' && value <= '9') ||
-             (value >= 'A' && value <= 'Z') ||
-             (value >= 'a' && value <= 'z') || value == ' ' ||
-             value == '.' || value == '-' || value == '_')) value = '_';
-        if(!registration_append_char(value)) return 0U;
+    uint8_t length = (uint8_t)bounded_length(text, maximum);
+    if(registration_length + 1U + length > sizeof(registration_payload)) return 0U;
+    registration_payload[registration_length++] = length;
+    if(length) {
+        memcpy(registration_payload + registration_length, text, length);
+        registration_length = (uint16_t)(registration_length + length);
     }
     return 1U;
 }
 
 static void build_registration_payload(void)
 {
-    registration_length = 0U;
-    if(!registration_append_text("{\"schema\":1,\"firmware\":\"") ||
-       !registration_append_u8((uint8_t)(FIRMWARE_BUILD_VERSION >> 16)) ||
-       !registration_append_char('.') ||
-       !registration_append_u8((uint8_t)(FIRMWARE_BUILD_VERSION >> 8)) ||
-       !registration_append_char('.') ||
-       !registration_append_u8((uint8_t)FIRMWARE_BUILD_VERSION) ||
-       !registration_append_text("\",\"hardware\":\"") ||
-       !registration_append_safe(HARDWARE_BUILD_VERSION) ||
-       !registration_append_text("\",\"imei\":\"") ||
-       !registration_append_safe(module_imei) ||
-       !registration_append_text("\",\"iccid\":\"") ||
-       !registration_append_safe(sim_iccid) ||
-       !registration_append_text("\",\"operator\":\"") ||
-       !registration_append_safe(operator_name) ||
-       !registration_append_text("\"}")) registration_length = 0U;
+    uint16_t payload_length;
+    uint16_t crc;
+    registration_length = 12U;
+    registration_payload[0] = ML307_MGMT_MAGIC;
+    registration_payload[1] = ML307_MGMT_VERSION;
+    registration_payload[2] = ML307_MGMT_REGISTRATION;
+    registration_payload[3] = 0U;
+    registration_payload[4] = 0U;
+    registration_payload[5] = 0U;
+    registration_payload[8] = (uint8_t)FIRMWARE_BUILD_VERSION;
+    registration_payload[9] = (uint8_t)(FIRMWARE_BUILD_VERSION >> 8);
+    registration_payload[10] = (uint8_t)(FIRMWARE_BUILD_VERSION >> 16);
+    registration_payload[11] = 0U;
+    /* Keep the complete Hex frame below the existing 192-byte UART buffer. */
+    if(!registration_append_field(HARDWARE_BUILD_VERSION, 12U) ||
+       !registration_append_field(module_imei, ML307_IMEI_LENGTH) ||
+       !registration_append_field(sim_iccid, ML307_ICCID_MAX_LENGTH) ||
+       !registration_append_field(operator_name, 16U)) {
+        registration_length = 0U;
+        return;
+    }
+    payload_length = (uint16_t)(registration_length - 8U);
+    registration_payload[6] = (uint8_t)payload_length;
+    registration_payload[7] = (uint8_t)(payload_length >> 8);
+    crc = DeviceProtocol_Crc16(registration_payload, registration_length);
+    registration_payload[registration_length++] = (uint8_t)crc;
+    registration_payload[registration_length++] = (uint8_t)(crc >> 8);
 }
 
 static uint8_t parse_digits_field(const char *line, const char *prefix,
@@ -344,7 +330,6 @@ static void reset_runtime_flags(void)
     modem.time_sync_attempts = 0U;
     modem.time_synced = 0U;
     modem.mqtt_config_step = 0U;
-    modem.subscribe_index = 0U;
     modem.tx_length = 0U;
     modem.tx_offset = 0U;
     modem.http_raw_state = 0U;
@@ -533,8 +518,8 @@ static uint8_t send_mqtt_subscribe(void)
 {
     uint16_t length = 0U;
     if(!tx_append_text(&length, "AT+MQTTSUB=0,\"") ||
-       !tx_append_topic(&length, modem.subscribe_index == 0U ? "/d" : "/m/d") ||
-       !tx_append_text(&length, "\",") || !tx_append_u32(&length, modem.subscribe_index) ||
+       !tx_append_topic(&length, "/d") ||
+       !tx_append_text(&length, "\",1") ||
        !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
     transition_wait(ML307_PHASE_MQTT_SUBSCRIBE, ML307_MQTT_TIMEOUT_MS);
     return 1U;
@@ -622,7 +607,10 @@ static uint8_t send_http_header(void)
     modem.http_range_received = 0U;
     modem.http_header_remaining = 0U;
     modem.http_read_type = 0U;
-    modem.ota_write_offset = ota->downloaded_bytes;
+    /* downloaded_bytes is a wear-limited persistent checkpoint.  Consecutive
+     * 4 KB HTTP ranges must continue from the live RAM offset, otherwise the
+     * ranges between two 16 KB checkpoints are requested from the start. */
+    modem.ota_write_offset = Ota_GetWriteOffset();
     remaining = ota->image_size - modem.ota_write_offset;
     modem.http_range_size = (uint16_t)(remaining > EEPROM_BLOCK_SIZE ?
                                        EEPROM_BLOCK_SIZE : remaining);
@@ -679,9 +667,21 @@ static uint8_t send_http_delete(void)
 
 static uint8_t build_publish_frame(uint8_t *frame)
 {
-    if(modem.publishing_command_valid)
-        return Lora_BuildControlResult(frame, ML307_LORA_TAG_CONTROL,
-                                       modem.publishing_command_result);
+    if(modem.publishing_command_valid) {
+        /* 4G直连失败回包保留执行结果：1=红外发送/验证失败，
+         * 2=参数或红外配置不支持。旧5字节失败包无法区分原因。
+         * 仅扩展MQTT上行，不改变LoRa节点间的既有帧格式。 */
+        if(modem.publishing_command_result != 0U) {
+            frame[0] = 0x02U;
+            frame[1] = ML307_LORA_TAG_CONTROL;
+            frame[2] = (uint8_t)Dev.nodeId;
+            frame[3] = (uint8_t)(Dev.nodeId >> 8);
+            frame[4] = modem.publishing_command_result;
+            frame[5] = GatewayLora_Checksum(frame, 5U);
+            return 6U;
+        }
+        return Lora_BuildControlResult(frame, ML307_LORA_TAG_CONTROL, 0U);
+    }
     return Lora_BuildNodeReport(frame, ML307_LORA_TAG_READ, 0U);
 }
 
@@ -703,10 +703,9 @@ static uint8_t start_publish(void)
         frame_length = build_publish_frame(frame);
         if(frame_length == 0U) return 0U;
     }
-    payload_length = modem.publishing_info ? frame_length : frame_length * 2U;
+    payload_length = frame_length * 2U;
     if(!tx_append_text(&length, "AT+MQTTPUB=0,\"") ||
-       !tx_append_topic(&length, modem.publishing_management ? "/m/u" :
-                                modem.publishing_info ? "/info" : "/u") ||
+       !tx_append_topic(&length, "/u") ||
        !tx_append_text(&length, "\",") ||
        !tx_append_u32(&length, (modem.publishing_management || modem.publishing_info) ? 1U :
                       Connectivity_Get()->mqtt_qos) ||
@@ -726,8 +725,8 @@ static uint8_t send_publish_payload(void)
     uint8_t frame_length;
     uint16_t length;
     if(modem.publishing_info) {
-        length = registration_length;
-        if(length) memcpy(tx_buffer, registration_payload, length);
+        length = Ml307Codec_HexEncode(registration_payload, registration_length,
+                                      tx_buffer, sizeof(tx_buffer));
     } else if(modem.publishing_management) {
         frame_length = modem.management_length;
         length = Ml307Codec_HexEncode(management_frame, frame_length,
@@ -820,7 +819,7 @@ static void handle_management(const ml307_publish_t *publish)
     uint16_t transaction;
     uint16_t payload_length;
 
-    if(!topic_matches(publish, "/m/d")) return;
+    if(!topic_matches(publish, "/d")) return;
     length = Ml307Codec_HexDecode(publish->payload, publish->payload_length,
                                   frame, sizeof(frame));
     if(length < 10U || frame[0] != ML307_MGMT_MAGIC ||
@@ -843,6 +842,7 @@ static void handle_management(const ml307_publish_t *publish)
                 modem.ota_retry_count = 0U;
                 modem.ota_retry_blocked = 0U;
                 modem.ota_retry_at_ms = 0U;
+                modem.ota_reported_bytes = Ota_Get()->downloaded_bytes;
                 modem.status.last_error = ML307_ERROR_NONE;
             }
         }
@@ -860,6 +860,7 @@ static void handle_management(const ml307_publish_t *publish)
                 modem.ota_retry_count = 0U;
                 modem.ota_retry_blocked = 0U;
                 modem.ota_retry_at_ms = 0U;
+                modem.ota_reported_bytes = 0U;
                 modem.status.last_error = ML307_ERROR_NONE;
             }
             if(status == DEVICE_STATUS_OK && modem.http_step != ML307_HTTP_IDLE) {
@@ -1251,6 +1252,14 @@ static uint8_t http_process_line(char *line, uint16_t length)
                     status = Ota_BeginVerify();
                     if(status == DEVICE_STATUS_OK) modem.http_step = ML307_HTTP_TERM;
                     else http_fail(ML307_ERROR_OTA);
+                } else if(Ota_Get()->downloaded_bytes > modem.ota_reported_bytes) {
+                    /* At the 16 KB DataFlash checkpoint, close HTTP briefly so
+                     * the queued MQTT status is published before downloading
+                     * resumes.  This avoids mixing MQTT URCs into binary HTTP
+                     * reads and gives the web page deterministic progress. */
+                    modem.ota_reported_bytes = Ota_Get()->downloaded_bytes;
+                    queue_ota_status(0U, DEVICE_STATUS_OK);
+                    modem.http_step = ML307_HTTP_TERM;
                 } else {
                     modem.http_step = ML307_HTTP_HEADER;
                 }
@@ -1298,7 +1307,6 @@ static uint8_t http_process_line(char *line, uint16_t length)
 static void complete_mqtt_connection(void)
 {
     modem.waiting = 0U;
-    modem.subscribe_index = 0U;
     modem.next_action_ms = CurTick;
     status_phase(ML307_PHASE_MQTT_SUBSCRIBE);
 }
@@ -1348,7 +1356,9 @@ static void process_line(char *line, uint16_t length)
 
     publish_status = Ml307Codec_ParsePublish(line, length, &publish);
     if(publish_status == ML307_CODEC_OK) {
-        if(topic_matches(&publish, "/m/d")) handle_management(&publish);
+        if(topic_matches(&publish, "/d") && publish.payload_length >= 2U &&
+           (publish.payload[0] == 'C' || publish.payload[0] == 'c') &&
+           publish.payload[1] == '7') handle_management(&publish);
         else handle_downlink(&publish);
         return;
     }
@@ -1394,21 +1404,16 @@ static void process_line(char *line, uint16_t length)
             return;
         }
         modem.waiting = 0U;
-        if(modem.subscribe_index == 0U) {
-            modem.subscribe_index = 1U;
-            modem.next_action_ms = CurTick;
-        } else {
-            modem.status.mqtt_online = 1U;
-            modem.status.last_connected_ms = CurTick;
-            modem.status.consecutive_failures = 0U;
-            modem.status.last_error = ML307_ERROR_NONE;
-            modem.recovery_level = 0U;
-            build_registration_payload();
-            modem.info_pending = registration_length > 0U;
-            modem.report_requested = 1U;
-            modem.next_action_ms = CurTick + device_jitter_ms;
-            status_phase(ML307_PHASE_ONLINE);
-        }
+        modem.status.mqtt_online = 1U;
+        modem.status.last_connected_ms = CurTick;
+        modem.status.consecutive_failures = 0U;
+        modem.status.last_error = ML307_ERROR_NONE;
+        modem.recovery_level = 0U;
+        build_registration_payload();
+        modem.info_pending = registration_length > 0U;
+        modem.report_requested = 1U;
+        modem.next_action_ms = CurTick + device_jitter_ms;
+        status_phase(ML307_PHASE_ONLINE);
         return;
     }
     if(strstr(line, "+MQTTURC: \"puback\",0,") != 0) {
@@ -1655,6 +1660,7 @@ static void consume_uart(void)
 void Ml307_Init(void)
 {
     memset(&modem, 0, sizeof(modem));
+    modem.ota_reported_bytes = Ota_Get()->downloaded_bytes;
     build_device_id();
     modem.status.signal_rssi = -127;
     modem.status.rsrp_dbm = -127;
@@ -1874,7 +1880,10 @@ void Ml307_Process(void)
             modem.ota_retry_blocked = 1U;
             queue_ota_status(0U, result);
         }
-        if(ota_state == OTA_STATE_VERIFYING) {
+        /* url_length=0 表示 BLE 现场升级，由 Peripheral 的 TMOS 事件推进。
+         * 4G 状态机只能校验自己通过 HTTP 创建的会话，否则两边会同时
+         * 调用 Ota_VerifyStep：一边置 READY 后，另一边会误报 CONFLICT。 */
+        if(ota_state == OTA_STATE_VERIFYING && Ota_Get()->url_length != 0U) {
             uint8_t result = Ota_VerifyStep();
             if(result == DEVICE_STATUS_OK || result == DEVICE_STATUS_VERIFY_FAILED ||
                result == DEVICE_STATUS_IO_ERROR) {
@@ -2039,7 +2048,6 @@ void Ml307_Process(void)
             } else if(modem.recovery_level == 1U) {
                 if(!modem.uart_enabled) uart_enable();
                 modem.mqtt_config_step = 0U;
-                modem.subscribe_index = 0U;
                 modem.next_action_ms = now;
                 status_phase(ML307_PHASE_MQTT_CONFIG);
             } else if(modem.recovery_level == 2U) {

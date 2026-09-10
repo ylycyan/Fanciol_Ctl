@@ -60,6 +60,13 @@ typedef enum {
 #define DevTag   50
 #define MAGIC_CODE 0x52AB //首次上电判断
 #define AD_INTERVAL 10 //adc采集间隔
+
+/* BLE 状态中的温湿度来源标志；LoRa/MQTT 固定业务帧不增加字段。 */
+#define TEMP_SENSOR_TEMP_VALID      0x01U
+#define TEMP_SENSOR_HUMIDITY_VALID  0x02U
+#define TEMP_SENSOR_SHT40_ACTIVE    0x04U
+#define TEMP_SENSOR_NTC_FALLBACK    0x08U
+#define TEMP_SENSOR_SHT40_FAULT     0x10U
 /*
  * 网关固定设备类型 20，数据区固定 11 字节：
  * v0 设定温度(sf)，v1 开关设定(u8)，v2 环境温度(sf)，
@@ -368,6 +375,9 @@ extern uint16_t Relay_GetChildBitmap(void);
 extern void ADC_Pro(void);
 extern void ADC_Init(void);
 extern uint8_t ADC_IsValid(void);
+extern uint8_t ADC_GetSensorStatus(void);
+extern uint16_t ADC_GetHumidityX10(void);
+extern uint16_t ADC_GetSht40Errors(void);
 extern void LED_Pro(void);
 extern void Rule_Pro(void);
 extern void Rule_DailyReset(void);

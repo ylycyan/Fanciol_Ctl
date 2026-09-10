@@ -14,6 +14,8 @@ static uint8_t resume_erase_required;
 static uint8_t write_buffer[244] __attribute__((aligned(4)));
 static uint8_t verify_buffer[64] __attribute__((aligned(4)));
 
+#define OTA_CHECKPOINT_BYTES (4UL * EEPROM_BLOCK_SIZE)
+
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint16_t length)
 {
     uint16_t index;
@@ -118,9 +120,9 @@ void Ota_Init(void)
             metadata.state = OTA_STATE_VERIFYING;
             (void)metadata_save();
         } else {
-            /* downloaded_bytes is committed only at a 4 KB boundary.  The
-             * following block may contain a partial write from before reset,
-             * so erase just that block before resuming from the checkpoint. */
+            /* HTTP ranges end at 4 KB boundaries; persistent checkpoints are
+             * taken every 16 KB.  The following block may contain a partial
+             * write from before reset, so erase only that block on resume. */
             resume_erase_required = 1U;
         }
     }
@@ -136,12 +138,16 @@ uint32_t Ota_StagingAddress(void)
     return OTA_STAGING_ADDRESS;
 }
 
+uint32_t Ota_GetWriteOffset(void)
+{
+    return write_offset;
+}
+
 uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_crc32,
                         const char *url, uint8_t url_length)
 {
     if(!url || url_length == 0U || url_length >= OTA_URL_SIZE ||
-       image_size == 0U || image_size > OTA_MAX_IMAGE_SIZE ||
-       version <= metadata.current_version)
+       image_size == 0U || image_size > OTA_MAX_IMAGE_SIZE)
         return DEVICE_STATUS_INVALID_ARG;
 
     if(metadata.state != OTA_STATE_IDLE) {
@@ -173,9 +179,15 @@ uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_cr
 
 uint8_t Ota_BeginLocal(uint32_t version, uint32_t image_size, uint32_t image_crc32)
 {
-    if(metadata.state != OTA_STATE_IDLE) return DEVICE_STATUS_BUSY;
-    if(version <= metadata.current_version || image_size == 0U ||
-       image_size > OTA_MAX_IMAGE_SIZE) return DEVICE_STATUS_INVALID_ARG;
+    if(metadata.state != OTA_STATE_IDLE) {
+        /* 用户明确开始一次新的 BLE 升级时，可清理上一次断开或旧版并发
+         * 校验遗留的本地会话。带 URL 的 4G 下载以及安装中状态不得覆盖。 */
+        if(metadata.url_length != 0U || metadata.state == OTA_STATE_INSTALLING)
+            return DEVICE_STATUS_BUSY;
+        if(Ota_Cancel() != DEVICE_STATUS_OK) return DEVICE_STATUS_IO_ERROR;
+    }
+    if(image_size == 0U || image_size > OTA_MAX_IMAGE_SIZE)
+        return DEVICE_STATUS_INVALID_ARG;
 
     metadata.url_length = 0U;
     metadata.update_version = version;
@@ -237,11 +249,17 @@ uint8_t Ota_Write(uint32_t offset, const uint8_t *data, uint16_t length)
     memcpy(write_buffer, data, length);
     if(program_length > length)
         memset(write_buffer + length, 0xFF, program_length - length);
-    if(FLASH_ROM_WRITE(OTA_STAGING_ADDRESS + offset, write_buffer, program_length) != 0U)
+    if(FLASH_ROM_WRITE(OTA_STAGING_ADDRESS + offset, write_buffer, program_length) != 0U ||
+       FLASH_ROM_VERIFY(OTA_STAGING_ADDRESS + offset, write_buffer, program_length) != 0U) {
+        PRINT("OTA write verify failed offset=%lu len=%u\r\n",
+              (unsigned long)offset, program_length);
         return DEVICE_STATUS_IO_ERROR;
+    }
 
     write_offset = end;
-    if((write_offset % EEPROM_BLOCK_SIZE) == 0U || write_offset == metadata.image_size) {
+    if(write_offset == metadata.image_size ||
+       (metadata.url_length != 0U &&
+        write_offset - metadata.downloaded_bytes >= OTA_CHECKPOINT_BYTES)) {
         metadata.downloaded_bytes = write_offset;
         return metadata_save();
     }
@@ -277,6 +295,7 @@ uint8_t Ota_BeginVerify(void)
 uint8_t Ota_VerifyStep(void)
 {
     uint16_t length;
+    uint32_t actual_crc;
 
     if(metadata.state != OTA_STATE_VERIFYING) return DEVICE_STATUS_CONFLICT;
     if(verify_offset < metadata.image_size) {
@@ -288,12 +307,19 @@ uint8_t Ota_VerifyStep(void)
         return DEVICE_STATUS_BUSY;
     }
 
-    if((verify_crc ^ 0xFFFFFFFFUL) != metadata.image_crc32) {
+    actual_crc = verify_crc ^ 0xFFFFFFFFUL;
+    if(actual_crc != metadata.image_crc32) {
+        PRINT("OTA CRC mismatch expected=%08lx actual=%08lx size=%lu\r\n",
+              (unsigned long)metadata.image_crc32,
+              (unsigned long)actual_crc,
+              (unsigned long)metadata.image_size);
         metadata.state = OTA_STATE_IDLE;
         metadata.url_length = 0U;
         (void)metadata_save();
         return DEVICE_STATUS_VERIFY_FAILED;
     }
+    PRINT("OTA CRC verified=%08lx size=%lu\r\n",
+          (unsigned long)actual_crc, (unsigned long)metadata.image_size);
     metadata.state = OTA_STATE_READY;
     return metadata_save();
 }

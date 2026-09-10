@@ -216,7 +216,7 @@ void Period_1s(void){
                 const HLW8110_Status_t *meter = HLW8110_GetStatus();
                 health_log_seconds = 0U;
                 const ml307_status_t *cellular = Ml307_GetStatus();
-                PRINT("#HEALTH up=%lu rev=%lu reset=%u fault=%04x lora=%u loraTick=%lu cell=%u/%u cellFail=%u irQ=%u/%u meterErr=%u meterFail=%u/%u/%02x\r\n",
+                PRINT("#HEALTH up=%lu rev=%lu reset=%u fault=%04x lora=%u loraTick=%lu cell=%u/%u cellFail=%u irQ=%u/%u meterErr=%u meterFail=%u/%u/%02x sensor=%02x shtErr=%u\r\n",
                       (unsigned long)(CurTick / 1000U),
                       (unsigned long)Config_GetRevision(),
                       Health_ConsecutiveResets(),
@@ -231,7 +231,9 @@ void Period_1s(void){
                       meter->communication_errors,
                       meter->last_error_reason,
                       meter->last_error_state,
-                      meter->last_error_register);
+                      meter->last_error_register,
+                      ADC_GetSensorStatus(),
+                      ADC_GetSht40Errors());
             }
         }
 #endif
