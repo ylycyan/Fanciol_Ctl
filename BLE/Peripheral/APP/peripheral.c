@@ -856,7 +856,8 @@ static void __attribute__((noinline)) SendDeviceFrame(const uint8_t *frame, uint
 static uint8_t peripheralBuildAdvData(void)
 {
     uint8_t p = 0;
-    const char *deviceName = DeviceProfile_GetName();
+    const char *deviceName = DeviceUid_Get();
+    if(!DeviceUid_Valid(deviceName)) deviceName = BT_DEVICE_NAME;
     uint8_t nameLen = (uint8_t)strlen(deviceName);
     if(nameLen > 22)
     {
@@ -901,12 +902,8 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                 }
                 break;
             }
-            /*
-             * 量产固件只接受 BLE device protocol。旧协议可以绕过配置版本、范围校验和原子提交，
-             * 不能作为隐藏写入口保留；旧协议处理器与 SendBtResponse 已一并删除。
-             */
             DeviceProtocol_Reset(&deviceReassembler);
-            PRINT("BLE legacy frame rejected\r\n");
+            PRINT("BLE unsupported frame rejected\r\n");
             break;
         }
 
@@ -1024,13 +1021,6 @@ static void ProcessOtaCommand(const uint8_t *command)
             }
             break;
         }
-        case CMD_IAP_VERIFY:
-        {
-            /* Legacy client compatibility.  New clients skip this command;
-             * the complete image receives one CRC32 check at IAP_END. */
-            OTA_IAP_SendCMDDealSta(localOtaActive ? 0U : 0xFFU);
-            break;
-        }
         case CMD_IAP_END:
         {
             PRINT("IAP_END \r\n");
@@ -1119,7 +1109,7 @@ void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char 
         return;
     }
     if((rec_data[0] == CMD_IAP_ERASE && rec_len != 6u) ||
-       ((rec_data[0] == CMD_IAP_PROM || rec_data[0] == CMD_IAP_VERIFY) &&
+       (rec_data[0] == CMD_IAP_PROM &&
         (rec_len < 4u || rec_len != (unsigned char)(rec_data[1] + 4u))) ||
        (rec_data[0] == CMD_IAP_MANIFEST && (rec_len != 14u || rec_data[1] != 12u)) ||
        ((rec_data[0] == CMD_IAP_END || rec_data[0] == CMD_IAP_INFO) && rec_len != 1u)) {

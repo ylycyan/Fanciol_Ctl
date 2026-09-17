@@ -34,6 +34,16 @@ __attribute__((aligned(4))) uint32_t MEM_BUF[BLE_MEMHEAP_SIZE / 4];
 t_dev Dev;
 uint32_t LocalTimestamp;
 
+#if defined(DEBUG) && DEBUG == Debug_UART1
+volatile uint8_t DebugUartOutputMuted = 0U;
+int __real__write(int fd, char *buf, int size);
+int __wrap__write(int fd, char *buf, int size)
+{
+    if(DebugUartOutputMuted) return size;
+    return __real__write(fd, buf, size);
+}
+#endif
+
 /*********************************************************************
  * @fn      Main_Circulation
  *
@@ -58,7 +68,7 @@ void Main_Circulation()
         Period_1s();
         /*
          * HEAD 已验证的 BLE/TMOS 启动路径必须先获得调度。新增的蜂窝硬件
-         * 只能在协议栈稳定运行后初始化；仅 LoRa 配置则不会触碰 UART1/PB14。
+         * 只能在协议栈稳定运行后初始化；仅 LoRa 配置则不会触碰 UART1/PB5。
          */
         if(!ml307Initialized && CurTick >= 1000U) {
             Ml307_Init();
@@ -79,10 +89,17 @@ int main(void)
 {
     SetSysClock(CLK_SOURCE_PLL_60MHz);
 #ifdef DEBUG
+#if DEBUG == Debug_UART1
+    GPIOA_SetBits(bTXD1);
+    GPIOA_ModeCfg(bRXD1, GPIO_ModeIN_PU);
+    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA);
+    UART1_DefInit();
+#else
     GPIOA_SetBits(bTXD2);
     GPIOA_ModeCfg(bRXD2, GPIO_ModeIN_PU);
     GPIOA_ModeCfg(bTXD2, GPIO_ModeOut_PP_5mA);
     UART2_DefInit();
+#endif
 #endif
     PRINT("BLE baseline %s ,build in(%s:%s)\r\n", VER_LIB, __DATE__, __TIME__);
 
@@ -110,14 +127,20 @@ int main(void)
     PFIC_EnableIRQ(TMR0_IRQn);                    //enable timer0 core interrupt
     Led_Init();
     IR_Init();
-    // UART1 专用于 ML307R；调试构建将日志输出到 UART2 PA6/PA7。
+    // 调试串口由 DEBUG 选择；4G接管UART1前会先静音调试输出。
 #ifdef DEBUG
+#if DEBUG == Debug_UART1
+    GPIOA_SetBits(bTXD1);
+    GPIOA_ModeCfg(bRXD1, GPIO_ModeIN_PU);
+    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA);
+    UART1_DefInit();
+#else
     GPIOA_SetBits(bTXD2);
     GPIOA_ModeCfg(bRXD2, GPIO_ModeIN_PU);
     GPIOA_ModeCfg(bTXD2, GPIO_ModeOut_PP_5mA);
     UART2_DefInit();
 #endif
-    // InitUSBDevice(); //usb-cdc 已弃用，不再初始化
+#endif
     PRINT("%s ,build in(%s:%s)\n", VER_LIB,__DATE__,__TIME__);
     PRINT("BLE cfg: heap=%u packet=%u count=%u links=%u/%u\r\n",
           BLE_MEMHEAP_SIZE, BLE_BUFF_MAX_LEN, BLE_BUFF_NUM,

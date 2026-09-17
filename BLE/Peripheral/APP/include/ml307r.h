@@ -89,7 +89,6 @@ void Ml307_RequestReport(void);
 void Ml307_Restart(void);
 uint8_t Ml307_IsOnline(void);
 const ml307_status_t *Ml307_GetStatus(void);
-const char *Ml307_GetDeviceId(void);
 uint8_t Ml307_AtStart(const uint8_t *command, uint8_t length);
 uint8_t Ml307_AtCancel(void);
 const ml307_at_status_t *Ml307_AtGetStatus(void);

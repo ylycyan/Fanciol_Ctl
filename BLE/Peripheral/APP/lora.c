@@ -18,7 +18,6 @@ void Lora_Spi_Init(void)
     /* SPI 1 */
     GPIOA_SetBits(GPIO_Pin_1);
     GPIOA_ModeCfg(GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_3, GPIO_ModeOut_PP_5mA); // PA3:CS, PA0:SCK, PA1:MOSI
-    // GPIOA_ModeCfg(GPIO_Pin_15, GPIO_ModeIN_PU); // PA2:MISO - 与官方例程一致，不显式配置
     SPI1_MasterDefInit();
     R8_SPI1_CLOCK_DIV = 8; // 降低 SPI 速率留出裕量 (60MHz/8 = 7.5MHz)
     // PB12 BUSY / PB17 RESET / PB13 POWEN
@@ -69,12 +68,8 @@ static uint8_t Lora_WaitOnBusy(void) //高电平表示忙
  * 复位完成后等待 BUSY 释放。
  */
 //Reset Lora: 官方资料要求复位引脚拉低并维持100us，安全起见，这里使用20ms
-void Lora_Reset( ) {
+void Lora_Reset() {
     //断电
-    // GPIOA_ResetBits(Lora_Enable_Pin);
-    // mDelaymS(100);
-    // GPIOA_SetBits(Lora_Enable_Pin);
-    // mDelaymS(50);
     //通过引脚复位Lora
     GPIOB_ResetBits(GPIO_Pin_17);
     mDelaymS(20); //Delay_Ms(20);
@@ -533,13 +528,6 @@ void Lora_SetRfFrequency( uint32_t frequency )
     Lora_CalibrateImage( frequency );
 
     freq = FixedMath_FrequencyHzToPll(frequency);
-//	switch(frequency)
-//	{
-//		case 410000000: freq = 429916160; break;
-//		case 411000000: freq = 430964736; break;
-//		default: break;
-//	}
-
     buf[0] = ( uint8_t )( ( freq >> 24 ) & 0xFF );
     buf[1] = ( uint8_t )( ( freq >> 16 ) & 0xFF );
     buf[2] = ( uint8_t )( ( freq >> 8 ) & 0xFF );
@@ -849,4 +837,3 @@ void Lora_Listening(){
 	Lora_WriteRegisters(0x08AC, buf, 1);
 	Lora_SetRx(0);
 }
-

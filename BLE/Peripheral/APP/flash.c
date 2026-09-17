@@ -7,7 +7,7 @@ static volatile uint16_t Flash_Delay;
 static volatile uint8_t Ir_Save_Pending;
 
 /*
- * Legacy callers express delay in 10 ms ticks; Flash_Poll runs once per second.
+ * Callers express delay in 10 ms ticks; Flash_Poll runs once per second.
  * Ordinary controls are coalesced for at least three seconds so a burst of
  * button presses writes only the final runtime state.  A zero delay remains
  * the explicit next-poll/critical-save path.
@@ -93,7 +93,6 @@ void LoadDevInfo(void)
     (void)Runtime_Load();
     (void)IrStore_Load();
     (void)LoraParams_Load();
-    (void)DeviceProfile_Load();
     if(Storage_GetStartupFlags() != 0U) Dev.errorCode.bit.flash = 1;
     /* 状态机没有 Uninit 分支；直接进入注册态，下一次 20 ms 轮询即按配置初始化射频。 */
     Dev.loraStatus = Status_Logining;

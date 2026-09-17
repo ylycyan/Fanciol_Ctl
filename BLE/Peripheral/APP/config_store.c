@@ -5,13 +5,10 @@
 #include <stddef.h>
 #include <string.h>
 
-#define CFG_MAGIC       0x32434153UL
-#define RUNTIME_MAGIC   0x34544E52UL
+#define CFG_MAGIC       0x31474643UL
+#define RUNTIME_MAGIC   0x35544E52UL
 #define IR_MAGIC        0x32524953UL
-#define LORA_PARAM_MAGIC 0x3250524CUL
-#define CONNECTIVITY_MAGIC 0x324D4F43UL
-#define DEVICE_PROFILE_MAGIC 0x32465044UL
-#define DEVICE_PROFILE_SCHEMA 1U
+#define CONNECTIVITY_MAGIC 0x3154454EUL
 #define RUNTIME_SLOTS   64u
 
 typedef struct __attribute__((packed)) {
@@ -78,15 +75,6 @@ typedef struct {
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
-    uint8_t register_sf;
-    uint8_t register_bw;
-    uint8_t listen_sf;
-    uint8_t listen_bw;
-    uint32_t crc32;
-} lora_param_record_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
     uint8_t schema_version;
     uint8_t state;
     uint32_t generation;
@@ -99,20 +87,6 @@ typedef struct __attribute__((packed)) {
 
 typedef char connectivity_record_must_fit_page[
     (sizeof(connectivity_record_t) <= EEPROM_PAGE_SIZE) ? 1 : -1
-];
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint8_t schema_version;
-    uint8_t name_length;
-    uint16_t reserved;
-    uint32_t generation;
-    char name[DEVICE_PROFILE_NAME_MAX + 1U];
-    uint32_t crc32;
-} device_profile_record_t;
-
-typedef char device_profile_record_must_fit_page[
-    (sizeof(device_profile_record_t) <= EEPROM_PAGE_SIZE) ? 1 : -1
 ];
 
 static uint32_t config_revision;
@@ -132,7 +106,6 @@ static uint8_t storage_startup_flags;
 static connectivity_config_t connectivity_config;
 static uint32_t connectivity_generation;
 static uint32_t connectivity_slot;
-static char device_profile_name[DEVICE_PROFILE_NAME_MAX + 1U] = BT_DEVICE_NAME;
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint16_t len)
 {
@@ -149,116 +122,6 @@ uint32_t Config_Crc32(const uint8_t *data, uint16_t len)
 {
     uint32_t crc = crc32_update(0xFFFFFFFFUL, data, len);
     return crc ^ 0xFFFFFFFFUL;
-}
-
-static uint8_t device_profile_name_valid(const char *name, uint8_t length)
-{
-    uint8_t i;
-    if(!name || length == 0U || length > DEVICE_PROFILE_NAME_MAX)
-        return 0U;
-    for(i = 0U; i < length; ++i) {
-        uint8_t ch = (uint8_t)name[i];
-        if(ch < 0x20U || ch > 0x7EU) return 0U;
-    }
-    return 1U;
-}
-
-static uint8_t device_profile_record_valid(const device_profile_record_t *record)
-{
-    return record->magic == DEVICE_PROFILE_MAGIC &&
-           record->schema_version == DEVICE_PROFILE_SCHEMA &&
-           device_profile_name_valid(record->name, record->name_length) &&
-           record->name[record->name_length] == '\0' &&
-           record->crc32 == Config_Crc32((const uint8_t *)record,
-                                            (uint16_t)offsetof(device_profile_record_t, crc32));
-}
-
-void DeviceProfile_FactoryDefaults(void)
-{
-    uint8_t length = (uint8_t)strlen(BT_DEVICE_NAME);
-    if(length > DEVICE_PROFILE_NAME_MAX) length = DEVICE_PROFILE_NAME_MAX;
-    memset(device_profile_name, 0, sizeof(device_profile_name));
-    memcpy(device_profile_name, BT_DEVICE_NAME, length);
-}
-
-const char *DeviceProfile_GetName(void)
-{
-    return device_profile_name;
-}
-
-uint8_t DeviceProfile_Load(void)
-{
-    device_profile_record_t record;
-    uint32_t selected_generation = 0U;
-    uint8_t selected = 0U;
-    uint8_t read_error = 0U;
-
-    DeviceProfile_FactoryDefaults();
-    memset(&record, 0xFF, sizeof(record));
-    if(EEPROM_READ(DEVICE_PROFILE_SLOT_A, &record, sizeof(record)) != 0U) read_error = 1U;
-    else if(device_profile_record_valid(&record)) {
-        memcpy(device_profile_name, record.name, sizeof(device_profile_name));
-        selected_generation = record.generation;
-        selected = 1U;
-    }
-    memset(&record, 0xFF, sizeof(record));
-    if(EEPROM_READ(DEVICE_PROFILE_SLOT_B, &record, sizeof(record)) != 0U) read_error = 1U;
-    else if(device_profile_record_valid(&record) &&
-            (!selected || (int32_t)(record.generation - selected_generation) > 0)) {
-        memcpy(device_profile_name, record.name, sizeof(device_profile_name));
-        selected = 1U;
-    }
-    return read_error ? DEVICE_STATUS_IO_ERROR : (selected ? DEVICE_STATUS_OK : DEVICE_STATUS_VERIFY_FAILED);
-}
-
-uint8_t DeviceProfile_SaveName(const char *name, uint8_t length)
-{
-    device_profile_record_t record;
-    uint32_t generation = 0U;
-    uint32_t selected_slot = DEVICE_PROFILE_SLOT_B;
-    uint32_t target;
-    uint8_t found = 0U;
-
-    if(!device_profile_name_valid(name, length)) return DEVICE_STATUS_INVALID_ARG;
-    memset(&record, 0xFF, sizeof(record));
-    if(EEPROM_READ(DEVICE_PROFILE_SLOT_A, &record, sizeof(record)) != 0U)
-        return DEVICE_STATUS_IO_ERROR;
-    if(device_profile_record_valid(&record)) {
-        generation = record.generation;
-        selected_slot = DEVICE_PROFILE_SLOT_A;
-        found = 1U;
-    }
-    memset(&record, 0xFF, sizeof(record));
-    if(EEPROM_READ(DEVICE_PROFILE_SLOT_B, &record, sizeof(record)) != 0U)
-        return DEVICE_STATUS_IO_ERROR;
-    if(device_profile_record_valid(&record) &&
-       (!found || (int32_t)(record.generation - generation) > 0)) {
-        generation = record.generation;
-        selected_slot = DEVICE_PROFILE_SLOT_B;
-        found = 1U;
-    }
-
-    target = selected_slot == DEVICE_PROFILE_SLOT_A ?
-             DEVICE_PROFILE_SLOT_B : DEVICE_PROFILE_SLOT_A;
-    memset(&record, 0, sizeof(record));
-    record.magic = DEVICE_PROFILE_MAGIC;
-    record.schema_version = DEVICE_PROFILE_SCHEMA;
-    record.name_length = length;
-    record.generation = generation + 1U;
-    memcpy(record.name, name, length);
-    record.crc32 = Config_Crc32((const uint8_t *)&record,
-                                  (uint16_t)offsetof(device_profile_record_t, crc32));
-    if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
-       EEPROM_WRITE(target, &record, sizeof(record)) != 0U)
-        return DEVICE_STATUS_IO_ERROR;
-    memset(&record, 0xFF, sizeof(record));
-    if(EEPROM_READ(target, &record, sizeof(record)) != 0U)
-        return DEVICE_STATUS_IO_ERROR;
-    if(!device_profile_record_valid(&record) || record.generation != generation + 1U ||
-       record.name_length != length || memcmp(record.name, name, length) != 0)
-        return DEVICE_STATUS_VERIFY_FAILED;
-    memcpy(device_profile_name, record.name, sizeof(device_profile_name));
-    return DEVICE_STATUS_OK;
 }
 
 static uint32_t config_record_crc(const config_record_t *record)
@@ -406,7 +269,7 @@ uint8_t Config_Load(void)
         return DEVICE_STATUS_OK;
     }
 
-    repair_status = Config_Commit(config_revision);
+    repair_status = Config_Commit();
     if(repair_status == DEVICE_STATUS_OK) {
         config_load_state = CONFIG_LOAD_REPAIRED;
         storage_startup_flags |= STORAGE_STARTUP_RECOVERED;
@@ -420,14 +283,13 @@ uint8_t Config_Load(void)
     return DEVICE_STATUS_OK;
 }
 
-uint8_t Config_Commit(uint32_t expected_revision)
+uint8_t Config_Commit(void)
 {
     config_record_t r;
     uint32_t target;
     uint32_t committed_generation;
     uint32_t committed_crc;
     if(config_load_state == CONFIG_LOAD_IO_ERROR) return DEVICE_STATUS_IO_ERROR;
-    if(expected_revision != config_revision) return DEVICE_STATUS_CONFLICT;
     if(Config_ValidateCurrent() != DEVICE_STATUS_OK) return DEVICE_STATUS_INVALID_ARG;
     memset(&r, 0, sizeof(r)); capture_config(&r.payload);
     r.magic = CFG_MAGIC; r.schema_version = CONFIG_SCHEMA_VERSION; r.generation = config_revision + 1u;
@@ -458,12 +320,12 @@ uint8_t Config_CommitIfChanged(void)
     capture_config(&p);
     if(Config_Crc32((const uint8_t *)&p, sizeof(p)) == config_fingerprint) {
         if(config_load_state != CONFIG_LOAD_DEGRADED) return DEVICE_STATUS_OK;
-        status = Config_Commit(config_revision);
+        status = Config_Commit();
         if(status == DEVICE_STATUS_OK && config_revision == 1U)
-            status = Config_Commit(config_revision);
+            status = Config_Commit();
         return status;
     }
-    return Config_Commit(config_revision);
+    return Config_Commit();
 }
 
 uint32_t Config_GetRevision(void) { return config_revision; }
@@ -479,8 +341,8 @@ uint8_t Config_InitializeDefaults(uint8_t recovered_from_corruption)
 
     Config_FactoryDefaults();
     config_load_state = CONFIG_LOAD_EMPTY;
-    status = Config_Commit(0U);
-    if(status == DEVICE_STATUS_OK) status = Config_Commit(Config_GetRevision());
+    status = Config_Commit();
+    if(status == DEVICE_STATUS_OK) status = Config_Commit();
     if(status != DEVICE_STATUS_OK) {
         config_load_state = CONFIG_LOAD_DEGRADED;
         storage_startup_flags |= STORAGE_STARTUP_DEGRADED;
@@ -550,9 +412,6 @@ uint8_t Runtime_Load(void)
     }
     if(found) {
         Dev.meter = best.meter;
-        Dev.runTime = best.meter.run_minutes > 0xFFFFUL
-            ? 0xFFFFu
-            : (uint16_t)best.meter.run_minutes;
         Dev.lastPowerChange = best.last_power_change;
         Dev.onOff = (OnOff_t)best.on_off;
         Dev.ctlMode = (Mode_t)best.control_mode;
@@ -854,7 +713,6 @@ static void connectivity_defaults(connectivity_config_t *config)
     config->report_interval_sec = 60U;
     config->network_timeout_sec = 120U;
     config->mqtt_clean_session = 1U;
-    memcpy(config->mqtt_topic_prefix, "sac/v1", 7U);
 }
 
 static uint8_t connectivity_string_valid(const char *value, uint16_t capacity)
@@ -868,27 +726,34 @@ static uint8_t connectivity_string_valid(const char *value, uint16_t capacity)
     return 1U;
 }
 
-static uint8_t connectivity_topic_valid(const char *value, uint16_t capacity)
-{
-    uint16_t length = 0U;
-    while(length < capacity && value[length]) {
-        if(value[length] <= ' ' || value[length] == '"' || value[length] == '\\' ||
-           value[length] == '+' || value[length] == '#') return 0U;
-        length++;
-    }
-    return length > 0U && length < capacity && value[0] != '/' && value[length - 1U] != '/';
-}
-
 uint8_t DeviceUid_Valid(const char *uid)
 {
     uint8_t index;
-    if(!uid || memcmp(uid, "SAC", 3U) != 0 || uid[DEVICE_UID_LENGTH] != '\0') return 0U;
-    for(index = 3U; index < DEVICE_UID_LENGTH; ++index) {
-        if(index == 7U) {
-            if(uid[index] < 'A' || uid[index] > 'Z') return 0U;
-        } else if(uid[index] < '0' || uid[index] > '9') return 0U;
+    if(!uid || uid[0] != 'A' || uid[DEVICE_UID_LENGTH] != '\0') return 0U;
+    for(index = 1U; index < 5U; ++index) {
+        if(uid[index] < '0' || uid[index] > '9') return 0U;
     }
+    if((uid[3] != '0' && uid[3] != '1') ||
+       (uid[3] == '0' && uid[4] == '0') ||
+       (uid[3] == '1' && (uid[4] < '0' || uid[4] > '2'))) return 0U;
+    for(index = 5U; index < DEVICE_UID_LENGTH; ++index) {
+        if(!((uid[index] >= '0' && uid[index] <= '9') ||
+             (uid[index] >= 'A' && uid[index] <= 'F'))) return 0U;
+    }
+    if(memcmp(uid + 5U, "0000", 4U) == 0) return 0U;
     return 1U;
+}
+
+const char *DeviceUid_Get(void)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char *uid = connectivity_config.device_id;
+    if(!DeviceUid_Valid(uid)) return uid;
+    uid[5] = hex[(Dev.nodeId >> 12) & 0x0FU];
+    uid[6] = hex[(Dev.nodeId >> 8) & 0x0FU];
+    uid[7] = hex[(Dev.nodeId >> 4) & 0x0FU];
+    uid[8] = hex[Dev.nodeId & 0x0FU];
+    return uid;
 }
 
 static uint8_t connectivity_record_erased(const connectivity_record_t *record)
@@ -946,11 +811,10 @@ uint8_t Connectivity_Validate(const connectivity_config_t *config)
         return DEVICE_STATUS_INVALID_ARG;
     if(!connectivity_string_valid(config->mqtt_host, sizeof(config->mqtt_host)) ||
        !connectivity_string_valid(config->apn, sizeof(config->apn)) ||
-       !connectivity_string_valid(config->mqtt_client_id, sizeof(config->mqtt_client_id)) ||
-       !connectivity_topic_valid(config->mqtt_topic_prefix, sizeof(config->mqtt_topic_prefix)))
+       !connectivity_string_valid(config->device_id, sizeof(config->device_id)))
         return DEVICE_STATUS_INVALID_ARG;
     if((config->transport_mask & CONNECTIVITY_CELLULAR) != 0U &&
-       !DeviceUid_Valid(config->mqtt_client_id)) return DEVICE_STATUS_INVALID_ARG;
+       !DeviceUid_Valid(config->device_id)) return DEVICE_STATUS_INVALID_ARG;
     return DEVICE_STATUS_OK;
 }
 
@@ -991,7 +855,6 @@ static uint8_t connectivity_write_record(uint32_t target, uint8_t state,
 uint8_t Connectivity_Load(void)
 {
     connectivity_record_t record;
-    lora_param_record_t legacy;
     uint8_t first_valid;
     uint8_t second_valid;
     uint8_t first_erased;
@@ -1002,7 +865,6 @@ uint8_t Connectivity_Load(void)
     memset(&record, 0xFF, sizeof(record));
     if(EEPROM_READ(CONNECTIVITY_SLOT_A, &record, sizeof(record)) != 0U)
         goto connectivity_read_error;
-    memcpy(&legacy, &record, sizeof(legacy));
     first_valid = connectivity_record_valid(&record) &&
                   record.state == CONNECTIVITY_RECORD_ACTIVE;
     first_erased = connectivity_record_erased(&record);
@@ -1060,31 +922,9 @@ uint8_t Connectivity_Load(void)
         return DEVICE_STATUS_OK;
     }
 
-    /* 兼容迁移旧版 0x2000 单槽 LoRa 参数记录。 */
     connectivity_defaults(&connectivity_config);
     connectivity_generation = 0U;
     connectivity_slot = CONNECTIVITY_SLOT_B;
-    if(legacy.magic == LORA_PARAM_MAGIC &&
-       legacy.crc32 == Config_Crc32((const uint8_t *)&legacy,
-                                      (uint16_t)(sizeof(legacy) - 4U)) &&
-       LoraParams_Validate(legacy.register_sf, legacy.register_bw,
-                             legacy.listen_sf, legacy.listen_bw) == DEVICE_STATUS_OK) {
-        connectivity_config.lora_register_sf = legacy.register_sf;
-        connectivity_config.lora_register_bw = legacy.register_bw;
-        connectivity_config.lora_listen_sf = legacy.listen_sf;
-        connectivity_config.lora_listen_bw = legacy.listen_bw;
-        if(legacy.register_sf == 10U && legacy.register_bw == 0x04U &&
-           legacy.listen_sf == 8U && legacy.listen_bw == 0x0AU) {
-            connectivity_config.lora_register_sf = LORA_SF_LISTEN;
-            connectivity_config.lora_register_bw = LORA_BW_LISTEN;
-            connectivity_config.lora_listen_sf = LORA_SF_SCAN;
-            connectivity_config.lora_listen_bw = LORA_BW_SCAN;
-        }
-        connectivity_apply(&connectivity_config);
-        storage_startup_flags |= STORAGE_STARTUP_RECOVERED;
-        return Connectivity_Save(&connectivity_config);
-    }
-
     connectivity_apply(&connectivity_config);
     if(!first_erased || !second_erased)
         storage_startup_flags |= STORAGE_STARTUP_RECOVERED;
@@ -1092,7 +932,6 @@ uint8_t Connectivity_Load(void)
 
 connectivity_read_error:
     connectivity_defaults(&connectivity_config);
-    DeviceProfile_FactoryDefaults();
     connectivity_apply(&connectivity_config);
     connectivity_generation = 0U;
     connectivity_slot = CONNECTIVITY_SLOT_B;
@@ -1125,12 +964,6 @@ const connectivity_config_t *Connectivity_Get(void)
     return &connectivity_config;
 }
 
-uint32_t Connectivity_GetGeneration(void)
-{
-    return connectivity_generation;
-}
-
-
 uint8_t Connectivity_LoraEnabled(void)
 {
     return (connectivity_config.transport_mask & CONNECTIVITY_LORA) != 0U;
@@ -1157,7 +990,7 @@ static uint8_t wire_put_string(uint8_t *payload, uint16_t capacity, uint16_t *of
 uint8_t Connectivity_Encode(uint8_t *payload, uint16_t capacity, uint16_t *length)
 {
     const connectivity_config_t *config = &connectivity_config;
-    uint16_t offset = 21U;
+    uint16_t offset = 17U;
     if(!payload || !length || capacity < offset) return DEVICE_STATUS_INVALID_ARG;
     payload[0] = CONNECTIVITY_SCHEMA;
     payload[1] = config->transport_mask;
@@ -1176,14 +1009,8 @@ uint8_t Connectivity_Encode(uint8_t *payload, uint16_t capacity, uint16_t *lengt
     payload[14] = (uint8_t)(config->report_interval_sec >> 8);
     payload[15] = (uint8_t)config->network_timeout_sec;
     payload[16] = (uint8_t)(config->network_timeout_sec >> 8);
-    payload[17] = (uint8_t)connectivity_generation;
-    payload[18] = (uint8_t)(connectivity_generation >> 8);
-    payload[19] = (uint8_t)(connectivity_generation >> 16);
-    payload[20] = (uint8_t)(connectivity_generation >> 24);
     if(!wire_put_string(payload, capacity, &offset, config->mqtt_host, sizeof(config->mqtt_host)) ||
-       !wire_put_string(payload, capacity, &offset, config->apn, sizeof(config->apn)) ||
-       !wire_put_string(payload, capacity, &offset, config->mqtt_client_id, sizeof(config->mqtt_client_id)) ||
-       !wire_put_string(payload, capacity, &offset, config->mqtt_topic_prefix, sizeof(config->mqtt_topic_prefix)))
+       !wire_put_string(payload, capacity, &offset, config->apn, sizeof(config->apn)))
         return DEVICE_STATUS_INVALID_ARG;
     *length = offset;
     return DEVICE_STATUS_OK;
@@ -1205,10 +1032,10 @@ static uint8_t wire_get_string(const uint8_t *payload, uint16_t length, uint16_t
 uint8_t Connectivity_Decode(const uint8_t *payload, uint16_t length,
                               connectivity_config_t *config)
 {
-    uint16_t offset = 21U;
-    uint32_t expected_generation;
+    uint16_t offset = 17U;
     if(!payload || !config || length < offset || payload[0] != CONNECTIVITY_SCHEMA)
         return DEVICE_STATUS_INVALID_ARG;
+    (void)DeviceUid_Get();
     memcpy(config, &connectivity_config, sizeof(*config));
     config->transport_mask = payload[1];
     config->lora_register_sf = payload[2];
@@ -1222,13 +1049,8 @@ uint8_t Connectivity_Decode(const uint8_t *payload, uint16_t length,
     config->mqtt_keepalive_sec = (uint16_t)payload[11] | ((uint16_t)payload[12] << 8);
     config->report_interval_sec = (uint16_t)payload[13] | ((uint16_t)payload[14] << 8);
     config->network_timeout_sec = (uint16_t)payload[15] | ((uint16_t)payload[16] << 8);
-    expected_generation = (uint32_t)payload[17] | ((uint32_t)payload[18] << 8) |
-                          ((uint32_t)payload[19] << 16) | ((uint32_t)payload[20] << 24);
-    if(expected_generation != connectivity_generation) return DEVICE_STATUS_CONFLICT;
     if(!wire_get_string(payload, length, &offset, config->mqtt_host, sizeof(config->mqtt_host)) ||
        !wire_get_string(payload, length, &offset, config->apn, sizeof(config->apn)) ||
-       !wire_get_string(payload, length, &offset, config->mqtt_client_id, sizeof(config->mqtt_client_id)) ||
-       !wire_get_string(payload, length, &offset, config->mqtt_topic_prefix, sizeof(config->mqtt_topic_prefix)) ||
        offset != length) return DEVICE_STATUS_INVALID_ARG;
     return Connectivity_Validate(config);
 }
@@ -1255,10 +1077,10 @@ uint8_t LoraParams_Save(uint8_t register_sf, uint8_t register_bw,
 
 uint8_t Storage_FactoryReset(void)
 {
-    char device_uid[DEVICE_UID_LENGTH + 1U];
-    memset(device_uid, 0, sizeof(device_uid));
-    if(DeviceUid_Valid(connectivity_config.mqtt_client_id))
-        memcpy(device_uid, connectivity_config.mqtt_client_id, sizeof(device_uid));
+    char device_id[DEVICE_UID_LENGTH + 1U];
+    memset(device_id, 0, sizeof(device_id));
+    if(DeviceUid_Valid(connectivity_config.device_id))
+        memcpy(device_id, connectivity_config.device_id, sizeof(device_id));
     /*
      * 先清运行分区，最后清配置双槽并提交默认值。任一步失败都返回错误，
      * 避免小程序显示“恢复成功”但旧计量/学习码仍在。健康与复位历史保留，
@@ -1286,11 +1108,9 @@ uint8_t Storage_FactoryReset(void)
     connectivity_generation = 0U;
     connectivity_slot = CONNECTIVITY_SLOT_B;
     connectivity_defaults(&connectivity_config);
-    memcpy(connectivity_config.mqtt_client_id, device_uid, sizeof(device_uid));
+    memcpy(connectivity_config.device_id, device_id, sizeof(device_id));
     storage_startup_flags = 0U;
     if(Connectivity_Save(&connectivity_config) != DEVICE_STATUS_OK)
-        return DEVICE_STATUS_IO_ERROR;
-    if(DeviceProfile_SaveName(device_profile_name, (uint8_t)strlen(device_profile_name)) != DEVICE_STATUS_OK)
         return DEVICE_STATUS_IO_ERROR;
     return Config_InitializeDefaults(0U);
 }

@@ -3,14 +3,12 @@
 
 #include <stdint.h>
 
-#define CONFIG_SCHEMA_VERSION 3u
+#define CONFIG_SCHEMA_VERSION 4u
 #define CONFIG_SLOT_A         0x0000u
 #define CONFIG_SLOT_B         0x1000u
 #define STORAGE_RESERVED_PAGE         0x2000u
 #define CONNECTIVITY_SLOT_A   STORAGE_RESERVED_PAGE
 #define CONNECTIVITY_SLOT_B   (STORAGE_RESERVED_PAGE + 0x0100u)
-#define DEVICE_PROFILE_SLOT_A (STORAGE_RESERVED_PAGE + 0x0200u)
-#define DEVICE_PROFILE_SLOT_B (STORAGE_RESERVED_PAGE + 0x0300u)
 #define RUNTIME_PAGE          0x3000u
 #define IR_STORAGE_PAGE               0x4000u
 #define RUNTIME_BACKUP_PAGE   0x5E00u
@@ -36,15 +34,13 @@ typedef enum {
 
 #define CONNECTIVITY_LORA          0x01U
 #define CONNECTIVITY_CELLULAR      0x02U
-#define CONNECTIVITY_SCHEMA        3U
-#define DEVICE_PROFILE_NAME_MAX    15U
+#define CONNECTIVITY_SCHEMA        4U
 
 /* 数组长度包含结尾 NUL；上位机可写入的最大字符数需减一。 */
 #define CONNECTIVITY_HOST_SIZE        48U
 #define CONNECTIVITY_APN_SIZE         20U
-#define CONNECTIVITY_CLIENT_ID_SIZE   32U
-#define CONNECTIVITY_TOPIC_SIZE       32U
-#define DEVICE_UID_LENGTH             15U
+#define DEVICE_UID_LENGTH             9U
+#define DEVICE_UID_SIZE               (DEVICE_UID_LENGTH + 1U)
 
 #define CONNECTIVITY_PDP_IPV4         0U
 #define CONNECTIVITY_PDP_IPV4V6       1U
@@ -64,13 +60,12 @@ typedef struct __attribute__((packed)) {
     uint16_t network_timeout_sec;
     char mqtt_host[CONNECTIVITY_HOST_SIZE];
     char apn[CONNECTIVITY_APN_SIZE];
-    char mqtt_client_id[CONNECTIVITY_CLIENT_ID_SIZE];
-    char mqtt_topic_prefix[CONNECTIVITY_TOPIC_SIZE];
+    char device_id[DEVICE_UID_SIZE];
 } connectivity_config_t;
 
 uint32_t Config_Crc32(const uint8_t *data, uint16_t len);
 uint8_t Config_Load(void);
-uint8_t Config_Commit(uint32_t expected_revision);
+uint8_t Config_Commit(void);
 uint8_t Config_CommitIfChanged(void);
 uint8_t Config_ValidateCurrent(void);
 uint32_t Config_GetRevision(void);
@@ -91,17 +86,12 @@ uint8_t Connectivity_Save(const connectivity_config_t *config);
 uint8_t Connectivity_Validate(const connectivity_config_t *config);
 const connectivity_config_t *Connectivity_Get(void);
 uint8_t DeviceUid_Valid(const char *uid);
-#define DeviceUid_Get() (Connectivity_Get()->mqtt_client_id)
-uint32_t Connectivity_GetGeneration(void);
+const char *DeviceUid_Get(void);
 uint8_t Connectivity_Encode(uint8_t *payload, uint16_t capacity, uint16_t *length);
 uint8_t Connectivity_Decode(const uint8_t *payload, uint16_t length,
                               connectivity_config_t *config);
 uint8_t Connectivity_LoraEnabled(void);
 uint8_t Connectivity_CellularEnabled(void);
-uint8_t DeviceProfile_Load(void);
-uint8_t DeviceProfile_SaveName(const char *name, uint8_t length);
-const char *DeviceProfile_GetName(void);
-void DeviceProfile_FactoryDefaults(void);
 uint8_t Storage_FactoryReset(void);
 uint8_t Storage_GetStartupFlags(void);
 

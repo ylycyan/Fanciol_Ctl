@@ -59,17 +59,10 @@ void RTC_SetTimestamp(uint32_t timestamp)
         return;
     }
 
-    //lse ?? ?HAL_TimeInit()??,???????,lse???????
-    // LClk32K_Select(Clk32K_LSE);
-    // R8_SAFE_ACCESS_SIG = SAFE_ACCESS_SIG1;
-    // R8_SAFE_ACCESS_SIG = SAFE_ACCESS_SIG2;
-    // R8_CK32K_CONFIG |= RB_CLK_XT32K_PON;
-    // R8_SAFE_ACCESS_SIG = 0;
     PRINT("set ts:%lu -> %04u-%02u-%02u %02u:%02u:%02u\r\n",
           timestamp, fields.year, fields.month, fields.day,
           fields.hour, fields.minute, fields.second);
 
-    // 这里只校准 RTC。BLE/TMOS 只能在启动时初始化一次，运行中对时不得重置协议栈。
     if(!rtc_read_hardware_timestamp(&hardwareTimestamp)) {
         PRINT("RTC_SetTimestamp: hardware time invalid\r\n");
         return;
@@ -174,21 +167,6 @@ void Period_100ms(void){
         Ir_Pro();
         WWDG_Refresh();
         LED_Pro();
-        // LED_GREEN(LocalTimestamp % 2);
-        if(DeviceService_IdentifyActive()){
-            LED_GREEN_BLINK(FALSE, 0);
-            LED_BLUE_BLINK(FALSE, 0);
-            LED_WHITE_BLINK(TRUE, 100);
-        }else{
-            LED_GREEN_BLINK(TRUE, 1000);
-            LED_BLUE_BLINK(TRUE, 500);
-            LED_WHITE_BLINK(TRUE, 200);
-        }
-        if((Dev.loraStatus >= 4) && (Timer_Lora < LORA_SEC_TO_TICKS(Dev.scanCycle))){
-            LED_RED_BLINK(TRUE,300);
-        }else{
-            LED_RED_BLINK(TRUE,3000);
-        }
     }
 }
 

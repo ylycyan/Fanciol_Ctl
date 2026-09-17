@@ -1,101 +1,87 @@
 /**
  * @file led.c
- * @brief 四色 LED（红/蓝/白/绿）常亮与闪烁管理
- *
- * 每个 LED 独立配置闪烁间隔；Interval=0 表示常亮，>0 为翻转周期(ms)。
- * 停止闪烁时恢复到默认状态（灭）。LED_Pro 由 100ms 周期任务调用。
+ * @brief 产品状态灯（从左到右：绿=系统/红外、白=通信、蓝=BLE、红=硬件故障）
  */
 #include "board.h"
+#include "CONFIG.h"
+#include "config_store.h"
+#include "device_service.h"
+#include "ml307r.h"
 
-typedef struct{
-    uint32_t Pin;
-    bool IsBlinking;
-    uint32_t BlinkInterval;
-    uint32_t LastBlinkTime;
-    bool DefaultState; // 停止闪烁时的默认状态：0-灭，1-亮
-}LED_Ctx_t;
+#define LED_HEARTBEAT_PERIOD_MS 2000U
+#define LED_HEARTBEAT_ON_MS      100U
+#define LED_LINK_BLINK_HALF_MS   500U
+#define LED_IR_FLASH_MS          400U
 
-// 使用数组管理所有 LED，方便扩展和统一处理
-static LED_Ctx_t LEDs[] = {
-    {LED_RED_PIN,   FALSE, 0, 0, 0},
-    {LED_BLUE_PIN,  FALSE, 0, 0, 0},
-    {LED_WHITE_PIN, FALSE, 0, 0, 0},
-    {LED_GREEN_PIN, FALSE, 0, 0, 0},
-};
+static uint32_t irFlashStart;
+static uint32_t irFlashUntil;
 
-/**
- * @brief 设置 LED 闪烁参数
- *
- * @param Pin LED 引脚
- * @param IsBlinking 是否开启闪烁
- * @param BlinkInterval 闪烁翻转间隔(ms)，0表示常亮
- * @param DefaultState 停止闪烁时的状态(FALSE:灭, TRUE:亮)
- */
-static void LED_SetBlink(uint32_t Pin, bool IsBlinking, uint32_t BlinkInterval, bool DefaultState){
-    for(int i=0; i<sizeof(LEDs)/sizeof(LEDs[0]); i++){
-        if(LEDs[i].Pin == Pin){
-            // 如果参数没有变化，直接返回，避免不必要的处理
-            if((LEDs[i].IsBlinking == IsBlinking) && (LEDs[i].BlinkInterval == BlinkInterval)){
-                return;
-            }
+static void led_write(uint32_t pin, uint8_t on)
+{
+    /* 四盏灯均为低电平点亮。 */
+    if(on) GPIOB_ResetBits(pin);
+    else GPIOB_SetBits(pin);
+}
 
-            LEDs[i].IsBlinking = IsBlinking;
-            LEDs[i].BlinkInterval = BlinkInterval;
-            LEDs[i].DefaultState = DefaultState;
-            // 重置计时器，从当前时刻开始计时
-            LEDs[i].LastBlinkTime = CurTick;
+static uint8_t heartbeat_pulse(void)
+{
+    return (CurTick % LED_HEARTBEAT_PERIOD_MS) < LED_HEARTBEAT_ON_MS;
+}
 
-            // 如果停止闪烁，立即应用默认状态
-            if(!IsBlinking){
-                 if(DefaultState) GPIOB_SetBits(Pin);
-                 else GPIOB_ResetBits(Pin);
-            } else {
-                // 如果开始闪烁且 Interval 为 0，立即点亮
-                if(BlinkInterval == 0){
-                    GPIOB_SetBits(Pin);
-                }
-            }
-            return;
-        }
+void LED_NotifyIrTx(void)
+{
+    irFlashStart = CurTick;
+    irFlashUntil = CurTick + LED_IR_FLASH_MS;
+}
+
+void LED_Pro(void)
+{
+    const ml307_status_t *cell = Ml307_GetStatus();
+    uint8_t loraEnabled = Connectivity_LoraEnabled();
+    uint8_t cellularEnabled = Connectivity_CellularEnabled();
+    uint8_t networkEnabled = loraEnabled || cellularEnabled;
+    uint8_t networkOnline = (loraEnabled && Dev.loraStatus >= Status_Connected) ||
+                            (cellularEnabled && cell->mqtt_online);
+    uint8_t bleState = 0U;
+    uint8_t irFlashing = (int32_t)(irFlashUntil - CurTick) > 0;
+    uint8_t hardwareFault;
+
+    GAPRole_GetParameter(GAPROLE_STATE, &bleState);
+
+    /* BLE设备定位期间只快闪蓝灯。 */
+    if(DeviceService_IdentifyActive()) {
+        led_write(LED_GREEN_PIN, 0U);
+        led_write(LED_WHITE_PIN, 0U);
+        led_write(LED_BLUE_PIN, (uint8_t)((CurTick / 100U) & 1U));
+        led_write(LED_RED_PIN, 0U);
+        return;
     }
-}
 
-/** @brief 红色 LED：常亮/闪烁控制 */
-void LED_RED_BLINK(bool IsBlinking, uint32_t BlinkInterval){
-    LED_SetBlink(LED_RED_PIN, IsBlinking, BlinkInterval, FALSE);
-}
+    /* 绿灯正常每 2 秒短亮一次；红外发送时以 100 ms 节奏闪两次。 */
+    led_write(LED_GREEN_PIN,
+              irFlashing ?
+              (uint8_t)((((CurTick - irFlashStart) / 100U) & 1U) == 0U) :
+              heartbeat_pulse());
 
-/** @brief 蓝色 LED：常亮/闪烁控制 */
-void LED_BLUE_BLINK(bool IsBlinking, uint32_t BlinkInterval){
-    LED_SetBlink(LED_BLUE_PIN, IsBlinking, BlinkInterval, FALSE);
-}
+    /* LoRa/MQTT 共用白灯：在线常亮，重连时 500 ms 明灭，未启用时熄灭。 */
+    led_write(LED_WHITE_PIN,
+              networkEnabled ?
+              (networkOnline ? 1U : (uint8_t)((CurTick / LED_LINK_BLINK_HALF_MS) & 1U)) :
+              0U);
 
-/** @brief 白色 LED：常亮/闪烁控制 */
-void LED_WHITE_BLINK(bool IsBlinking, uint32_t BlinkInterval){
-    LED_SetBlink(LED_WHITE_PIN, IsBlinking, BlinkInterval, FALSE);
-}
+    /* 蓝灯用于 BLE 调试：连接期间持续快闪，广播或未连接时熄灭。 */
+    bleState &= GAPROLE_STATE_ADV_MASK;
+    led_write(LED_BLUE_PIN,
+              (bleState == GAPROLE_CONNECTED || bleState == GAPROLE_CONNECTED_ADV) ?
+              (uint8_t)((CurTick / 100U) & 1U) : 0U);
 
-/** @brief 绿色 LED：常亮/闪烁控制 */
-void LED_GREEN_BLINK(bool IsBlinking, uint32_t BlinkInterval){
-    LED_SetBlink(LED_GREEN_PIN, IsBlinking, BlinkInterval, FALSE);
-}
-
-/**
- * @brief LED 闪烁轮询（每 100ms 调用一次）
- *
- * 到翻转时刻取反引脚电平；无符号减法处理 CurTick 回绕。
- */
-void LED_Pro(void){
-    uint32_t CurrentTime = CurTick;
-    for(int i=0; i<sizeof(LEDs)/sizeof(LEDs[0]); i++){
-        // 仅处理开启闪烁且 Interval > 0 的 LED
-        // Interval == 0 的情况已在 SetBlink 中处理（常亮），无需在此轮询
-        if(LEDs[i].IsBlinking && LEDs[i].BlinkInterval > 0){
-            // 使用无符号减法处理时间回绕问题 (假设 CurTick 溢出)
-            if(CurrentTime - LEDs[i].LastBlinkTime >= LEDs[i].BlinkInterval){
-                LEDs[i].LastBlinkTime = CurrentTime;
-                GPIOB_InverseBits(LEDs[i].Pin);
-            }
-        }
-    }
+    /* 普通网络重连由白灯表示；红灯只表示需要排查的硬件级故障。 */
+    hardwareFault = Dev.errorCode.bit.flash || Dev.errorCode.bit.ad ||
+                    Dev.errorCode.bit.power ||
+                    (loraEnabled && Dev.errorCode.bit.lora) ||
+                    (cellularEnabled &&
+                     (cell->last_error == ML307_ERROR_MODEM ||
+                      cell->last_error == ML307_ERROR_RX_OVERFLOW ||
+                      cell->last_error == ML307_ERROR_UART));
+    led_write(LED_RED_PIN, hardwareFault);
 }

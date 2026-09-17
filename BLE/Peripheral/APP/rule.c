@@ -27,6 +27,9 @@
 extern t_dev Dev;
 extern uint32_t LocalTimestamp;
 
+static uint8_t policy_window_known;
+static uint8_t policy_window_active;
+
 /* ------------------------------------------------------------------ */
 /*  内部工具函数                                                       */
 /* ------------------------------------------------------------------ */
@@ -67,22 +70,6 @@ static void rule_get_time(uint16_t *hour, uint16_t *min, uint16_t *weekday,
 static int16_t rule_get_temp_x10(void)
 {
     return Dev.roomTempX10;
-}
-
-/**
- * @brief 获取当前功率 (W)
- */
-static uint16_t rule_get_power(void)
-{
-    return Dev.loadPower; /* 已经是 W*10 单位, 直接用 */
-}
-
-/**
- * @brief 获取累计电量 (0.1kWh)
- */
-static uint32_t rule_get_energy(void)
-{
-    return Dev.meter.energy_wh;
 }
 
 /**
@@ -153,7 +140,6 @@ static bool Rule_Execute(DEV_RULE_T *r)
     switch (Dev.irActType) {
     case ACT_TYPE_IR:     executed = rule_exec_ir(r);     break;
     case ACT_TYPE_LEARN:  executed = rule_exec_learn(r);  break;
-    // case ACT_REPORT: rule_exec_report();  break;
     default: return false;
     }
 
@@ -170,12 +156,21 @@ static bool Rule_Execute(DEV_RULE_T *r)
     return true;
 }
 
-static bool Rule_ExecuteInverse(DEV_RULE_T *r)
+static bool Rule_ExecutePower(DEV_RULE_T *r, uint8_t on)
 {
-    r->act.ir.onOff = r->act.ir.onOff ? 0u : 1u;
+    uint8_t saved = r->act.ir.onOff;
+    r->act.ir.onOff = on ? 1u : 0u;
     bool result = Rule_Execute(r);
-    r->act.ir.onOff = r->act.ir.onOff ? 0u : 1u;
+    r->act.ir.onOff = saved;
     return result;
+}
+
+static uint8_t rule_time_start_action(const DEV_RULE_T *r)
+{
+    if (RULE_TIME_ACTION_TAG(r) == RULE_TIME_ACTION_MARKER &&
+        RULE_TIME_START_ACTION(r) <= 2u) return RULE_TIME_START_ACTION(r);
+    /* 非当前格式不猜测动作，避免损坏数据导致空调意外开机。 */
+    return 0u;
 }
 
 /* ------------------------------------------------------------------ */
@@ -197,6 +192,12 @@ static bool trig_check_time(const DEV_RULE_T *r)
 
     uint16_t now_min = hour * 60 + min;
 
+    /* 跨午夜时，结束段仍归属于前一天的计划。 */
+    if (r->trig_val > r->trig_val2 && r->trig_val2 != 0u &&
+        r->trig_val2 != 0xFFFFu && now_min < r->trig_val2) {
+        weekday = (uint16_t)((weekday + 6u) % 7u);
+    }
+
     /* 星期匹配: flags 的 bit0=周日, bit1=周一 ... bit6=周六 */
     if (!BITGET(r->flags, weekday)) {
         return false;
@@ -208,7 +209,9 @@ static bool trig_check_time(const DEV_RULE_T *r)
     }
 
     /* 时间窗口匹配 */
-    if (r->trig_val2 == 0xFFFF) {
+    if (r->trig_val == r->trig_val2) {
+        return true;
+    } else if (r->trig_val2 == 0xFFFF) {
         /* 单点触发: 精确到分钟 */
         return (now_min == r->trig_val);
     } else if (r->trig_val2 == 0) {
@@ -220,62 +223,6 @@ static bool trig_check_time(const DEV_RULE_T *r)
         /* 跨午夜窗口，例如 22:00-06:00。 */
         return (now_min >= r->trig_val || now_min < r->trig_val2);
     }
-}
-
-/**
- * @brief 温度高于阈值判断
- *   trig_val  = 阈值×10
- *   trig_val2 = 回差×10 (防频繁动作)
- *   sched     = 上限×10 (0=单阈值, 非0=区间触发)
- */
-/**
- * @brief 功率高于阈值判断
- *   trig_val  = 阈值 (W*10, 直接与 loadPower 比较)
- *   trig_val2 = 回差
- *   sched     = 上限 (0=单阈值, 非0=区间)
- */
-static bool trig_check_power_above(const DEV_RULE_T *r)
-{
-    uint16_t power = rule_get_power();
-    uint16_t thresh = r->trig_val;
-
-    if (r->sched != 0) {
-        return (power >= thresh && power <= r->sched);
-    }
-
-    return (power > thresh);
-}
-
-/**
- * @brief 累计电量超过阈值
- *   trig_val = 阈值 (0.1kWh)
- */
-static bool trig_check_energy(const DEV_RULE_T *r)
-{
-    return (rule_get_energy() > r->trig_val);
-}
-
-/**
- * @brief 组合触发: 时间窗口 AND 条件(温度)
- *   trig_val  = 起始时间(分钟)
- *   trig_val2 = 停止时间(分钟)
- *   flags     = 星期调度
- *   sched     = 月份调度
- *   act.ac.temSet 复用为温度阈值 (×10, 高字节存阈值, 低字节存回差)
- *   注: 组合触发的条件部分使用 ac.temSet 作为温度阈值(简化设计)
- */
-static bool trig_check_combined(const DEV_RULE_T *r)
-{
-    /* 先检查时间窗口 */
-    if (!trig_check_time(r)) {
-        return false;
-    }
-
-    /* 再检查温度条件 (ac.temSet * 10 作为阈值) */
-    int16_t temp = rule_get_temp_x10();
-    int16_t thresh = (int16_t)r->act.ir.temSet * 10;
-
-    return (temp > thresh);
 }
 
 /* ------------------------------------------------------------------ */
@@ -294,13 +241,85 @@ static bool trig_check_combined(const DEV_RULE_T *r)
 void Rule_Pro(void)
 {
     uint8_t i;
-    bool triggered;
+    bool hasTime = false, hasTemperature = false, windowActive = false;
+    bool enteringWindow;
     int16_t temp;
+    DEV_RULE_T *shutdownRule = NULL;
 
-    /* 远程模式只要任一已选链路在线就由云端接管；本地模式始终自治。 */
-    if (BITGET(Dev.mode, 0) &&
-        ((Connectivity_LoraEnabled() && Dev.loraStatus >= Status_Connected) ||
-         Ml307_IsOnline())) return;
+    /* 仅远程控制模式不执行本地规则；混合模式不依赖网络状态。 */
+    if (Dev.mode != 0u) return;
+
+    /* 时间规则组成运行窗口；温控规则只在窗口内参与控制。 */
+    for (i = 0; i < MAX_RULES; i++) {
+        DEV_RULE_T *r = &Dev.rules[i];
+        if (!r->ctrl.enable) continue;
+        if (r->ctrl.trig_type == TRIG_TIME) {
+            hasTime = true;
+            if (!r->act.raw[4] && shutdownRule == NULL) shutdownRule = r;
+        } else if (r->ctrl.trig_type == TRIG_TEMP_ABOVE ||
+                   r->ctrl.trig_type == TRIG_TEMP_BELOW) {
+            hasTemperature = true;
+        }
+    }
+
+    if (!hasTime && !hasTemperature) {
+        policy_window_known = 0u;
+        policy_window_active = 0u;
+        return;
+    }
+
+    if (hasTime) {
+        if (!RTC_IsTimeValid()) return;
+        for (i = 0; i < MAX_RULES; i++) {
+            DEV_RULE_T *r = &Dev.rules[i];
+            if (r->ctrl.enable && r->ctrl.trig_type == TRIG_TIME && trig_check_time(r)) {
+                windowActive = true;
+            }
+        }
+
+        enteringWindow = !policy_window_known || (!policy_window_active && windowActive);
+        if (!windowActive) {
+            if ((!policy_window_known || policy_window_active) && shutdownRule != NULL &&
+                Dev.onOff != PowerOff && !Rule_ExecutePower(shutdownRule, 0u)) return;
+            for (i = 0; i < MAX_RULES; i++) {
+                if (Dev.rules[i].ctrl.trig_type == TRIG_TIME ||
+                    Dev.rules[i].ctrl.trig_type == TRIG_TEMP_ABOVE ||
+                    Dev.rules[i].ctrl.trig_type == TRIG_TEMP_BELOW) {
+                    Dev.rules[i].ctrl.executed = 0u;
+                }
+            }
+            policy_window_known = 1u;
+            policy_window_active = 0u;
+            return;
+        }
+
+        if (enteringWindow) {
+            for (i = 0; i < MAX_RULES; i++) {
+                DEV_RULE_T *r = &Dev.rules[i];
+                if (r->ctrl.enable && r->ctrl.trig_type == TRIG_TIME && trig_check_time(r)) {
+                    uint8_t action = rule_time_start_action(r);
+                    if (action != 0u && Dev.onOff != (action == 1u ? PowerOn : PowerOff) &&
+                        !Rule_ExecutePower(r, action == 1u)) return;
+                    break;
+                }
+            }
+        }
+
+        for (i = 0; i < MAX_RULES; i++) {
+            DEV_RULE_T *r = &Dev.rules[i];
+            if (!r->ctrl.enable) continue;
+            if (r->ctrl.trig_type == TRIG_TIME) r->ctrl.executed = trig_check_time(r) ? 1u : 0u;
+            else if (enteringWindow && (r->ctrl.trig_type == TRIG_TEMP_ABOVE ||
+                                        r->ctrl.trig_type == TRIG_TEMP_BELOW)) r->ctrl.executed = 0u;
+        }
+        policy_window_known = 1u;
+        policy_window_active = 1u;
+        if (!hasTemperature) return;
+    } else {
+        policy_window_known = 0u;
+        policy_window_active = 0u;
+    }
+
     for (i = 0; i < MAX_RULES; i++) {
         DEV_RULE_T *r = &Dev.rules[i];
 
@@ -310,12 +329,6 @@ void Rule_Pro(void)
         }
 
         switch ((TrigType_t)r->ctrl.trig_type) {
-        case TRIG_TIME:
-            triggered = trig_check_time(r);
-            if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed = 1;
-            if(!triggered && r->ctrl.executed && r->trig_val2 != 0u &&
-               r->trig_val2 != 0xFFFFu && Rule_ExecuteInverse(r)) r->ctrl.executed = 0;
-            break;
         case TRIG_TEMP_ABOVE:
             if(!ADC_IsValid()) break;
             temp = rule_get_temp_x10();
@@ -328,13 +341,6 @@ void Rule_Pro(void)
             if(!r->ctrl.executed && temp < (int16_t)r->trig_val && Rule_Execute(r)) r->ctrl.executed = 1;
             if(r->ctrl.executed && temp >= (int16_t)r->trig_val + (int16_t)r->trig_val2) r->ctrl.executed = 0;
             break;
-        case TRIG_POWER_ABOVE:
-            if(!HLW8110_GetStatus()->valid) break;
-            triggered = trig_check_power_above(r);
-            if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1;
-            break;
-        case TRIG_ENERGY: triggered = trig_check_energy(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
-        case TRIG_COMBINED: if(!ADC_IsValid()) break; triggered = trig_check_combined(r); if(triggered && !r->ctrl.executed && Rule_Execute(r)) r->ctrl.executed=1; break;
         default: break;
         }
     }
@@ -349,6 +355,8 @@ void Rule_DailyReset(void)
     for (i = 0; i < MAX_RULES; i++) {
         Dev.rules[i].ctrl.executed = 0;
     }
+    policy_window_known = 0u;
+    policy_window_active = 0u;
 }
 
 

@@ -2,14 +2,14 @@
 
 ## 接线与产品边界
 
-- CH583 UART1：PA9 TX → ML307R 主 AT 口 UART0_RXD，PA8 RX ← UART0_TXD，PB14 → RESET。
+- CH583 UART1：PA9 TX → ML307R 主 AT 口 UART0_RXD，PA8 RX ← UART0_TXD，PB5 → RESET。
 - 使用普通 MQTT/TCP 和 HTTP，不使用 TLS、证书、用户名、密码或 MCU 加密库。业务、设备登记和 OTA 均为二进制帧的连续 Hex。
 - MQTT 业务载荷直接复用固定 LoRa 报文的连续 Hex；LoRa 空口和网关协议不变。
 - CRC16/CRC32 只校验传输损坏，不提供公网链路防篡改能力。
 
 ## MQTT
 
-设备 UID 由产线按 `SAC + 年月 + 产线/版本 + 7 位全局流水号` 生成，例如 `SAC2608A0000001`，并写入 DataFlash。该 UID 同时作为 MQTT Client ID、主题设备段和平台设备主键；普通配置和恢复出厂不修改它。
+设备 UID 由产线按 `A + 年月(YYMM) + nodeId(4 位大写十六进制)` 生成，例如 `A26091001`，并写入 DataFlash。年月部分保持不变，nodeId 直接从末四位派生；现场修改 nodeId 后，完整 BLE 广播名称、MQTT Client ID 和主题设备段同步变化。
 
 | 主题 | QoS | 内容 |
 |---|---:|---|
@@ -51,13 +51,41 @@ Flash 地址不变：入口 `0x00000/4 KB`、运行应用 `0x01000/216 KB`、暂
 
 ```powershell
 platformio run -e ch583 -e ch583_updater -e ch583_jump
-python tools/splitac_production.py factory --output firmware-factory.hex
-python tools/splitac_production.py ota `
-  --app BLE/Peripheral/.pio/build/ch583/firmware.bin `
-  --output firmware.bin
+python tools/splitac_production.py package --output-dir production-release
 ```
 
-- `firmware-factory.hex`：WCH-Link 首次烧录，包含入口、运行应用和 updater，不覆盖 DataFlash。
-- `firmware.bin`：微信小程序 BLE OTA 与 HTTP 4G OTA 共用的原始应用镜像；支持任意文件名、升级、回退和同版本重刷。
+- `splitac-burn.hex`：唯一烧写固件，包含入口、运行应用和 updater，不覆盖 DataFlash。
+- `splitac-update.bin`：唯一更新固件，供微信小程序 BLE OTA 与 HTTP 4G OTA 共用；支持升级、回退和同版本重刷。
+- Jump、应用和 Updater 只是构建过程中的内部组件，不作为产品固件交付。
+- 量产不保存一机一份的 DataFlash 文件。烧写脚本根据设备编号从统一 CSV 临时生成，写入、读回校验后立即删除。
 
-量产配置仍可使用 `splitac_production.py provision` 生成 DataFlash 镜像；不生成密码、凭据或二维码。
+`production.csv` 是量产版本的唯一来源，固定列为：
+
+```csv
+device_id,communication_mode,lora_channel,firmware_version,hardware_version
+A26091001,lora,9,2.22.19,HW1.0
+```
+
+- `device_id` 同时作为完整 BLE 广播名称和 MQTT client ID；末四位就是 nodeId，工具直接解析，不再在 CSV 中重复维护 nodeId。
+- `communication_mode` 仅允许 `lora`、`4g`、`both`，分别对应 LoRa、4G 或调试双链路。
+- `lora_channel` 范围为 `0~32`；纯 4G 设备可填写 `0`。
+- `firmware_version` 同时用于固件编译、BLE 设备信息、MQTT 登记和 OTA 当前版本。
+- `hardware_version` 同时用于固件编译和 MQTT 登记，最长 12 个 ASCII 字符。
+- 同一份 CSV 对应同一批构建，所有行的软件和硬件版本必须一致；工具不再提供写死的版本默认值。
+- 不再生成重复的 `platform-import.csv`。MQTT client ID、主题、DataFlash 文件名和地址都由工具或固件派生，量产只维护这一份六列 CSV。
+
+量产工位只需要输入或扫码得到 `device_id`：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\flash_production.ps1 `
+  -DeviceId A26091001
+```
+
+若出厂时预置 MQTT 地址，可附加 `-Broker 106.15.11.119 -Port 1883`；不预置时保持为空，之后在小程序管理页配置。脚本会依次校验 CSV、写入并校验 `splitac-burn.hex`、临时生成并写入 DataFlash、读回校验、复位设备，最后清除临时文件。设备须先进入 USB Boot ISP 模式；`wchisp` 在 Windows 下使用 WinUSB 驱动。
+
+不接硬件时可先验证工单和 CSV：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\flash_production.ps1 `
+  -DeviceId A26091001 -PrepareOnly
+```

@@ -75,6 +75,7 @@ typedef enum {
 
 /* Infrared */
 #define IRBUFSIZE 256
+#define IR_LEARN_CODE_BYTES 231U
 typedef enum{
     IR_TYPE_NORMAL = 0,
     IR_TYPE_MATCH  = 1,
@@ -93,7 +94,9 @@ typedef struct{
 #define _BT_INFO_ 0 // 打印蓝牙调试信息
 #define _LORA_INFO_ 0 // 量产固件关闭逐帧日志，保留关键状态与错误日志
 #define _Sensor_INFO_ 0
+#ifndef _IR_INFO_
 #define _IR_INFO_ 0
+#endif
 
 typedef enum{
     Status_Uninit = 0, // 未初始化
@@ -151,12 +154,11 @@ typedef struct {
     uint32_t lastSeenTs;
 } child_info_t;
 
-//红外学习结构体,一般空调红外控制包不超过230byte
 //通道固定含义: 0开机 1关机 2制冷 3制热 4除湿 5送风 6温度+ 7温度- 8风速 9自定义
 typedef struct{  
     uint8_t enable; //是否有效 (0=空, 1=已学习)
-    uint8_t cmd[256]; //学习到的红外码数据
-}IR_LEARNING_t; //约257字节/通道, 10通道=2570字节
+    uint8_t cmd[IR_LEARN_CODE_BYTES];
+}IR_LEARNING_t;
 extern IRBUF_t IrBuf;
 
 //本地规则引擎 - 触发类型(3bit, 8种)
@@ -166,7 +168,7 @@ typedef enum {
     TRIG_TEMP_ABOVE  = 2, // 环境温度 > 阈值
     TRIG_TEMP_BELOW  = 3, // 环境温度 < 阈值
     TRIG_POWER_ABOVE = 4, // 实时功率 > 阈值(单位:W)
-    TRIG_RUNTIME     = 5, // 已停用，保留枚举值兼容旧配置
+    TRIG_RESERVED    = 5,
     TRIG_ENERGY      = 6, // 累计电量 > 阈值(单位:0.1kWh)
     TRIG_COMBINED    = 7, // 时间窗口 + 条件同时满足(AND)
 } TrigType_t;
@@ -175,7 +177,6 @@ typedef enum {
 typedef enum {
     ACT_TYPE_IR     = 0, // 发送红外指令空调控制(开关/模式/风速/温度)
     ACT_TYPE_LEARN  = 1, // 发送学习的红外码
-    // ACT_TYPE_REPORT = 2, // 立即上报数据(无空调操作)
 } ActType_t;
 
 //本地规则引擎 - ctrl控制字位域
@@ -202,15 +203,15 @@ typedef struct {
     // TRIG_TIME:        自00:00起的分钟数(0~1439, 精度1分钟)
     // TRIG_TEMP_ABOVE/BELOW: 温度×10 (200~350 = 20.0°C~35.0°C)
     // TRIG_POWER_ABOVE: 功率×10 (0~65535 = 0~6553.5W)
-    // TRIG_RUNTIME:     已停用
+    // TRIG_RESERVED:    保留，不执行
     // TRIG_ENERGY:      累计0.1kWh(0~6553.5)
     // TRIG_COMBINED:    起始时间(分钟)
 
     // === Byte 4~5: 触发副值 (uint16) ===
     uint16_t trig_val2;
-    // TRIG_TIME:        停止时间分钟(0=不停止, 0xFFFF=单点触发)
+    // TRIG_TIME:        停止时间分钟(与起始相同=全天, 0xFFFF=单点触发)
     // TRIG_TEMP/POWER:  回差值(×10, 防抖用, 如回差5=0.5°C)
-    // TRIG_RUNTIME:     0
+    // TRIG_RESERVED:    0
     // TRIG_ENERGY:      0
     // TRIG_COMBINED:    停止时间分钟
 
@@ -241,17 +242,19 @@ typedef struct {
     } act;
 } DEV_RULE_T;                               // 精确16字节, 无填充
 
-//本地规则引擎 - 计量数据结构体(12字节)
+/* 时间规则在动作保留区保存进入时段动作，保持既有 Flash 结构不变。 */
+#define RULE_TIME_ACTION_MARKER 0xA5u
+#define RULE_TIME_START_ACTION(rule) ((rule)->act.raw[5])
+#define RULE_TIME_ACTION_TAG(rule)   ((rule)->act.raw[6])
+
+// 本地计量累计与限频保存状态
 typedef struct {
-    uint32_t energy_wh;                 // 累计电量，单位 0.1 kWh（保留旧字段名）
+    uint32_t energy_wh;                 // 累计电量，单位 0.1 kWh
     uint32_t energy_watt_tenth_seconds; // 芯片累计但未满 0.1 kWh 的余数，单位 0.1 W*s
-    uint32_t run_minutes;               // 保留字段：兼容既有 Flash 布局，不再累计
     uint32_t last_save_ts;              // 上次保存时间戳，秒
     uint16_t onoff_count;                // 开关机次数
     uint16_t fault_count;                // 计量故障次数
-    uint16_t run_seconds_remainder;      // 保留字段，不再使用
-    uint16_t today_run_minutes;          // 保留字段，不再使用
-} DEV_METER_T;                          // 24字节
+} DEV_METER_T;
 
 //设备结构体,存入DataFlash,掉电保存
 typedef struct{
@@ -272,14 +275,13 @@ typedef struct{
     uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
     DEV_RULE_T    rules[MAX_RULES];       //本地规则引擎(定时/条件触发/计量,不上云, 160字节)
-    DEV_METER_T   meter;                  // 计量数据（24字节，运行区轮转保存）
+    DEV_METER_T   meter;                  // 计量数据（运行区轮转保存）
     //上报数据
     OnOff_t onOff; // 空调开关状态,0:关 1:开
     int16_t roomTempX10; // 环境温度，单位 0.1℃
     Mode_t ctlMode; // 空调运行模式
     uint16_t temSet; // 设定温度
     Wind_t wind; // 风速
-    uint16_t runTime; // 已停用，保留结构布局
     uint16_t loadPower; // 负载功率,单位:W*10
     uint8_t mode; // 控制模式(0:本地 1:远程)
     // LoRa 多跳中继角色 (BLE写入, 掉电保存)
@@ -302,25 +304,23 @@ typedef struct{
         }bit;
     }errorCode;
 }t_dev;
-//cmd： len(1)cmd(1)Data(1)Crc(1)
-// len(1)cmd(1:)Version(1)NodeId(2)channel(1)irIdx(1)
 extern t_dev Dev;
 extern uint32_t LocalTimestamp;
-//led 
-// #define LED_PORT GPIOB
+//led
+/* 当前实物板 LED1~LED4 从左到右：绿、白、蓝、红；阳极接 3.3V，低电平点亮。
+ * 绿=系统心跳/红外发送，白=LoRa/4G通信，蓝=BLE连接/设备定位，红=硬件故障。 */
 #define LED_RED_PIN     GPIO_Pin_6
-#define LED_GREEN_PIN   GPIO_Pin_15
+#define LED_GREEN_PIN   GPIO_Pin_14
 #define LED_BLUE_PIN    GPIO_Pin_0
 #define LED_WHITE_PIN   GPIO_Pin_16
 static inline void Led_Init(void){
-    GPIOB_ResetBits(LED_RED_PIN | LED_GREEN_PIN | LED_WHITE_PIN | LED_BLUE_PIN);
+    GPIOB_SetBits(LED_RED_PIN | LED_GREEN_PIN | LED_WHITE_PIN | LED_BLUE_PIN);
     GPIOB_ModeCfg(LED_RED_PIN | LED_GREEN_PIN | LED_WHITE_PIN | LED_BLUE_PIN,GPIO_ModeOut_PP_5mA);
 }
-// #define LED_(color) (GPIOB_SetBits(LED_##color##_PIN))
-#define LED_RED(x) (x?GPIOB_SetBits(LED_RED_PIN):GPIOB_ResetBits(LED_RED_PIN))
-#define LED_BLUE(x) (x?GPIOB_SetBits(LED_BLUE_PIN):GPIOB_ResetBits(LED_BLUE_PIN))
-#define LED_WHITE(x) (x?GPIOB_SetBits(LED_WHITE_PIN):GPIOB_ResetBits(LED_WHITE_PIN))
-#define LED_GREEN(x) (x?GPIOB_SetBits(LED_GREEN_PIN):GPIOB_ResetBits(LED_GREEN_PIN))
+#define LED_RED(x) (x?GPIOB_ResetBits(LED_RED_PIN):GPIOB_SetBits(LED_RED_PIN))
+#define LED_BLUE(x) (x?GPIOB_ResetBits(LED_BLUE_PIN):GPIOB_SetBits(LED_BLUE_PIN))
+#define LED_WHITE(x) (x?GPIOB_ResetBits(LED_WHITE_PIN):GPIOB_SetBits(LED_WHITE_PIN))
+#define LED_GREEN(x) (x?GPIOB_ResetBits(LED_GREEN_PIN):GPIOB_SetBits(LED_GREEN_PIN))
 
 //blueTooth 蓝牙相关配置
 #define BT_DEFAULT_ADVERTISING_INTERVAL         80
@@ -331,7 +331,6 @@ static inline void Led_Init(void){
 #define BT_DEFAULT_DESIRED_CONN_TIMEOUT         1000
 #define BT_COMPANY_ID                           0x07D7  //蓝牙厂商 ID
 #define BT_DEVICE_NAME                          "SplitAC" // 分体空调控制器广播基础名
-// #define BT_DEFAULT_MAC_ADDR                     {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02} //BLE MAC 地址 默认由芯片地址随机生成
 
 //uilt functions
 extern void PrintHex(char *msg, uint8_t *buffer, uint16_t size);
@@ -379,14 +378,11 @@ extern uint8_t ADC_GetSensorStatus(void);
 extern uint16_t ADC_GetHumidityX10(void);
 extern uint16_t ADC_GetSht40Errors(void);
 extern void LED_Pro(void);
+extern void LED_NotifyIrTx(void);
 extern void Rule_Pro(void);
 extern void Rule_DailyReset(void);
 extern void Meter_Update(uint32_t dt_sec);
 extern uint8_t Meter_ClearEnergy(void);
-void LED_GREEN_BLINK(bool IsBlinking, uint32_t BlinkInterval);
-void LED_RED_BLINK(bool IsBlinking, uint32_t BlinkInterval);
-void LED_BLUE_BLINK(bool IsBlinking, uint32_t BlinkInterval);
-void LED_WHITE_BLINK(bool IsBlinking, uint32_t BlinkInterval);
 extern volatile uint32_t CurTick;
 extern volatile uint32_t Timer_Lora;
 #endif

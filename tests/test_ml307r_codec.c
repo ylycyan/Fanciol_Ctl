@@ -12,13 +12,13 @@ static void test_publish_urc_and_lora_frame(void)
         0x00, 0x00, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x00, 0xCB
     };
     static const char line[] =
-        "+MQTTURC: \"publish\",0,0,\"splitac/cmd\",36,36,0D01420A3412150000000000002A000000CB";
+        "+MQTTURC: \"publish\",0,0,\"ac/A26091234/d\",36,36,0D01420A3412150000000000002A000000CB";
     ml307_publish_t publish;
     uint8_t decoded[18];
 
     assert(Ml307Codec_ParsePublish(line, (uint16_t)strlen(line), &publish) == ML307_CODEC_OK);
-    assert(publish.topic_length == strlen("splitac/cmd"));
-    assert(memcmp(publish.topic, "splitac/cmd", publish.topic_length) == 0);
+    assert(publish.topic_length == strlen("ac/A26091234/d"));
+    assert(memcmp(publish.topic, "ac/A26091234/d", publish.topic_length) == 0);
     assert(Ml307Codec_HexDecode(publish.payload, publish.payload_length,
                                 decoded, sizeof(decoded)) == sizeof(frame));
     assert(memcmp(decoded, frame, sizeof(frame)) == 0);

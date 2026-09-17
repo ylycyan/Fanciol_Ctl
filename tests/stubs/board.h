@@ -10,6 +10,7 @@
 #define MAGIC_CODE         0x52ABu
 #define IR_BRAND_COUNT     128u
 #define MAX_IR_LEARNNUM    10u
+#define IR_LEARN_CODE_BYTES 231u
 #define MAX_RULES          10u
 #define LORA_SF_LISTEN     9u
 #define LORA_BW_LISTEN     4u
@@ -64,7 +65,7 @@ typedef enum {
     TRIG_TEMP_ABOVE = 2,
     TRIG_TEMP_BELOW = 3,
     TRIG_POWER_ABOVE = 4,
-    TRIG_RUNTIME = 5,
+    TRIG_RESERVED = 5,
     TRIG_ENERGY = 6,
     TRIG_COMBINED = 7
 } TrigType_t;
@@ -105,20 +106,21 @@ typedef struct {
     } act;
 } DEV_RULE_T;
 
+#define RULE_TIME_ACTION_MARKER 0xA5u
+#define RULE_TIME_START_ACTION(rule) ((rule)->act.raw[5])
+#define RULE_TIME_ACTION_TAG(rule)   ((rule)->act.raw[6])
+
 typedef struct {
     uint32_t energy_wh;
     uint32_t energy_watt_tenth_seconds;
-    uint32_t run_minutes;
     uint32_t last_save_ts;
     uint16_t onoff_count;
     uint16_t fault_count;
-    uint16_t run_seconds_remainder;
-    uint16_t today_run_minutes;
 } DEV_METER_T;
 
 typedef struct {
     uint8_t enable;
-    uint8_t cmd[256];
+    uint8_t cmd[IR_LEARN_CODE_BYTES];
 } IR_LEARNING_t;
 
 typedef struct {
@@ -133,7 +135,6 @@ typedef struct {
     uint16_t irType;
     DEV_RULE_T rules[MAX_RULES];
     DEV_METER_T meter;
-    uint16_t runTime;
     uint8_t learnNum;
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
     uint8_t loraRegisterSf;

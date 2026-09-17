@@ -64,7 +64,7 @@ uint8_t DeviceService_IdentifyActive(void){if(!identify_until)return 0;if(!befor
 
 static uint8_t parse_config(const uint8_t *p,uint16_t len,staged_config_t *cfg)
 {
-    if(len!=15u)return DEVICE_STATUS_INVALID_ARG;
+    if(len!=11u)return DEVICE_STATUS_INVALID_ARG;
     memset(cfg,0,sizeof(*cfg));
     cfg->node_id=get16(p);cfg->channel=p[2];cfg->link_role=p[3];cfg->parent_id=get16(p+4);cfg->work_mode=p[6];
     cfg->ir_action_type=p[7];cfg->ir_type=get16(p+8);cfg->ir_index=p[10];
@@ -77,22 +77,39 @@ static uint8_t parse_config(const uint8_t *p,uint16_t len,staged_config_t *cfg)
 
 static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules)
 {
-    uint8_t count,i;uint16_t off=1;
-    if(len<5u)return DEVICE_STATUS_INVALID_ARG;
-    count=p[0];
-    if(count>MAX_RULES||len!=(uint16_t)(1u+(uint16_t)count*14u+4u))return DEVICE_STATUS_INVALID_ARG;
-    /* The trailing revision is retained for wire compatibility only. */
-    memset(rules,0,sizeof(Dev.rules));
-    for(i=0;i<count;i++,off=(uint16_t)(off+14u)){
-        DEV_RULE_T *r=&rules[i];uint16_t start=get16(p+off+3),end=get16(p+off+5),threshold=get16(p+off+7),hysteresis=get16(p+off+9),minimum=get16(p+off+11);
-        uint8_t type=p[off+1],action=p[off+13];
-        if(type<TRIG_TIME||type>TRIG_TEMP_BELOW||minimum<1u||minimum>1440u||action<1u||action>2u)return DEVICE_STATUS_INVALID_ARG;
-        if(type==TRIG_TIME&&(start>1439u||end>1439u||!(p[off+2]&0x7Fu)))return DEVICE_STATUS_INVALID_ARG;
-        if(type!=TRIG_TIME&&(threshold<160u||threshold>400u||hysteresis<5u||hysteresis>100u))return DEVICE_STATUS_INVALID_ARG;
-        r->ctrl.enable=p[off]?1:0;r->ctrl.trig_type=type;r->flags=p[off+2]&0x7Fu;r->trig_val=(type==TRIG_TIME)?start:threshold;
-        r->trig_val2=(type==TRIG_TIME)?end:hysteresis;r->sched=0;
-        r->act.ir.onOff=(action==1u)?1u:0u;r->act.ir.mode=Mode_Auto;r->act.ir.wind=Wind_Auto;r->act.ir.temSet=25;
-        r->act.raw[2]=(uint8_t)minimum;r->act.raw[3]=(uint8_t)(minimum>>8);
+    uint8_t count, i;
+    uint16_t off = 1u;
+    if (len < 1u) return DEVICE_STATUS_INVALID_ARG;
+    count = p[0];
+    if (count > MAX_RULES || len != (uint16_t)(1u + (uint16_t)count * 14u)) return DEVICE_STATUS_INVALID_ARG;
+    memset(rules, 0, sizeof(Dev.rules));
+    for (i = 0u; i < count; i++, off = (uint16_t)(off + 14u)) {
+        DEV_RULE_T *r = &rules[i];
+        uint16_t start = get16(p + off + 3u), end = get16(p + off + 5u);
+        uint16_t threshold = get16(p + off + 7u), hysteresis = get16(p + off + 9u);
+        uint16_t minimum = get16(p + off + 11u);
+        uint8_t type = p[off + 1u], action = p[off + 13u];
+
+        if (type < TRIG_TIME || type > TRIG_TEMP_BELOW || minimum < 1u || minimum > 1440u || action < 1u || action > 2u) return DEVICE_STATUS_INVALID_ARG;
+        if (type == TRIG_TIME && (start > 1439u || end > 1439u || threshold > 2u || !(p[off + 2u] & 0x7Fu))) return DEVICE_STATUS_INVALID_ARG;
+        if (type != TRIG_TIME && (threshold < 160u || threshold > 400u || hysteresis < 5u || hysteresis > 100u)) return DEVICE_STATUS_INVALID_ARG;
+
+        r->ctrl.enable = p[off] ? 1u : 0u;
+        r->ctrl.trig_type = type;
+        r->flags = p[off + 2u] & 0x7Fu;
+        r->trig_val = (type == TRIG_TIME) ? start : threshold;
+        r->trig_val2 = (type == TRIG_TIME) ? end : hysteresis;
+        r->act.ir.onOff = (type == TRIG_TIME || action == 1u) ? 1u : 0u;
+        r->act.ir.mode = Mode_Auto;
+        r->act.ir.wind = Wind_Auto;
+        r->act.ir.temSet = 25u;
+        r->act.raw[2] = (uint8_t)minimum;
+        r->act.raw[3] = (uint8_t)(minimum >> 8);
+        r->act.raw[4] = (type == TRIG_TIME && action == 2u) ? 1u : 0u;
+        if (type == TRIG_TIME) {
+            RULE_TIME_START_ACTION(r) = (uint8_t)threshold;
+            RULE_TIME_ACTION_TAG(r) = RULE_TIME_ACTION_MARKER;
+        }
     }
     return DEVICE_STATUS_OK;
 }
@@ -189,7 +206,7 @@ static uint8_t transport_online(void)
 /* Keep the large response scratch buffer out of this function's frame. */
 static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint8_t *payload,uint16_t *payload_len)
 {
-    uint8_t status=DEVICE_STATUS_OK;uint32_t revision;staged_config_t cfg;
+    uint8_t status=DEVICE_STATUS_OK;staged_config_t cfg;
     *payload_len=0;
     switch(req->opcode){
     case DEVICE_OP_GET_CAPABILITIES:
@@ -199,12 +216,10 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         payload[7]=(uint8_t)FIRMWARE_BUILD_VERSION;
         payload[8]=(uint8_t)Dev.irActType;put16(payload+9,Ir_GetLearnedMask());*payload_len=11;break;
     case DEVICE_OP_GET_DEVICE_INFO:{
-        const char *name=DeviceProfile_GetName();uint8_t name_len=(uint8_t)strlen(name);
-        const char *device_uid=DeviceUid_Get();
-        uint8_t device_uid_len=DeviceUid_Valid(device_uid)?DEVICE_UID_LENGTH:0u;
-        payload[0]=2;payload[1]=device_uid_len;memcpy(payload+2,device_uid,device_uid_len);
-        payload[2u+device_uid_len]=name_len;memcpy(payload+3u+device_uid_len,name,name_len);
-        *payload_len=(uint16_t)(3u+device_uid_len+name_len);break;}
+        const char *device_id=DeviceUid_Get();
+        uint8_t device_id_len=DeviceUid_Valid(device_id)?DEVICE_UID_LENGTH:0u;
+        payload[0]=2;payload[1]=device_id_len;memcpy(payload+2,device_id,device_id_len);
+        *payload_len=(uint16_t)(2u+device_id_len);break;}
     case DEVICE_OP_IDENTIFY:{
         uint8_t mode=req->payload_len?req->payload[0]:1u;if(req->payload_len>1u||(mode!=1u&&mode!=2u)){status=DEVICE_STATUS_INVALID_ARG;break;}
         identify_until=CurTick+10000u;payload[0]=mode;*payload_len=1;break;}
@@ -213,15 +228,13 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         int16_t room=Dev.roomTempX10;
         payload[0]=(Dev.onOff==PowerOn)?1u:0u;payload[1]=(uint8_t)Dev.ctlMode;put16(payload+2,(uint16_t)(Dev.temSet*10u));put16(payload+4,(uint16_t)room);
         payload[6]=(uint8_t)Dev.wind;put16(payload+7,Dev.errorCode.u16Val);payload[9]=(uint8_t)Dev.loraStatus;
-        payload[10]=(Dev.mode==0u||!transport_online())?1u:0u;put32(payload+11,0u);put32(payload+15,Config_GetRevision());
+        payload[10]=(Dev.mode==0u)?1u:0u;put32(payload+11,0u);put32(payload+15,Config_GetRevision());
         payload[19]=meter->valid;put16(payload+20,meter->voltage_dv);put16(payload+22,meter->current_ma);put16(payload+24,meter->power_w_x10);
         put32(payload+26,Dev.meter.energy_wh);put16(payload+30,meter->communication_errors);
         payload[32]=ADC_GetSensorStatus();put16(payload+33,ADC_GetHumidityX10());put16(payload+35,ADC_GetSht40Errors());*payload_len=37;break;}
     case DEVICE_OP_GET_CONFIG:
         put16(payload,Dev.nodeId);payload[2]=(uint8_t)Dev.channel;payload[3]=Dev.linkRole;put16(payload+4,Dev.parentRelayId);payload[6]=Dev.mode;
-        payload[7]=(uint8_t)Dev.irActType;put16(payload+8,Dev.irType);payload[10]=Dev.irIdx;put32(payload+11,Config_GetRevision());*payload_len=15;break;
-    case DEVICE_OP_VALIDATE_CONFIG:
-        status=parse_config(req->payload,req->payload_len,&cfg);break;
+        payload[7]=(uint8_t)Dev.irActType;put16(payload+8,Dev.irType);payload[10]=Dev.irIdx;*payload_len=11;break;
     case DEVICE_OP_COMMIT_CONFIG:
     {
         DEV_RULE_T rollback_rules[MAX_RULES];
@@ -234,7 +247,8 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         Dev.irActType=(ActType_t)cfg.ir_action_type;Dev.irType=cfg.ir_type;Dev.irIdx=cfg.ir_index;
         Dev.errorCode.bit.irMatch=(Dev.irActType==ACT_TYPE_IR&&
             (Dev.irIdx>=IR_BRAND_COUNT||!Dev.irType||Dev.irType==0xFFFFu))?1u:0u;
-        status=Config_Commit(Config_GetRevision());if(status==DEVICE_STATUS_OK){revision=Config_GetRevision();put32(payload,revision);*payload_len=4;Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
+        if(previous.work_mode!=Dev.mode)Rule_DailyReset();
+        status=Config_Commit();if(status==DEVICE_STATUS_OK){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);if(previous.node_id!=Dev.nodeId){Peripheral_RefreshDeviceName();Ml307_ApplyConfiguration();}}
         else {Dev.nodeId=previous.node_id;Dev.channel=previous.channel;Dev.linkRole=previous.link_role;Dev.parentRelayId=previous.parent_id;Dev.mode=previous.work_mode;Dev.irActType=(ActType_t)previous.ir_action_type;Dev.irType=previous.ir_type;Dev.irIdx=previous.ir_index;
             Dev.errorCode.bit.irMatch=(Dev.irActType==ACT_TYPE_IR&&
                 (Dev.irIdx>=IR_BRAND_COUNT||!Dev.irType||Dev.irType==0xFFFFu))?1u:0u;
@@ -244,22 +258,44 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
     case DEVICE_OP_EXEC_CONTROL:
         status=execute_control(req->payload,req->payload_len);break;
     case DEVICE_OP_GET_RULES:{
-        uint8_t i,count=0;uint16_t off=1;
-        for(i=0;i<MAX_RULES;i++)if(Dev.rules[i].ctrl.enable)count++;
-        payload[0]=count;
-        for(i=0;i<MAX_RULES;i++){DEV_RULE_T *r=&Dev.rules[i];if(!r->ctrl.enable)continue;payload[off]=1;payload[off+1]=r->ctrl.trig_type;payload[off+2]=r->flags&0x7Fu;
-            put16(payload+off+3,(r->ctrl.trig_type==TRIG_TIME)?r->trig_val:0u);put16(payload+off+5,(r->ctrl.trig_type==TRIG_TIME)?r->trig_val2:0u);
-            put16(payload+off+7,(r->ctrl.trig_type==TRIG_TIME)?0u:r->trig_val);put16(payload+off+9,(r->ctrl.trig_type==TRIG_TIME)?5u:r->trig_val2);
-            put16(payload+off+11,(uint16_t)r->act.raw[2]|((uint16_t)r->act.raw[3]<<8));payload[off+13]=r->act.ir.onOff?1u:2u;off=(uint16_t)(off+14u);}
-        put32(payload+off,Config_GetRevision());*payload_len=(uint16_t)(off+4u);break;}
+        uint8_t i, count = 0u;
+        uint16_t off = 1u;
+        for (i = 0u; i < MAX_RULES; i++) {
+            if (!Dev.rules[i].ctrl.enable) continue;
+            count++;
+        }
+        payload[0] = count;
+        for (i = 0u; i < MAX_RULES; i++) {
+            DEV_RULE_T *r = &Dev.rules[i];
+            uint8_t is_time, start_action;
+            if (!r->ctrl.enable) continue;
+            is_time = (r->ctrl.trig_type == TRIG_TIME) ? 1u : 0u;
+            start_action = 0u;
+            if (is_time) {
+                start_action = (RULE_TIME_ACTION_TAG(r) == RULE_TIME_ACTION_MARKER &&
+                                RULE_TIME_START_ACTION(r) <= 2u)
+                    ? RULE_TIME_START_ACTION(r) : 0u;
+            }
+            payload[off] = 1u;
+            payload[off + 1u] = r->ctrl.trig_type;
+            payload[off + 2u] = r->flags & 0x7Fu;
+            put16(payload + off + 3u, is_time ? r->trig_val : 0u);
+            put16(payload + off + 5u, is_time ? r->trig_val2 : 0u);
+            put16(payload + off + 7u, is_time ? start_action : r->trig_val);
+            put16(payload + off + 9u, is_time ? 5u : r->trig_val2);
+            put16(payload + off + 11u, (uint16_t)r->act.raw[2] | ((uint16_t)r->act.raw[3] << 8));
+            payload[off + 13u] = (is_time && r->act.raw[4]) ? 2u : (r->act.ir.onOff ? 1u : 2u);
+            off = (uint16_t)(off + 14u);
+        }
+        *payload_len = off;
+        break;}
     case DEVICE_OP_SET_RULES:
     {
         DEV_RULE_T previous_rules[MAX_RULES];
         memcpy(previous_rules,Dev.rules,sizeof(previous_rules));
         status=parse_rules(req->payload,req->payload_len,Dev.rules);
-        if(status==DEVICE_STATUS_OK)status=Config_Commit(Config_GetRevision());
+        if(status==DEVICE_STATUS_OK)status=Config_Commit();
         if(status!=DEVICE_STATUS_OK)memcpy(Dev.rules,previous_rules,sizeof(previous_rules));
-        else{put32(payload,Config_GetRevision());*payload_len=4u;}
         break;
     }
     case DEVICE_OP_IR_CONFIG:
@@ -327,7 +363,6 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
                                 sizeof(config)-offsetof(connectivity_config_t,cellular_pdp_type));
         status=Connectivity_Save(&config);
         if(status==DEVICE_STATUS_OK){
-            put32(payload,Connectivity_GetGeneration());*payload_len=4u;
             if(lora_changed){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
             if(cellular_changed)Ml307_ApplyConfiguration();
         }
@@ -350,7 +385,8 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         put32(payload+47,cell->retry_remaining_ms);payload[51]=Ml307_AtGetStatus()->state;
         payload[52]=(uint8_t)(Dev.loraStatus>=Status_Connected?Lora_GetRssi():-127);
         payload[53]=(uint8_t)cell->rsrp_dbm;put16(payload+54,(uint16_t)cell->rsrq_db_x10);
-        payload[56]=15u;memcpy(payload+57,Ml307_GetDeviceId(),15u);*payload_len=72u;break;
+        payload[56]=DeviceUid_Valid(DeviceUid_Get())?DEVICE_UID_LENGTH:0u;
+        memcpy(payload+57,DeviceUid_Get(),payload[56]);*payload_len=(uint16_t)(57u+payload[56]);break;
     }
     case DEVICE_OP_RESTART_CELLULAR:
         if(req->payload_len!=0u){status=DEVICE_STATUS_INVALID_ARG;break;}
@@ -377,13 +413,6 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         response_length=Ml307_AtCopyResponse(payload+15,(uint8_t)(DEVICE_MAX_PAYLOAD-15u));
         payload[14]=response_length;*payload_len=(uint16_t)response_length+15u;break;
     }
-    case DEVICE_OP_SET_DEVICE_NAME:
-        if(req->payload_len<2u||req->payload[0]!=(uint8_t)(req->payload_len-1u)){
-            status=DEVICE_STATUS_INVALID_ARG;break;
-        }
-        status=DeviceProfile_SaveName((const char *)(req->payload+1),req->payload[0]);
-        if(status==DEVICE_STATUS_OK){Peripheral_RefreshDeviceName();payload[0]=req->payload[0];*payload_len=1u;}
-        break;
     case DEVICE_OP_RESTART_DEVICE:
         if(req->payload_len!=0u){status=DEVICE_STATUS_INVALID_ARG;break;}
         Peripheral_RequestReset();

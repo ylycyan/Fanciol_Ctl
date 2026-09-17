@@ -18,7 +18,6 @@
 
 #define CMD_IAP_PROM           0x80
 #define CMD_IAP_ERASE          0x81
-#define CMD_IAP_VERIFY         0x82
 #define CMD_IAP_END            0x83
 #define CMD_IAP_INFO           0x84
 #define CMD_IAP_MANIFEST       0x85
@@ -30,47 +29,6 @@ typedef struct
     unsigned char ImageFlag;
     unsigned char Revd[3];
 } OTADataFlashInfo_t;
-
-typedef union
-{
-    struct
-    {
-        unsigned char cmd;
-        unsigned char len;
-        unsigned char addr[2];
-        unsigned char block_num[2];
-    } erase;
-    struct
-    {
-        unsigned char cmd;
-        unsigned char len;
-        unsigned char status[2];
-    } end;
-    struct
-    {
-        unsigned char cmd;
-        unsigned char len;
-        unsigned char addr[2];
-        unsigned char buf[IAP_LEN - 4];
-    } verify;
-    struct
-    {
-        unsigned char cmd;
-        unsigned char len;
-        unsigned char addr[2];
-        unsigned char buf[IAP_LEN - 4];
-    } program;
-    struct
-    {
-        unsigned char cmd;
-        unsigned char len;
-        unsigned char buf[IAP_LEN - 2];
-    } info;
-    struct
-    {
-        unsigned char buf[IAP_LEN];
-    } other;
-} OTA_IAP_CMD_t;
 
 extern unsigned char CurrImageFlag;
 

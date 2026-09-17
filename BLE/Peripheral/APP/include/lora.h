@@ -7,10 +7,6 @@
 
 #ifndef INC_SX126X_H_
 	#define INC_SX126X_H_
-	//#define XTAL_FREQ		32000000		//1278
-	//#define FREQ_STEP		61.03515625		//((double)(XTAL_FREQ / pow(2.0, 19.0)))
-	//#define XTAL_FREQ		52000000		//1280
-	//#define FREQ_STEP		198.3642578125	//((double)(XTAL_FREQ / pow(2.0, 19.0)))
 	#define XTAL_FREQ		32000000		//126x
 	#define PREAMBLE_LENGTH 6
 	#define LORA_BUFFER_LENGTH 256		//Lora数据包长度 256
@@ -24,10 +20,6 @@
 	#define LORA_READY_TIMEOUT 100			//检查Lora是否Ready(Busy引脚为低电平表示Readu)的超时为50ms
 	#define LORA_SPI_TIMEOUT 100			//SPI通信超时为100个tick
 
-	//#define LORA_LISTEN_TX_TIMEOUT 800	//LISTEN通道TX超时
-	//#define LORA_LISTEN_RX_TIMEOUT 1200	//LISTEN通道RX超时
-	//#define LORA_SCAN_TX_TIMEOUT 1000		//SCAN通道TX超时
-	//#define LORA_SCAN_RX_TIMEOUT 1200		//SCAN通道RX超时
 	typedef enum {
 		LORA_EC1			= (uint8_t)0x01,	//4/5
 		LORA_Ec2			= (uint8_t)0x02,	//4/6

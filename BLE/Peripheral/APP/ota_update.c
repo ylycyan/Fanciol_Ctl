@@ -92,8 +92,7 @@ void Ota_Init(void)
     if(metadata.current_version != FIRMWARE_BUILD_VERSION) {
         metadata.current_version = FIRMWARE_BUILD_VERSION;
         if(metadata.state != OTA_STATE_IDLE &&
-           metadata.state != OTA_STATE_INSTALLING &&
-           metadata.update_version <= metadata.current_version) {
+           metadata.state != OTA_STATE_INSTALLING) {
             metadata.state = OTA_STATE_IDLE;
             metadata.url_length = 0U;
             metadata.erased_bytes = 0U;
@@ -180,8 +179,7 @@ uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_cr
 uint8_t Ota_BeginLocal(uint32_t version, uint32_t image_size, uint32_t image_crc32)
 {
     if(metadata.state != OTA_STATE_IDLE) {
-        /* 用户明确开始一次新的 BLE 升级时，可清理上一次断开或旧版并发
-         * 校验遗留的本地会话。带 URL 的 4G 下载以及安装中状态不得覆盖。 */
+        /* 新的 BLE 升级可替换未完成的本地会话；4G 下载和安装过程不得覆盖。 */
         if(metadata.url_length != 0U || metadata.state == OTA_STATE_INSTALLING)
             return DEVICE_STATUS_BUSY;
         if(Ota_Cancel() != DEVICE_STATUS_OK) return DEVICE_STATUS_IO_ERROR;

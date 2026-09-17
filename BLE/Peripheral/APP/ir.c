@@ -48,6 +48,7 @@ static uint8_t Ir_TxStartCopy(const uint8_t *data,
     irPipelineHighWater = 1U;
 
     /* 先填满 8 字节 FIFO，余下数据由 THR_EMPTY 中断继续发送。 */
+    LED_NotifyIrTx();
     Ir_TxFillFifo();
     UART3_INTCfg(ENABLE, RB_IER_THR_EMPTY);
     return 1U;
@@ -343,6 +344,9 @@ uint8_t Ir_StartMatch(void)
         IrBuf.isFinish = 1U;
         return 0;
     }
+#if _IR_INFO_
+    PrintHex("ir match tx", IrBuf.txbuf, 3U);
+#endif
     irOperationDeadline = CurTick + 25000U;
     return 1;
 }
@@ -366,6 +370,9 @@ uint8_t Ir_StartLearning(uint8_t ch)
         IrBuf.isFinish = 1U;
         return 0;
     }
+#if _IR_INFO_
+    PrintHex("ir learn tx", IrBuf.txbuf, 3U);
+#endif
     irOperationDeadline = CurTick + 25000U;
     return 1;
 }

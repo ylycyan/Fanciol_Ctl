@@ -30,7 +30,6 @@ volatile uint32_t Timer_Lora = 0; // Lora state timer, LORA_POLL_INTERVAL_MS/tic
 
 #define LORA_TAG_READ              0U
 #define LORA_TAG_FANCOIL_CONTROL   1U
-#define LORA_TAG_SPLITAC_CONTROL   3U
 
 #if DevType != 20
 #error "Fixed six-value LoRa mapping requires eDeviceFancoil DevType 20"
@@ -236,19 +235,6 @@ static uint8_t BuildFailPacket(uint8_t *buf, uint8_t tag, uint16_t nodeId)
     return 5;
 }
 
-static uint8_t BuildGatewayAckPacket(uint8_t *buf, uint8_t tag, uint16_t nodeId, uint8_t result)
-{
-    if(result != 0) {
-        return BuildFailPacket(buf, tag, nodeId);
-    }
-    buf[0] = LORA_CMD_DATA;
-    buf[1] = 8;
-    buf[2] = nodeId & 0xFF;
-    buf[3] = (nodeId >> 8) & 0xFF;
-    AddCrc(buf, 4);
-    return 5;
-}
-
 static uint8_t BuildDataPacket(uint8_t *buf, uint8_t tag, uint16_t nodeId, uint8_t errorInfo)
 {
     GatewayLoraFancoilState state;
@@ -340,8 +326,7 @@ static void Relay_ForwardGatewayPacket(uint8_t *packet, uint8_t len, uint16_t ta
 
     relayPendingChildId = targetNodeId;
     relayPendingTag = tag;
-    relayPendingIsControl = (tag == LORA_TAG_FANCOIL_CONTROL ||
-                             tag == LORA_TAG_SPLITAC_CONTROL);
+    relayPendingIsControl = (tag == LORA_TAG_FANCOIL_CONTROL);
     relayPendingSeq = Relay_NextSeq();
     wrappedLen = BuildRelayInnerPacket(wrapped,
                                        RELAY_INNER_DOWN,
@@ -602,21 +587,14 @@ static uint8_t Lora_ParseGatewayControl(const uint8_t *buf,
 {
     const uint8_t *parameterPtr;
 
-    if(tag == LORA_TAG_FANCOIL_CONTROL && len == 18U) {
-        /* eDeviceFancoil: operate@6, operateTag@7, parameter@9, token@13。 */
-        *operation = buf[6];
-        *operateTag = (uint16_t)buf[7] | ((uint16_t)buf[8] << 8);
-        parameterPtr = buf + 9;
-        *token = Lora_GetU32Le(buf + 13);
-    } else if(tag == LORA_TAG_SPLITAC_CONTROL && len == 22U) {
-        /* 保留旧 tag=3 解析，便于现场切换云端类型时明确返回结果。 */
-        *operation = buf[10];
-        *operateTag = (uint16_t)buf[11] | ((uint16_t)buf[12] << 8);
-        parameterPtr = buf + 13;
-        *token = Lora_GetU32Le(buf + 17);
-    } else {
+    if(tag != LORA_TAG_FANCOIL_CONTROL || len != 18U) {
         return 0;
     }
+    /* eDeviceFancoil: operate@6, operateTag@7, parameter@9, token@13。 */
+    *operation = buf[6];
+    *operateTag = (uint16_t)buf[7] | ((uint16_t)buf[8] << 8);
+    parameterPtr = buf + 9;
+    *token = Lora_GetU32Le(buf + 13);
 
     *parameterValue = Lora_GetU32Le(parameterPtr);
     return 1;
@@ -640,7 +618,7 @@ uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len,
     if((((uint16_t)buf[2] | ((uint16_t)buf[3] << 8)) != Dev.gatewayId &&
         !(allow_zero_gateway && buf[2] == 0U && buf[3] == 0U)) ||
        targetNodeId != Dev.nodeId ||
-       (tag != LORA_TAG_FANCOIL_CONTROL && tag != LORA_TAG_SPLITAC_CONTROL) ||
+       tag != LORA_TAG_FANCOIL_CONTROL ||
        !Lora_ParseGatewayControl(buf, len, tag, &operation, &operateTag,
                                  &parameterValue, &token)) {
         return 0xFFU;
@@ -662,8 +640,6 @@ uint8_t Lora_BuildControlResult(uint8_t *buf, uint8_t tag, uint8_t result)
             ? Lora_BuildNodeReport(buf, tag, 0U)
             : BuildFailPacket(buf, tag, Dev.nodeId);
     }
-    if(tag == LORA_TAG_SPLITAC_CONTROL)
-        return BuildGatewayAckPacket(buf, tag, Dev.nodeId, result);
     return 0U;
 }
 
@@ -693,7 +669,7 @@ static void Lora_HandleSelfCommand(uint8_t *buf, uint8_t len, uint8_t tag)
     uint8_t txLen;
     uint8_t result;
 
-    if(tag == LORA_TAG_FANCOIL_CONTROL || tag == LORA_TAG_SPLITAC_CONTROL) {
+    if(tag == LORA_TAG_FANCOIL_CONTROL) {
         result = Lora_ExecuteNodeControl(buf, len, 0U);
         txLen = Lora_BuildControlResult(buf, tag, result);
     } else {

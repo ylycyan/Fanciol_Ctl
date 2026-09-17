@@ -22,15 +22,6 @@ typedef struct {
     uint8_t partial;
 } failure_t;
 
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint8_t register_sf;
-    uint8_t register_bw;
-    uint8_t listen_sf;
-    uint8_t listen_bw;
-    uint32_t crc32;
-} legacy_lora_record_t;
-
 t_dev Dev;
 static uint8_t dataflash[DATAFLASH_SIZE];
 static failure_t failure;
@@ -117,22 +108,6 @@ static void create_initial_config(void)
     assert(Config_GetRevision() == 2u);
 }
 
-static void test_device_profile_name(void)
-{
-    reset_flash();
-    assert(DeviceProfile_Load() == DEVICE_STATUS_VERIFY_FAILED);
-    assert(strcmp(DeviceProfile_GetName(), "SplitAC") == 0);
-    assert(DeviceProfile_SaveName("Plant-AC1", 9u) == DEVICE_STATUS_OK);
-    DeviceProfile_FactoryDefaults();
-    assert(DeviceProfile_Load() == DEVICE_STATUS_OK);
-    assert(strcmp(DeviceProfile_GetName(), "Plant-AC1") == 0);
-    assert(DeviceProfile_SaveName("Second", 6u) == DEVICE_STATUS_OK);
-    DeviceProfile_FactoryDefaults();
-    assert(DeviceProfile_Load() == DEVICE_STATUS_OK);
-    assert(strcmp(DeviceProfile_GetName(), "Second") == 0);
-    assert(DeviceProfile_SaveName("", 0u) == DEVICE_STATUS_INVALID_ARG);
-}
-
 static void test_config_slot_recovery(void)
 {
     uint8_t snapshot[DATAFLASH_SIZE];
@@ -143,7 +118,7 @@ static void test_config_slot_recovery(void)
 
     Dev.nodeId = 0x2345u;
     fail_on(FAIL_WRITE, 1, 1);
-    assert(Config_Commit(2u) == DEVICE_STATUS_IO_ERROR);
+    assert(Config_Commit() == DEVICE_STATUS_IO_ERROR);
     assert(Config_Load() == DEVICE_STATUS_OK);
     assert(Dev.nodeId == Default_DevId);
     assert(Config_GetRevision() == 3u);
@@ -153,7 +128,7 @@ static void test_config_slot_recovery(void)
     assert(Config_Load() == DEVICE_STATUS_OK);
     Dev.nodeId = 0x2345u;
     fail_on(FAIL_READ, 1, 0);
-    assert(Config_Commit(2u) == DEVICE_STATUS_VERIFY_FAILED);
+    assert(Config_Commit() == DEVICE_STATUS_VERIFY_FAILED);
     clear_failure();
     assert(Config_Load() == DEVICE_STATUS_OK);
     assert(Dev.nodeId == 0x2345u);
@@ -190,7 +165,7 @@ static void test_config_read_error_never_overwrites_flash(void)
     reset_flash();
     create_initial_config();
     Dev.nodeId = 0x4567u;
-    assert(Config_Commit(2u) == DEVICE_STATUS_OK);
+    assert(Config_Commit() == DEVICE_STATUS_OK);
     memcpy(snapshot, dataflash, sizeof(snapshot));
 
     /* A 是最新槽；读取 A 失败时可临时使用 B，但绝不能擦写任何一个槽。 */
@@ -224,8 +199,7 @@ static void fill_runtime_page(uint8_t *snapshot)
     assert(Config_Load() == DEVICE_STATUS_VERIFY_FAILED); /* 同时清零启动存储标志。 */
     assert(Runtime_Load() == DEVICE_STATUS_VERIFY_FAILED);
     for(i = 1; i <= 64u; ++i) {
-        Dev.meter.run_minutes = i;
-        Dev.runTime = (uint16_t)i;
+        Dev.meter.fault_count = (uint16_t)i;
         Dev.lastPowerChange = 1000u + i;
         Dev.onOff = (i & 1u) ? PowerOn : PowerOff;
         Dev.ctlMode = (Mode_t)(i % 5u);
@@ -243,8 +217,7 @@ static void test_runtime_read_error_is_visible_and_non_destructive(void)
     reset_flash();
     assert(Config_Load() == DEVICE_STATUS_VERIFY_FAILED);
     assert(Runtime_Load() == DEVICE_STATUS_VERIFY_FAILED);
-    Dev.meter.run_minutes = 17U;
-    Dev.runTime = 17U;
+    Dev.meter.fault_count = 17U;
     Dev.lastPowerChange = 123456U;
     Dev.onOff = PowerOn;
     Dev.ctlMode = Mode_Cool;
@@ -254,7 +227,6 @@ static void test_runtime_read_error_is_visible_and_non_destructive(void)
     memcpy(snapshot, dataflash, sizeof(snapshot));
 
     memset(&Dev.meter, 0, sizeof(Dev.meter));
-    Dev.runTime = 0U;
     Dev.lastPowerChange = 0U;
     Dev.onOff = PowerOff;
     Dev.ctlMode = Mode_Auto;
@@ -263,8 +235,7 @@ static void test_runtime_read_error_is_visible_and_non_destructive(void)
     /* 读取主日志有效记录、随后空槽成功，第三次读取检查点失败。 */
     fail_on(FAIL_READ, 3U, 0U);
     assert(Runtime_Load() == DEVICE_STATUS_IO_ERROR);
-    assert(Dev.meter.run_minutes == 17U);
-    assert(Dev.runTime == 17U);
+    assert(Dev.meter.fault_count == 17U);
     assert(Dev.lastPowerChange == 123456U);
     assert(Dev.onOff == PowerOn);
     assert(Dev.ctlMode == Mode_Cool);
@@ -273,7 +244,7 @@ static void test_runtime_read_error_is_visible_and_non_destructive(void)
     assert((Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED) != 0U);
     assert(memcmp(snapshot, dataflash, sizeof(snapshot)) == 0);
     clear_failure();
-    Dev.meter.run_minutes = 18U;
+    Dev.meter.fault_count = 18U;
     assert(Runtime_Append() == DEVICE_STATUS_IO_ERROR);
     assert(memcmp(snapshot, dataflash, sizeof(snapshot)) == 0);
 }
@@ -284,14 +255,13 @@ static void restore_runtime_snapshot(const uint8_t *snapshot)
     memset(&Dev, 0, sizeof(Dev));
     clear_failure();
     assert(Runtime_Load() == DEVICE_STATUS_OK);
-    assert(Dev.meter.run_minutes == 64u);
+    assert(Dev.meter.fault_count == 64u);
     assert(Dev.lastPowerChange == 1064u);
     assert(Dev.onOff == PowerOff);
     assert(Dev.ctlMode == (Mode_t)(64u % 5u));
     assert(Dev.temSet == (uint8_t)(16u + (64u % 16u)));
     assert(Dev.wind == Wind_Auto);
-    Dev.meter.run_minutes = 65u;
-    Dev.runTime = 65u;
+    Dev.meter.fault_count = 65u;
     Dev.lastPowerChange = 1065u;
     Dev.onOff = PowerOn;
     Dev.ctlMode = Mode_Auto;
@@ -304,8 +274,7 @@ static void assert_runtime_recovers_64_or_65(uint32_t expected)
     memset(&Dev, 0, sizeof(Dev));
     clear_failure();
     assert(Runtime_Load() == DEVICE_STATUS_OK);
-    assert(Dev.meter.run_minutes == expected);
-    assert(Dev.runTime == expected);
+    assert(Dev.meter.fault_count == expected);
     assert(Dev.lastPowerChange == 1000u + expected);
     assert(Dev.onOff == ((expected & 1u) ? PowerOn : PowerOff));
     assert(Dev.ctlMode == (Mode_t)(expected % 5u));
@@ -432,14 +401,13 @@ static void test_factory_reset_reports_partial_failure(void)
     create_initial_config();
     assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
     memcpy(&connectivity, Connectivity_Get(), sizeof(connectivity));
-    strcpy(connectivity.mqtt_client_id, "SAC2608A0000001");
+    strcpy(connectivity.device_id, "A26094567");
     assert(Connectivity_Save(&connectivity) == DEVICE_STATUS_OK);
     assert(Runtime_Load() == DEVICE_STATUS_VERIFY_FAILED);
     assert(IrStore_Load() == DEVICE_STATUS_VERIFY_FAILED);
     Dev.nodeId = 0x4567u;
-    assert(Config_Commit(2u) == DEVICE_STATUS_OK);
-    Dev.meter.run_minutes = 88u;
-    Dev.runTime = 88u;
+    assert(Config_Commit() == DEVICE_STATUS_OK);
+    Dev.meter.fault_count = 88u;
     assert(Runtime_Append() == DEVICE_STATUS_OK);
     Dev.learnNum = 1;
     Dev.learnCode[0].enable = 1;
@@ -465,39 +433,10 @@ static void test_factory_reset_reports_partial_failure(void)
     assert(LoraParams_Load() == DEVICE_STATUS_OK);
     assert(Connectivity_LoraEnabled());
     assert(!Connectivity_CellularEnabled());
-    assert(strcmp(DeviceUid_Get(), "SAC2608A0000001") == 0);
+    assert(strcmp(DeviceUid_Get(), "A2609BB01") == 0);
 }
 
-static void test_legacy_lora_defaults_migrate_without_overwriting_custom_profile(void)
-{
-    legacy_lora_record_t legacy;
-    reset_flash();
-    memset(&legacy, 0, sizeof(legacy));
-    legacy.magic = 0x3250524CUL;
-    legacy.register_sf = 10U;
-    legacy.register_bw = 4U;
-    legacy.listen_sf = 8U;
-    legacy.listen_bw = 10U;
-    legacy.crc32 = Config_Crc32((const uint8_t *)&legacy,
-                                  (uint16_t)(sizeof(legacy) - sizeof(legacy.crc32)));
-    assert(Test_EepromWrite(CONNECTIVITY_SLOT_A, &legacy, sizeof(legacy)) == 0U);
-    memset(&Dev, 0, sizeof(Dev));
-    assert(LoraParams_Load() == DEVICE_STATUS_OK);
-    assert(Dev.loraRegisterSf == LORA_SF_LISTEN);
-    assert(Dev.loraRegisterBw == LORA_BW_LISTEN);
-    assert(Dev.loraListenSf == LORA_SF_SCAN);
-    assert(Dev.loraListenBw == LORA_BW_SCAN);
-
-    assert(LoraParams_Save(11u, 2u, 9u, 3u) == DEVICE_STATUS_OK);
-    memset(&Dev, 0, sizeof(Dev));
-    assert(LoraParams_Load() == DEVICE_STATUS_OK);
-    assert(Dev.loraRegisterSf == 11u);
-    assert(Dev.loraRegisterBw == 2u);
-    assert(Dev.loraListenSf == 9u);
-    assert(Dev.loraListenBw == 3u);
-}
-
-static void test_connectivity_round_trip_and_conflict(void)
+static void test_connectivity_round_trip(void)
 {
     connectivity_config_t next;
     connectivity_config_t decoded;
@@ -506,7 +445,6 @@ static void test_connectivity_round_trip_and_conflict(void)
 
     reset_flash();
     assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
-    assert(Connectivity_GetGeneration() == 0U);
     memcpy(&next, Connectivity_Get(), sizeof(next));
     next.transport_mask = CONNECTIVITY_LORA | CONNECTIVITY_CELLULAR;
     next.mqtt_port = 1883U;
@@ -515,15 +453,18 @@ static void test_connectivity_round_trip_and_conflict(void)
     next.network_timeout_sec = 180U;
     next.cellular_pdp_type = CONNECTIVITY_PDP_IPV4V6;
     next.mqtt_qos = 1U;
+    Dev.nodeId = 0x1002U;
     strcpy(next.mqtt_host, "broker.example.com");
     strcpy(next.apn, "iot");
-    strcpy(next.mqtt_client_id, "SAC2608A0000002");
-    strcpy(next.mqtt_topic_prefix, "factory/splitac");
+    strcpy(next.device_id, "A26091002");
     assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
-    assert(Connectivity_GetGeneration() == 1U);
     assert(Connectivity_LoraEnabled());
     assert(Connectivity_CellularEnabled());
     assert(DeviceUid_Valid(DeviceUid_Get()));
+    assert(strcmp(DeviceUid_Get(), "A26091002") == 0);
+    Dev.nodeId = 0xABCDU;
+    assert(strcmp(DeviceUid_Get(), "A2609ABCD") == 0);
+    Dev.nodeId = 0x1002U;
 
     assert(Connectivity_Encode(wire, sizeof(wire), &length) == DEVICE_STATUS_OK);
     assert(length < sizeof(wire));
@@ -531,9 +472,6 @@ static void test_connectivity_round_trip_and_conflict(void)
     assert(Connectivity_Decode(wire, length, &decoded) == DEVICE_STATUS_OK);
     assert(memcmp(&decoded, &next, sizeof(next)) == 0);
 
-    wire[17] = 0U; /* stale expected generation */
-    assert(Connectivity_Decode(wire, length, &decoded) == DEVICE_STATUS_CONFLICT);
-    wire[17] = 1U;
     wire[length++] = 0U; /* trailing bytes are rejected */
     assert(Connectivity_Decode(wire, length, &decoded) == DEVICE_STATUS_INVALID_ARG);
 }
@@ -547,16 +485,14 @@ static void test_connectivity_power_loss_keeps_previous_slot(void)
     memcpy(&next, Connectivity_Get(), sizeof(next));
     next.transport_mask |= CONNECTIVITY_CELLULAR;
     strcpy(next.mqtt_host, "broker.example.com");
-    strcpy(next.mqtt_client_id, "SAC2608A0000003");
+    strcpy(next.device_id, "A26091003");
     assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
-    assert(Connectivity_GetGeneration() == 1U);
 
     next.mqtt_port = 1884U;
     fail_on(FAIL_WRITE, 1U, 1U);
     assert(Connectivity_Save(&next) == DEVICE_STATUS_IO_ERROR);
     clear_failure();
     assert(Connectivity_Load() == DEVICE_STATUS_OK);
-    assert(Connectivity_GetGeneration() == 2U); /* 单有效槽启动时自动重建冗余。 */
     assert(Connectivity_Get()->mqtt_port == 1883U);
     assert(strcmp(Connectivity_Get()->mqtt_host, "broker.example.com") == 0);
 }
@@ -570,15 +506,14 @@ static void test_device_uid_format_is_required_for_cellular(void)
     next.transport_mask |= CONNECTIVITY_CELLULAR;
     strcpy(next.mqtt_host, "broker.example.com");
     assert(Connectivity_Save(&next) == DEVICE_STATUS_INVALID_ARG);
-    strcpy(next.mqtt_client_id, "SAC2608a0000001");
+    strcpy(next.device_id, "A26131001");
     assert(Connectivity_Save(&next) == DEVICE_STATUS_INVALID_ARG);
-    strcpy(next.mqtt_client_id, "SAC2608A0000001");
+    strcpy(next.device_id, "A26091001");
     assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
 }
 
 int main(void)
 {
-    test_device_profile_name();
     test_config_slot_recovery();
     test_config_read_error_never_overwrites_flash();
     test_runtime_rollover_power_loss();
@@ -587,8 +522,7 @@ int main(void)
     test_ir_single_slot_self_heals_and_read_error_never_writes();
     test_lora_parameter_read_error_is_visible_and_non_destructive();
     test_factory_reset_reports_partial_failure();
-    test_legacy_lora_defaults_migrate_without_overwriting_custom_profile();
-    test_connectivity_round_trip_and_conflict();
+    test_connectivity_round_trip();
     test_connectivity_power_loss_keeps_previous_slot();
     test_device_uid_format_is_required_for_cellular();
     puts("Config/runtime/IR/connectivity power-loss recovery: PASS");

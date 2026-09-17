@@ -15,11 +15,7 @@
 #define OTA_METADATA_MAGIC        0x3154414FUL
 
 #ifndef FIRMWARE_BUILD_VERSION
-#define FIRMWARE_BUILD_VERSION    0x00021613UL
-#endif
-
-#ifndef HARDWARE_BUILD_VERSION
-#define HARDWARE_BUILD_VERSION    "HW1.0"
+#error "FIRMWARE_BUILD_VERSION must come from production.csv"
 #endif
 
 typedef enum {
