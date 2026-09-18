@@ -27,7 +27,8 @@ typedef enum {
     OTA_STATE_INSTALLING
 } ota_state_t;
 
-typedef struct __attribute__((packed)) {
+/* packed 固定落盘布局；aligned(4) 满足 DataFlash 缓冲区对齐要求，不改尺寸。 */
+typedef struct __attribute__((packed, aligned(4))) {
     uint32_t magic;
     uint8_t schema;
     uint8_t state;

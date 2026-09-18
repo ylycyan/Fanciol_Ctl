@@ -740,6 +740,19 @@ static void handle_management(const ml307_publish_t *publish)
     case ML307_MGMT_OTA_OFFER:
         /* version:u32, size:u32, crc32:u32, urlLength:u8, URL */
         if(payload_length >= 13U && frame[20] == payload_length - 13U) {
+            const ota_metadata_t *ota = Ota_Get();
+            /*
+             * 服务端 /api/ota/start 不会先发 CANCEL。若设备残留一个未完成但
+             * 没有在途 HTTP 传输的会话（ERASING/DOWNLOADING 暂停、VERIFYING、
+             * READY），直接调用 Ota_BeginRemote 会被判 BUSY，导致 4G 升级
+             * 永久无法重新开始。这里先清掉这种“静止”的旧会话，让新的提议
+             * 从零开始；正在安装(INSTALLING)或有在途传输时不动，交由
+             * 相同提议续传或服务端 CANCEL 处理。
+             */
+            if(ota->state != OTA_STATE_IDLE && ota->state != OTA_STATE_INSTALLING &&
+               modem.http_step == ML307_HTTP_IDLE) {
+                (void)Ota_Cancel();
+            }
             status = Ota_BeginRemote(frame_u32(frame + 8), frame_u32(frame + 12),
                                      frame_u32(frame + 16),
                                      (const char *)(frame + 21), frame[20]);
@@ -970,6 +983,21 @@ static uint8_t mqtt_urc_number(const char *line, uint8_t index, uint16_t *value)
         while(*cursor == ' ') cursor++;
         if(*cursor++ != ',') return 0U;
     }
+}
+
+static uint8_t mqtt_urc_is(const char *line, const char *kind)
+{
+    static const char prefix[] = "+MQTTURC:";
+    const char *cursor;
+    if(!line || !kind || strncmp(line, prefix, sizeof(prefix) - 1U) != 0) return 0U;
+    cursor = line + sizeof(prefix) - 1U;
+    while(*cursor == ' ' || *cursor == '\t') cursor++;
+    if(*cursor++ != '"') return 0U;
+    while(*kind && *cursor == *kind) {
+        cursor++;
+        kind++;
+    }
+    return *kind == '\0' && *cursor == '"';
 }
 
 static void queue_ota_status(uint16_t transaction, uint8_t status)
@@ -1265,7 +1293,7 @@ static void process_line(char *line, uint16_t length)
         return;
     }
     if(http_process_line(line, length)) return;
-    if(strstr(line, "+MQTTURC: \"conn\",0,") != 0) {
+    if(mqtt_urc_is(line, "conn")) {
         uint16_t result = 0xFFFFU;
         if(mqtt_urc_number(line, 1U, &result) && result == 0U) {
             if(phase == ML307_PHASE_MQTT_CONNECT) {
@@ -1287,18 +1315,19 @@ static void process_line(char *line, uint16_t length)
             status_phase(ML307_PHASE_MQTT_CONNECT);
         } else if(result == 2U && phase == ML307_PHASE_MQTT_CONFIG) {
             /* Expected asynchronous acknowledgement of AT+MQTTDISC=0. */
-        } else enter_backoff(ML307_ERROR_MQTT);
+        } else if(result == 3U) enter_backoff(ML307_ERROR_BROKER_AUTH);
+        else enter_backoff(ML307_ERROR_MQTT);
         return;
     }
-    if(strstr(line, "+MQTTURC: \"timeout\",0,") != 0) {
+    if(mqtt_urc_is(line, "timeout")) {
         enter_backoff(ML307_ERROR_MQTT);
         return;
     }
-    if(strstr(line, "+MQTTURC: \"suback\",0,") != 0) {
+    if(mqtt_urc_is(line, "suback")) {
         uint16_t result;
         /* SUBACK code 0/1/2 is the granted QoS; 128 means rejected. */
         if(!mqtt_urc_number(line, 2U, &result) || result > 2U) {
-            enter_backoff(ML307_ERROR_MQTT);
+            enter_backoff(ML307_ERROR_SUBSCRIBE);
             return;
         }
         modem.waiting = 0U;
@@ -1313,7 +1342,7 @@ static void process_line(char *line, uint16_t length)
         status_phase(ML307_PHASE_ONLINE);
         return;
     }
-    if(strstr(line, "+MQTTURC: \"puback\",0,") != 0) {
+    if(mqtt_urc_is(line, "puback")) {
         if(phase == ML307_PHASE_PUBLISH && modem.prompt_seen)
             complete_publish();
         return;

@@ -69,11 +69,14 @@ void LED_Pro(void)
               (networkOnline ? 1U : (uint8_t)((CurTick / LED_LINK_BLINK_HALF_MS) & 1U)) :
               0U);
 
-    /* 蓝灯用于 BLE 调试：连接期间持续快闪，广播或未连接时熄灭。 */
+    /*
+     * 蓝灯用于 BLE：未连接熄灭；连接成功常亮；设备定位（Identify）时快闪，
+     * 由上面的分支处理。连接建立即代表链路已确认，不再持续闪烁。
+     */
     bleState &= GAPROLE_STATE_ADV_MASK;
     led_write(LED_BLUE_PIN,
               (bleState == GAPROLE_CONNECTED || bleState == GAPROLE_CONNECTED_ADV) ?
-              (uint8_t)((CurTick / 100U) & 1U) : 0U);
+              1U : 0U);
 
     /* 普通网络重连由白灯表示；红灯只表示需要排查的硬件级故障。 */
     hardwareFault = Dev.errorCode.bit.flash || Dev.errorCode.bit.ad ||

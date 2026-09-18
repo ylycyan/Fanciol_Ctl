@@ -25,7 +25,7 @@ class ProductionProvisioningTest(unittest.TestCase):
         with path.open('w', newline='', encoding='utf-8') as output:
             writer = csv.DictWriter(output, fieldnames=(
                 'device_id', 'communication_mode', 'lora_channel',
-                'firmware_version', 'hardware_version'))
+                'firmware_version', 'hardware_version', 'mqtt_host'))
             writer.writeheader()
             writer.writerows(rows)
 
@@ -37,7 +37,8 @@ class ProductionProvisioningTest(unittest.TestCase):
             self.write_csv(source, [{
                 'device_id': 'A26091001',
                 'communication_mode': 'lora', 'lora_channel': '9',
-                'firmware_version': '2.22.19', 'hardware_version': 'HW1.0'
+                'firmware_version': '2.22.19', 'hardware_version': 'HW1.0',
+                'mqtt_host': '106.15.11.119'
             }])
 
             production.provision(provision_args(source, output))
@@ -49,6 +50,7 @@ class ProductionProvisioningTest(unittest.TestCase):
             self.assertEqual(int.from_bytes(dataflash[16:18], 'little'), 0x1001)
             self.assertEqual(dataflash[18], 9)
             self.assertEqual(dataflash[0x2010], 1)
+            self.assertEqual(dataflash[0x2020:0x202D], b'106.15.11.119')
             self.assertFalse((output / 'platform-import.csv').exists())
 
     def test_invalid_or_duplicate_factory_uid_is_rejected(self):

@@ -42,7 +42,13 @@ extern "C" {
 #define SIMPLEPROFILE_SERVICE       0x00000001
 
 // Length of characteristic in bytes
-#define SIMPLEPROFILE_CHAR1_LEN     120
+/*
+ * CHAR1 承载长度到上限的分片请求：逻辑帧最长 251 B，物理分片最多 246 B 载荷
+ * 加 5 B 分片头。若此处小于该值，主机按 MTU-8 发送的大请求会被
+ * ATT_ERR_INVALID_VALUE_SIZE 静默拒绝，造成收发 chunk 不对称。CHAR2/CHAR3
+ * 仍保持 120 B。
+ */
+#define SIMPLEPROFILE_CHAR1_LEN     251
 #define SIMPLEPROFILE_CHAR2_LEN     120
 #define SIMPLEPROFILE_CHAR3_LEN     120
 

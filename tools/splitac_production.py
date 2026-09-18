@@ -112,7 +112,7 @@ def connectivity_record(row, args):
         args.listen_sf, args.listen_bw, args.pdp_type, args.qos,
         1 if args.clean_session else 0, args.port, args.keepalive,
         args.report_interval, args.network_timeout,
-        fixed_text(args.broker, 48, 'broker'),
+        fixed_text(row.get('mqtt_host') or args.broker, 48, 'broker'),
         fixed_text(row.get('apn') or args.apn, 20, 'apn'),
         fixed_text(row['device_id'], 10, 'device_id')
     )

@@ -373,19 +373,26 @@ void Rule_DailyReset(void)
 void Meter_Update(uint32_t dt_sec)
 {
     uint64_t energy_delta;
-    uint64_t accumulated;
-    uint64_t increments;
+    uint32_t accumulated;
+    uint32_t increments;
 
     (void)dt_sec;
 
     /* 芯片内部完成积分；MCU只汇总寄存器增量，不再用功率×时间估算。 */
     energy_delta = HLW8110_TakeEnergyTenthWattSeconds();
     if(energy_delta != 0U) {
-        accumulated = (uint64_t)Dev.meter.energy_watt_tenth_seconds + energy_delta;
+        /*
+         * 余数每次都被归一化到 < 3600000。把增量夹在 32 位剩余空间内即可用
+         * 32 位除法（RV32 上 64 位除法会链接 __udivdi3/__umoddi3，约 2.7 KB
+         * Flash）。0.1W*s 级别的每秒增量离 4.29e9 还差多个数量级，饱和无副作用。
+         */
+        uint32_t room = 0xFFFFFFFFUL - Dev.meter.energy_watt_tenth_seconds;
+        if(energy_delta > (uint64_t)room) energy_delta = room;
+        accumulated = Dev.meter.energy_watt_tenth_seconds + (uint32_t)energy_delta;
         increments = accumulated / METER_TENTH_KWH_DIVISOR;
-        Dev.meter.energy_watt_tenth_seconds = (uint32_t)(accumulated % METER_TENTH_KWH_DIVISOR);
-        if(increments > (uint64_t)(0xFFFFFFFFUL - Dev.meter.energy_wh)) Dev.meter.energy_wh = 0xFFFFFFFFUL;
-        else Dev.meter.energy_wh += (uint32_t)increments;
+        Dev.meter.energy_watt_tenth_seconds = accumulated % METER_TENTH_KWH_DIVISOR;
+        if(increments > (0xFFFFFFFFUL - Dev.meter.energy_wh)) Dev.meter.energy_wh = 0xFFFFFFFFUL;
+        else Dev.meter.energy_wh += increments;
     }
 
     /* RTC 对时可能回拨，避免无符号下溢导致连续擦写。 */

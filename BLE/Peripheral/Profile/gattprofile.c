@@ -550,7 +550,9 @@ static bStatus_t simpleProfile_WriteAttrCB(uint16_t connHandle, gattAttribute_t 
                 //Write the value
                 if(status == SUCCESS)
                 {
-                    tmos_memcpy(pAttr->pValue, pValue, SIMPLEPROFILE_CHAR1_LEN);
+                    /* 只复制实际收到的字节数。pValue 仅保证 len 字节有效，
+                     * 按固定 120 B 复制会越界读取 BLE 协议栈缓冲。 */
+                    tmos_memcpy(pAttr->pValue, pValue, len);
                     notifyApp = SIMPLEPROFILE_CHAR1;
                     #if _BT_INFO_
                     PRINT("Write FFE1 len=%d\n", len);
@@ -576,7 +578,7 @@ static bStatus_t simpleProfile_WriteAttrCB(uint16_t connHandle, gattAttribute_t 
                 //Write the value
                 if(status == SUCCESS)
                 {
-                    tmos_memcpy(pAttr->pValue, pValue, SIMPLEPROFILE_CHAR2_LEN);
+                    tmos_memcpy(pAttr->pValue, pValue, len);
                     notifyApp = SIMPLEPROFILE_CHAR2;
                     #if _BT_INFO_
                     PRINT("Write FFE2 len=%d\n", len);

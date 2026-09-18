@@ -245,13 +245,15 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         memcpy(rollback_rules,Dev.rules,sizeof(rollback_rules));
         Dev.nodeId=cfg.node_id;Dev.channel=cfg.channel;Dev.linkRole=cfg.link_role;Dev.parentRelayId=cfg.parent_id;Dev.mode=cfg.work_mode;
         Dev.irActType=(ActType_t)cfg.ir_action_type;Dev.irType=cfg.ir_type;Dev.irIdx=cfg.ir_index;
-        Dev.errorCode.bit.irMatch=(Dev.irActType==ACT_TYPE_IR&&
+        IrBuf.matchError=(Dev.irActType==ACT_TYPE_IR&&
             (Dev.irIdx>=IR_BRAND_COUNT||!Dev.irType||Dev.irType==0xFFFFu))?1u:0u;
+        IrBuf.learnError=(Dev.irActType==ACT_TYPE_LEARN&&Dev.learnNum==0u)?1u:0u;
         if(previous.work_mode!=Dev.mode)Rule_DailyReset();
         status=Config_Commit();if(status==DEVICE_STATUS_OK){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);if(previous.node_id!=Dev.nodeId){Peripheral_RefreshDeviceName();Ml307_ApplyConfiguration();}}
         else {Dev.nodeId=previous.node_id;Dev.channel=previous.channel;Dev.linkRole=previous.link_role;Dev.parentRelayId=previous.parent_id;Dev.mode=previous.work_mode;Dev.irActType=(ActType_t)previous.ir_action_type;Dev.irType=previous.ir_type;Dev.irIdx=previous.ir_index;
-            Dev.errorCode.bit.irMatch=(Dev.irActType==ACT_TYPE_IR&&
+            IrBuf.matchError=(Dev.irActType==ACT_TYPE_IR&&
                 (Dev.irIdx>=IR_BRAND_COUNT||!Dev.irType||Dev.irType==0xFFFFu))?1u:0u;
+            IrBuf.learnError=(Dev.irActType==ACT_TYPE_LEARN&&Dev.learnNum==0u)?1u:0u;
             memcpy(Dev.rules,rollback_rules,sizeof(rollback_rules));}
         break;
     }
@@ -300,7 +302,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
     }
     case DEVICE_OP_IR_CONFIG:
         if(req->payload_len<1u){status=DEVICE_STATUS_INVALID_ARG;break;}
-        if(req->payload[0]==1u&&req->payload_len==4u){uint8_t idx=req->payload[1];uint16_t type=get16(req->payload+2);if(idx>=IR_BRAND_COUNT||!type||type==0xFFFFu){status=DEVICE_STATUS_INVALID_ARG;break;}if(!Ir_PrepareConfigurationChange()){status=DEVICE_STATUS_BUSY;break;}Dev.irIdx=idx;Dev.irType=type;Dev.irActType=ACT_TYPE_IR;Dev.errorCode.bit.irMatch=0;}
+        if(req->payload[0]==1u&&req->payload_len==4u){uint8_t idx=req->payload[1];uint16_t type=get16(req->payload+2);if(idx>=IR_BRAND_COUNT||!type||type==0xFFFFu){status=DEVICE_STATUS_INVALID_ARG;break;}if(!Ir_PrepareConfigurationChange()){status=DEVICE_STATUS_BUSY;break;}Dev.irIdx=idx;Dev.irType=type;Dev.irActType=ACT_TYPE_IR;IrBuf.matchError=0;IrBuf.learnError=0;}
         else if(req->payload[0]==2u&&req->payload_len==1u)status=Ir_StartMatch()?DEVICE_STATUS_OK:DEVICE_STATUS_BUSY;
         else if(req->payload[0]==3u&&req->payload_len==2u)status=Ir_StartLearning(req->payload[1])?DEVICE_STATUS_OK:DEVICE_STATUS_BUSY;
         else if(req->payload[0]==4u&&req->payload_len==2u){
@@ -309,7 +311,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
             else if(!Dev.learnCode[ch].enable)status=DEVICE_STATUS_NOT_SUPPORTED;
             else status=Ir_SendLearnedVerified(ch)?DEVICE_STATUS_OK:DEVICE_STATUS_BUSY;
         }
-        else if(req->payload[0]==5u&&req->payload_len==1u){uint16_t learned=Ir_GetLearnedMask();payload[0]=(uint8_t)IrBuf.type;payload[1]=IrBuf.isFinish;payload[2]=Dev.errorCode.bit.irMatch?1u:0u;payload[3]=Dev.errorCode.bit.irLearn?1u:0u;put16(payload+4,Dev.irType);payload[6]=Dev.irIdx;payload[7]=Dev.learnNum;put16(payload+8,learned);payload[10]=IrLearnChannel;*payload_len=11;}
+        else if(req->payload[0]==5u&&req->payload_len==1u){uint16_t learned=Ir_GetLearnedMask();payload[0]=(uint8_t)IrBuf.type;payload[1]=IrBuf.isFinish;payload[2]=IrBuf.matchError;payload[3]=IrBuf.learnError;put16(payload+4,Dev.irType);payload[6]=Dev.irIdx;payload[7]=Dev.learnNum;put16(payload+8,learned);payload[10]=IrLearnChannel;*payload_len=11;}
         else if(req->payload[0]==6u&&req->payload_len==1u)status=Ir_CancelOperation()?DEVICE_STATUS_OK:DEVICE_STATUS_IO_ERROR;
         else if(req->payload[0]==7u&&req->payload_len==2u){if(req->payload[1]>=MAX_IR_LEARNNUM)status=DEVICE_STATUS_INVALID_ARG;else status=Ir_ResetLearned(req->payload[1])?DEVICE_STATUS_OK:DEVICE_STATUS_BUSY;}
         else if(req->payload[0]==8u&&req->payload_len==1u)status=Ir_ResetAllLearned()?DEVICE_STATUS_OK:DEVICE_STATUS_BUSY;
@@ -426,7 +428,9 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         put32(payload+18,ota->image_crc32);*payload_len=22u;break;
     }
     case DEVICE_OP_FACTORY_RESET:
-        if(Ota_Get()->state!=OTA_STATE_IDLE){status=DEVICE_STATUS_CONFLICT;break;}
+        /* 仅安装过程不可打断；其余残留 OTA 会话允许被恢复出厂清除。 */
+        if(Ota_Get()->state==OTA_STATE_INSTALLING){status=DEVICE_STATUS_CONFLICT;break;}
+        (void)Ota_Cancel();
         if(!Ir_PrepareConfigurationChange()){status=DEVICE_STATUS_BUSY;break;}
         status=Storage_FactoryReset();
         if(status==DEVICE_STATUS_OK){

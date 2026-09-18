@@ -6,6 +6,49 @@
 #include "board.h"
 #include "fixed_math.h"
 
+/*
+ * WCH 的 SPI1_MasterSendByte / SPI1_MasterRecvByte 内部是无界忙等。一旦
+ * SCK/MISO 因硬件异常不再推进，主循环会永久卡死，只能等看门狗复位，且
+ * 不会置位 lora 错误码。这里以有界版本替换：超时后置错并交回恢复状态机。
+ */
+#define LORA_SPI_GUARD_TICKS 50000UL
+
+static uint8_t lora_spi_transfer(uint8_t tx, uint8_t *rx)
+{
+    uint32_t guard = LORA_SPI_GUARD_TICKS;
+    if(rx != 0) {
+        R8_SPI1_CTRL_MOD |= RB_SPI_FIFO_DIR;
+    } else {
+        R8_SPI1_CTRL_MOD &= ~RB_SPI_FIFO_DIR;
+    }
+    R8_SPI1_BUFFER = tx;
+    while(!(R8_SPI1_INT_FLAG & RB_SPI_FREE) && guard) {
+        guard--;
+    }
+    if(guard == 0U) {
+        Dev.errorCode.bit.lora = 1;
+        if(rx != 0) *rx = 0xFFu;
+        return 0U;
+    }
+    if(rx != 0) *rx = R8_SPI1_BUFFER;
+    return 1U;
+}
+
+static void Lora_SpiSend(uint8_t d)
+{
+    (void)lora_spi_transfer(d, 0);
+}
+
+static uint8_t Lora_SpiRecv(void)
+{
+    uint8_t value = 0xFFu;
+    (void)lora_spi_transfer(0xFFu, &value);
+    return value;
+}
+
+#define SPI1_MasterSendByte(d) Lora_SpiSend((uint8_t)(d))
+#define SPI1_MasterRecvByte()  Lora_SpiRecv()
+
 /**
  * @brief 初始化 LoRa 模块 (SX126x) 的 SPI 接口与控制引脚
  *

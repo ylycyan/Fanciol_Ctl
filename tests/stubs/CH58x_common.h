@@ -8,6 +8,7 @@
 #define RST_STATUS_WTR     2u
 #define RST_STATUS_LRM1    6u
 #define PRINT(...)         ((void)0)
+#define WWDG_SetCounter(c) ((void)(c))
 
 uint32_t Test_EepromRead(uint32_t address, void *buffer, uint32_t length);
 uint32_t Test_EepromErase(uint32_t address, uint32_t length);

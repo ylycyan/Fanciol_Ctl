@@ -528,7 +528,7 @@ static uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t p
             if(Dev.irActType != ACT_TYPE_IR || Dev.irIdx >= IR_BRAND_COUNT) return 2;
             if(!Ir_PrepareConfigurationChange()) return 1;
             Dev.irType = value;
-            Dev.errorCode.bit.irMatch = 0;
+            IrBuf.matchError = 0;
             SaveDevInfo(50u);
             return 0;
         case 27:

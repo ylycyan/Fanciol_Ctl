@@ -107,6 +107,18 @@ uint32_t EraseBlockCnt = 0;
 static ota_guard_t otaGuard;
 static device_reassembler_t deviceReassembler;
 static uint8_t deviceFrame[DEVICE_MAX_FRAME_SIZE];
+/*
+ * 应答分片使用独立缓冲并分次发送：既让 deviceFrame 能立即接收下一帧，
+ * 又不必在 GATT 写回调里 DelayMs 忙等（最长可达约 96 ms，会阻塞
+ * 看门狗喂狗、TMOS 与串口消费）。
+ */
+static uint8_t deviceTxFrame[DEVICE_MAX_FRAME_SIZE];
+static uint16_t deviceTxLength;
+static uint16_t deviceTxOffset;
+static uint16_t deviceTxChunk;
+static uint8_t deviceTxIndex;
+static uint8_t deviceTxCount;
+static uint8_t deviceTxActive;
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
@@ -126,6 +138,7 @@ void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char 
 static void ProcessOtaCommand(const uint8_t *command);
 void OTA_IAP_SendCMDDealSta(uint8_t deal_status);
 void DisableAllIRQ(void);
+static void DeviceTxStep(void);
 
 /*********************************************************************
  * PROFILE CALLBACKS
@@ -489,6 +502,12 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
         return (events ^ SBP_DEVICE_RESET_EVT);
     }
 
+    if(events & SBP_TX_FRAME_EVT)
+    {
+        DeviceTxStep();
+        return (events ^ SBP_TX_FRAME_EVT);
+    }
+
     // Discard unknown events
     return 0;
 }
@@ -595,6 +614,15 @@ static void Peripheral_LinkEstablished(gapRoleEvent_t *pEvent)
         peripheralConnList.connSlaveLatency = event->connLatency;
         peripheralConnList.connTimeout = event->connTimeout;
         peripheralMTU = ATT_MTU_SIZE;
+        /*
+         * 新连接必须丢弃上一条链路遗留的分片状态。否则复用相同 seq/count
+         * 的新请求会被旧 received_mask 静默吞掉，或拼出混入旧数据的帧。
+         */
+        DeviceProtocol_Reset(&deviceReassembler);
+        DeviceService_ResetSession();
+        deviceTxActive = 0U;
+        deviceTxIndex = 0U;
+        deviceTxOffset = 0U;
         // Set timer for periodic event
         tmos_start_task(Peripheral_TaskID, SBP_PERIODIC_EVT, SBP_PERIODIC_EVT_PERIOD);
 
@@ -631,6 +659,8 @@ static void Peripheral_LinkTerminated(gapRoleEvent_t *pEvent)
         tmos_stop_task(Peripheral_TaskID, SBP_READ_RSSI_EVT);
         tmos_stop_task(Peripheral_TaskID, OTA_FLASH_ERASE_EVT);
         tmos_stop_task(Peripheral_TaskID, OTA_FLASH_VERIFY_EVT);
+        tmos_stop_task(Peripheral_TaskID, SBP_TX_FRAME_EVT);
+        deviceTxActive = 0U;
         DeviceProtocol_Reset(&deviceReassembler);
         DeviceService_ResetSession();
         OtaGuard_Reset(&otaGuard);
@@ -833,23 +863,49 @@ void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len)
 
 static void __attribute__((noinline)) SendDeviceFrame(const uint8_t *frame, uint16_t frameLen)
 {
+    if(frameLen == 0u || frameLen > DEVICE_MAX_FRAME_SIZE) return;
+    if(peripheralConnList.connHandle == GAP_CONNHANDLE_INIT) return;
+    if(deviceTxActive) {
+        /* 应答仍在上行；主机是请求/应答串行模型，丢弃异常并发帧即可。 */
+        PRINT("BLE tx busy, frame dropped\r\n");
+        return;
+    }
+    tmos_memcpy(deviceTxFrame, frame, frameLen);
+    deviceTxLength = frameLen;
+    deviceTxOffset = 0u;
+    deviceTxIndex = 0u;
+    deviceTxChunk = (peripheralMTU > 8u) ? (uint16_t)(peripheralMTU - 8u) : 15u;
+    if(deviceTxChunk > DEVICE_MAX_FRAGMENT_CHUNK) deviceTxChunk = DEVICE_MAX_FRAGMENT_CHUNK;
+    deviceTxCount = (uint8_t)((frameLen + deviceTxChunk - 1u) / deviceTxChunk);
+    deviceTxActive = 1u;
+    /* 第一片也交给 TMOS 事件，确保不在 GATT 写回调里发送。 */
+    tmos_start_task(Peripheral_TaskID, SBP_TX_FRAME_EVT, MS1_TO_SYSTEM_TIME(1));
+}
+
+static void DeviceTxStep(void)
+{
     uint8_t fragment[DEVICE_MAX_FRAGMENT_CHUNK + DEVICE_FRAGMENT_HEADER_SIZE];
-    uint16_t chunkSize = (peripheralMTU > 8u) ? (uint16_t)(peripheralMTU - 8u) : 15u;
-    uint8_t count;
-    uint8_t index;
+    uint16_t length = (uint16_t)(deviceTxLength - deviceTxOffset);
     uint16_t seq;
-    if(chunkSize > DEVICE_MAX_FRAGMENT_CHUNK) chunkSize = DEVICE_MAX_FRAGMENT_CHUNK;
-    count = (uint8_t)((frameLen + chunkSize - 1u) / chunkSize);
-    seq = (frameLen >= 5u) ? ((uint16_t)frame[3] | ((uint16_t)frame[4] << 8)) : 0;
-    for(index = 0; index < count; ++index) {
-        uint16_t offset = (uint16_t)index * chunkSize;
-        uint16_t length = (uint16_t)(frameLen - offset);
-        if(length > chunkSize) length = chunkSize;
-        fragment[0] = (index == 0u ? 0x80u : 0u) | (index + 1u == count ? 0x40u : 0u);
-        fragment[1] = index; fragment[2] = count; fragment[3] = (uint8_t)seq; fragment[4] = (uint8_t)(seq >> 8);
-        tmos_memcpy(fragment + 5, frame + offset, length);
-        peripheralCharNotify(SIMPLEPROFILE_CHAR1, fragment, (uint16_t)(length + 5u));
-        if(index + 1u < count) DelayMs(6);
+
+    if(!deviceTxActive) return;
+    if(length > deviceTxChunk) length = deviceTxChunk;
+    seq = (deviceTxLength >= 5u) ?
+          ((uint16_t)deviceTxFrame[3] | ((uint16_t)deviceTxFrame[4] << 8)) : 0;
+    fragment[0] = (uint8_t)((deviceTxIndex == 0u ? 0x80u : 0u) |
+                            (deviceTxIndex + 1u == deviceTxCount ? 0x40u : 0u));
+    fragment[1] = deviceTxIndex;
+    fragment[2] = deviceTxCount;
+    fragment[3] = (uint8_t)seq;
+    fragment[4] = (uint8_t)(seq >> 8);
+    tmos_memcpy(fragment + 5, deviceTxFrame + deviceTxOffset, length);
+    peripheralCharNotify(SIMPLEPROFILE_CHAR1, fragment, (uint16_t)(length + 5u));
+    deviceTxOffset = (uint16_t)(deviceTxOffset + length);
+    deviceTxIndex++;
+    if(deviceTxIndex < deviceTxCount) {
+        tmos_start_task(Peripheral_TaskID, SBP_TX_FRAME_EVT, MS1_TO_SYSTEM_TIME(4));
+    } else {
+        deviceTxActive = 0u;
     }
 }
 

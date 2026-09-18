@@ -93,17 +93,21 @@ void LoadDevInfo(void)
     (void)Runtime_Load();
     (void)IrStore_Load();
     (void)LoraParams_Load();
+    /* bit1/bit2 were used by old firmware for IR operation state.  They are
+     * no longer hardware faults and must not survive an in-field upgrade. */
+    Dev.errorCode.u16Val &= (uint16_t)~0x0006U;
     if(Storage_GetStartupFlags() != 0U) Dev.errorCode.bit.flash = 1;
     /* 状态机没有 Uninit 分支；直接进入注册态，下一次 20 ms 轮询即按配置初始化射频。 */
     Dev.loraStatus = Status_Logining;
     Timer_Lora = LORA_SEC_TO_TICKS(300);
     if(Dev.irActType == ACT_TYPE_IR) {
-        Dev.errorCode.bit.irMatch =
+        IrBuf.matchError =
             (Dev.irIdx >= IR_BRAND_COUNT || !Dev.irType || Dev.irType == 0xFFFFu) ? 1u : 0u;
+        IrBuf.learnError = 0U;
     } else {
-        /* 学习模式不依赖品牌内码，不能残留“内码未匹配”故障。 */
-        Dev.errorCode.bit.irMatch = 0;
-        Dev.errorCode.bit.irLearn = Dev.learnNum == 0U ? 1U : 0U;
+        /* 红外配置状态供实施页面使用，不再写入设备硬件故障码。 */
+        IrBuf.matchError = 0U;
+        IrBuf.learnError = Dev.learnNum == 0U ? 1U : 0U;
     }
     PRINT("Configuration loaded: node=0x%04x channel=%u revision=%lu storage=%u radio=%u/%u,%u/%u\r\n",
           Dev.nodeId, Dev.channel, Config_GetRevision(), load_state,

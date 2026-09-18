@@ -11,6 +11,29 @@
 #define HLW_K2_NUM              1ULL
 #define HLW_POWER_NOISE_X10     20ULL
 /*
+ * 换算分母保持“编译期常量”形式。若写成 uint64_t 变量，RV32 上会退化成
+ * __udivdi3/__umoddi3 调用（约 2.7 KB Flash，且明显更慢）。常量形式下
+ * 2 的幂次除法被优化为移位；电压分母含因子 10，单独用右移拆分处理。
+ */
+#define HLW_POWER_DEN           (HLW_K1_NUM * HLW_K2_NUM * (1ULL << 31)) /* 2^32 */
+#define HLW_CURRENT_DEN         (HLW_K1_NUM * (1ULL << 23))              /* 2^24 */
+#define HLW_VOLTAGE_DEN         (HLW_K2_NUM * (1ULL << 22) * 10ULL)      /* 10*2^22 */
+/* 功率/电流分母为 2 的幂：显式用移位，确保不生成 64 位除法库调用。 */
+#define HLW_POWER_SHIFT         32U
+#define HLW_CURRENT_SHIFT       24U
+/* 电压分母含非 2 的幂因子 10：先按 2^22 拆分，再做 32 位除法。 */
+#define HLW_VOLTAGE_SHIFT       22U
+#define HLW_VOLTAGE_FACTOR      10U
+typedef char hlw_power_den_must_match[
+    (HLW_POWER_DEN == (1ULL << HLW_POWER_SHIFT)) ? 1 : -1
+];
+typedef char hlw_current_den_must_match[
+    (HLW_CURRENT_DEN == (1ULL << HLW_CURRENT_SHIFT)) ? 1 : -1
+];
+typedef char hlw_voltage_den_must_match[
+    (HLW_VOLTAGE_DEN == ((1ULL << HLW_VOLTAGE_SHIFT) * HLW_VOLTAGE_FACTOR)) ? 1 : -1
+];
+/*
  * kWh -> 0.1 W*s 需要乘 36,000,000。与能量公式分母共同约去 256 后：
  *   36,000,000 / (K1*K2*2^29*4096)
  * = 140,625 / (K1*K2*2^33)
@@ -41,14 +64,20 @@ uint16_t HLW8110_CalcPowerX10(uint32_t raw, uint16_t coefficient)
 {
     int32_t signed_raw = (int32_t)raw;
     uint32_t magnitude;
-    uint64_t denominator = HLW_K1_NUM * HLW_K2_NUM * (1ULL << 31);
-    uint64_t value;
+    /*
+     * 分母 = K1*K2*2^31 = 2^32（编译期常量）。写成变量会让 RV32 生成
+     * __udivdi3 调用（约 1 KB Flash 且很慢）；常量形式直接降为移位。
+     */
+    uint64_t numerator;
 
     if(coefficient == 0U || coefficient == 0xFFFFU) return 0U;
     magnitude = signed_raw < 0 ? (uint32_t)(-(int64_t)signed_raw) : (uint32_t)signed_raw;
-    value = ((uint64_t)magnitude * coefficient * 10ULL + denominator / 2ULL) / denominator;
-    if(value < HLW_POWER_NOISE_X10) value = 0U;
-    return value > 0xFFFFULL ? 0xFFFFU : (uint16_t)value;
+    numerator = (uint64_t)magnitude * coefficient * 10ULL;
+    {
+        uint64_t value = (numerator + (1ULL << (HLW_POWER_SHIFT - 1U))) >> HLW_POWER_SHIFT;
+        if(value < HLW_POWER_NOISE_X10) value = 0U;
+        return value > 0xFFFFULL ? 0xFFFFU : (uint16_t)value;
+    }
 }
 
 /**
@@ -57,7 +86,7 @@ uint16_t HLW8110_CalcPowerX10(uint32_t raw, uint16_t coefficient)
  */
 uint8_t HLW8110_CalcCurrentMa(uint32_t raw, uint16_t coefficient, uint16_t *result)
 {
-    uint64_t denominator;
+    uint64_t numerator;
     uint64_t value;
 
     if(!result || coefficient == 0U || coefficient == 0xFFFFU) return 0U;
@@ -66,8 +95,8 @@ uint8_t HLW8110_CalcCurrentMa(uint32_t raw, uint16_t coefficient, uint16_t *resu
         *result = 0U;
         return 1U;
     }
-    denominator = HLW_K1_NUM * (1ULL << 23);
-    value = ((uint64_t)raw * coefficient + denominator / 2ULL) / denominator;
+    numerator = (uint64_t)raw * coefficient;
+    value = (numerator + (1ULL << (HLW_CURRENT_SHIFT - 1U))) >> HLW_CURRENT_SHIFT;
     if(value > 0xFFFFULL) return 0U;
     *result = (uint16_t)value;
     return 1U;
@@ -79,8 +108,8 @@ uint8_t HLW8110_CalcCurrentMa(uint32_t raw, uint16_t coefficient, uint16_t *resu
  */
 uint8_t HLW8110_CalcVoltageDv(uint32_t raw, uint16_t coefficient, uint16_t *result)
 {
-    uint64_t denominator;
-    uint64_t value;
+    uint32_t scaled;
+    uint32_t value;
 
     if(!result || coefficient == 0U || coefficient == 0xFFFFU) return 0U;
     /* 手册：交流有效值最高位为 1 时表示零值。 */
@@ -88,10 +117,14 @@ uint8_t HLW8110_CalcVoltageDv(uint32_t raw, uint16_t coefficient, uint16_t *resu
         *result = 0U;
         return 1U;
     }
-    /* 手册公式输出单位为 10 mV，再除以 10 转换为 0.1 V。 */
-    denominator = HLW_K2_NUM * (1ULL << 22) * 10ULL;
-    value = ((uint64_t)raw * coefficient + denominator / 2ULL) / denominator;
-    if(value > 3000ULL) return 0U;
+    /*
+     * 手册公式输出单位为 10 mV，再除以 10 转换为 0.1 V。
+     * 分母 = 10*2^22：先右移 2^22（保留半值舍入），再 32 位除以 10。
+     * floor((n + 5*2^22)/(10*2^22)) == floor(((n>>22)+5)/10)。
+     * 右移后商不超过 2^26，可安全降到 32 位除法，避免 64 位除法库调用。 */
+    scaled = (uint32_t)(((uint64_t)raw * coefficient) >> HLW_VOLTAGE_SHIFT);
+    value = (scaled + HLW_VOLTAGE_FACTOR / 2U) / HLW_VOLTAGE_FACTOR;
+    if(value > 3000U) return 0U;
     *result = (uint16_t)value;
     return 1U;
 }

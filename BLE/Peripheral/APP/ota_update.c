@@ -43,18 +43,22 @@ static uint8_t metadata_valid(const ota_metadata_t *record)
 static uint8_t metadata_save(void)
 {
     ota_metadata_t readback;
+    uint32_t previous_generation = metadata.generation;
     uint32_t target = metadata_slot == OTA_METADATA_A ? OTA_METADATA_B : OTA_METADATA_A;
 
     metadata.magic = OTA_METADATA_MAGIC;
     metadata.schema = 1U;
-    metadata.generation++;
+    metadata.generation = previous_generation + 1U;
     metadata.crc32 = Config_Crc32((const uint8_t *)&metadata,
                                     (uint16_t)offsetof(ota_metadata_t, crc32));
     if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
        EEPROM_WRITE(target, &metadata, sizeof(metadata)) != 0U ||
        EEPROM_READ(target, &readback, sizeof(readback)) != 0U ||
-       !metadata_valid(&readback) || readback.generation != metadata.generation)
+       !metadata_valid(&readback) || readback.generation != metadata.generation) {
+        /* 保存失败时回退内存中的代数，避免下一次保存跳过未落盘的序号。 */
+        metadata.generation = previous_generation;
         return DEVICE_STATUS_IO_ERROR;
+    }
 
     metadata_slot = target;
     return DEVICE_STATUS_OK;
@@ -179,9 +183,13 @@ uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_cr
 uint8_t Ota_BeginLocal(uint32_t version, uint32_t image_size, uint32_t image_crc32)
 {
     if(metadata.state != OTA_STATE_IDLE) {
-        /* 新的 BLE 升级可替换未完成的本地会话；4G 下载和安装过程不得覆盖。 */
-        if(metadata.url_length != 0U || metadata.state == OTA_STATE_INSTALLING)
-            return DEVICE_STATUS_BUSY;
+        /*
+         * BLE 本地升级可接管任何“尚未进入安装”的残留会话，包括卡住的 4G
+         * 远程会话（url_length != 0）。否则一旦远程 OTA 中断，设备会永久
+         * 拒绝 BLE 升级，且恢复出厂也清不掉，只能重新烧片。
+         * 唯一不可打断的是 INSTALLING（正在把暂存镜像复制到运行区）。
+         */
+        if(metadata.state == OTA_STATE_INSTALLING) return DEVICE_STATUS_BUSY;
         if(Ota_Cancel() != DEVICE_STATUS_OK) return DEVICE_STATUS_IO_ERROR;
     }
     if(image_size == 0U || image_size > OTA_MAX_IMAGE_SIZE)

@@ -73,8 +73,8 @@ void Ir_Pro(void)
     if(!IrBuf.isFinish) {
         if(irOperationDeadline != 0U &&
            (int32_t)(CurTick - irOperationDeadline) >= 0) {
-            if(IrBuf.type == IR_TYPE_MATCH) Dev.errorCode.bit.irMatch = 1;
-            if(IrBuf.type == IR_TYPE_LEARNing) Dev.errorCode.bit.irLearn = 1;
+            if(IrBuf.type == IR_TYPE_MATCH) IrBuf.matchError = 1;
+            if(IrBuf.type == IR_TYPE_LEARNing) IrBuf.learnError = 1;
             PRINT("IR operation timeout: type=%u\r\n", IrBuf.type);
             IrBuf.isFinish = 1U;
             IrBuf.rxlen = 0U;
@@ -121,11 +121,11 @@ void Check_IrBuf(void){ //
                 #if _IR_INFO_
                     PRINT("ir Matched Fialed.\r\n");
                 #endif
-                Dev.errorCode.bit.irMatch = 1;
+                IrBuf.matchError = 1;
             }else{ //匹配成功
                 // HXD039B 匹配返回码即模块内部码，直接作为 Dev.irType 使用
                 Dev.irType = (((uint16_t)IrBuf.rxbuf[0])<<8)|(IrBuf.rxbuf[1]);
-                Dev.errorCode.bit.irMatch = 0;
+                IrBuf.matchError = 0;
                  #if _IR_INFO_
                     PRINT("\nir Matched:%d\r\n",Dev.irType);
                 #endif
@@ -135,10 +135,10 @@ void Check_IrBuf(void){ //
                 #if _IR_INFO_
                 PRINT("ir Matched timeout\r\n");
                 #endif
-                Dev.errorCode.bit.irMatch = 1;
+                IrBuf.matchError = 1;
             }
         }else{
-            Dev.errorCode.bit.irMatch = 1;
+            IrBuf.matchError = 1;
             #if _IR_INFO_
             PrintHex("ir Unexpected rx",IrBuf.rxbuf,IrBuf.rxlen);
             #endif
@@ -153,7 +153,7 @@ void Check_IrBuf(void){ //
                 #if _IR_INFO_
                 PRINT("ir Learn timeout\r\n");
                 #endif
-                Dev.errorCode.bit.irLearn = 1;
+                IrBuf.learnError = 1;
             }
         }else if(IrBuf.rxlen == IR_LEARN_RESPONSE_LEN && ch < MAX_IR_LEARNNUM){
             //学习数据: 首字节00改为30 03，后面229字节拷贝
@@ -165,13 +165,13 @@ void Check_IrBuf(void){ //
                 Dev.learnNum = ch + 1;
                 if(Dev.learnNum > MAX_IR_LEARNNUM) Dev.learnNum = MAX_IR_LEARNNUM;
             }
-            Dev.errorCode.bit.irLearn = 0;
+            IrBuf.learnError = 0;
             SaveIrInfo();
             #if _IR_INFO_
                 PRINT("ir Learn ch[%d] ok, learnNum=%d\r\n", ch, Dev.learnNum);
             #endif
         }else{
-            Dev.errorCode.bit.irLearn = 1;
+            IrBuf.learnError = 1;
             PRINT("ir Learn invalid length:%d ch:%d\r\n", IrBuf.rxlen, ch);
         }
         //发送学习结果通知: PID_IR_LEARN + channel + status
@@ -252,12 +252,12 @@ void UART3_IRQHandler(void){
 static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd)
 {
     #if(IR_MODULE == HXD039B)
-    if(Dev.errorCode.bit.irMatch ||
+    if(IrBuf.matchError ||
        Dev.irIdx >= IR_BRAND_COUNT ||
        !Dev.irType ||
        Dev.irType == 0xFFFFu) {
         PRINT("IR profile invalid: idx=%d type=%04x\r\n", Dev.irIdx, Dev.irType);
-        Dev.errorCode.bit.irMatch = 1;
+        IrBuf.matchError = 1;
         return 0U;
     }
 
@@ -284,7 +284,7 @@ static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd)
 uint8_t Ir_ExecuteVerified(IR_CMD_t cmd)
 {
     if(Dev.irActType != ACT_TYPE_IR ||
-       Dev.errorCode.bit.irMatch ||
+       IrBuf.matchError ||
        Dev.irIdx >= IR_BRAND_COUNT ||
        !Dev.irType ||
        Dev.irType == 0xFFFFu) return 0;
@@ -303,7 +303,7 @@ uint8_t Ir_ConfiguredCommandSupported(IR_CMD_t cmd)
     int8_t channel;
 
     if(Dev.irActType == ACT_TYPE_IR) {
-        return !Dev.errorCode.bit.irMatch &&
+        return !IrBuf.matchError &&
                Dev.irIdx < IR_BRAND_COUNT &&
                Dev.irType != 0u &&
                Dev.irType != 0xFFFFu;
@@ -332,7 +332,7 @@ uint8_t Ir_StartMatch(void)
     if(!Ir_IsControlPathIdle()) {
         return 0;
     }
-    Dev.errorCode.bit.irMatch = 0;
+    IrBuf.matchError = 0;
     IrBuf.rxlen = 0;
     irLastRxLen = 0;
     IrBuf.type = IR_TYPE_MATCH;
@@ -357,7 +357,7 @@ uint8_t Ir_StartLearning(uint8_t ch)
     if(!Ir_IsControlPathIdle()) {
         return 0;
     }
-    Dev.errorCode.bit.irLearn = 0;
+    IrBuf.learnError = 0;
     IrLearnChannel = ch;
     IrBuf.rxlen = 0;
     irLastRxLen = 0;
@@ -415,8 +415,8 @@ uint8_t Ir_CancelOperation(void)
     IrBuf.rxlen = 0;
     irLastRxLen = 0;
     irOperationDeadline = 0U;
-    Dev.errorCode.bit.irMatch = 0;
-    Dev.errorCode.bit.irLearn = 0;
+    IrBuf.matchError = 0;
+    IrBuf.learnError = 0;
     return 1;
 }
 

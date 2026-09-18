@@ -24,7 +24,12 @@ typedef struct __attribute__((packed)) {
     DEV_RULE_T rules[MAX_RULES];
 } persisted_config_t;
 
-typedef struct __attribute__((packed)) {
+/*
+ * packed 保证落盘字节布局精确，aligned(4) 满足厂商对 EEPROM 缓冲区
+ * “Must in RAM and be aligned to 4 bytes”的要求。对齐只影响地址，不改尺寸
+ * （结构体尺寸本身已是 4 的倍数）。
+ */
+typedef struct __attribute__((packed, aligned(4))) {
     uint32_t magic;
     uint16_t schema_version;
     uint32_t generation;
@@ -33,7 +38,7 @@ typedef struct __attribute__((packed)) {
     persisted_config_t payload;
 } config_record_t;
 
-typedef struct __attribute__((packed)) {
+typedef struct __attribute__((packed, aligned(4))) {
     uint32_t magic;
     uint32_t generation;
     DEV_METER_T meter;
@@ -49,7 +54,7 @@ typedef char runtime_backup_record_must_fit[
     (sizeof(runtime_record_t) <= EEPROM_PAGE_SIZE) ? 1 : -1
 ];
 
-typedef struct __attribute__((packed)) {
+typedef struct __attribute__((packed, aligned(4))) {
     uint32_t magic;
     uint32_t generation;
     uint8_t learn_num;
@@ -65,6 +70,23 @@ typedef char ir_record_must_fit_flash_block[
     (IR_RECORD_BYTES <= EEPROM_BLOCK_SIZE) ? 1 : -1
 ];
 
+/*
+ * DataFlash 最小擦除粒度是 256 B 页。旧实现每次都按 4 KB 块擦除，
+ * 白白把擦写寿命和阻塞时间放大 16 倍。以下按记录实际尺寸向上取整到页。
+ */
+#define EEPROM_ERASE_PAGES(bytes) \
+    ((((uint32_t)(bytes) + EEPROM_PAGE_SIZE - 1U) / EEPROM_PAGE_SIZE) * EEPROM_PAGE_SIZE)
+#define CONFIG_ERASE_BYTES    EEPROM_ERASE_PAGES(sizeof(config_record_t))
+#define RUNTIME_ERASE_BYTES   EEPROM_ERASE_PAGES((uint32_t)RUNTIME_SLOTS * sizeof(runtime_record_t))
+#define IR_ERASE_BYTES        EEPROM_ERASE_PAGES(IR_RECORD_BYTES)
+
+typedef char config_record_must_fit_one_page[
+    (sizeof(config_record_t) <= EEPROM_PAGE_SIZE) ? 1 : -1
+];
+typedef char runtime_log_must_fit_flash_block[
+    ((uint32_t)RUNTIME_SLOTS * sizeof(runtime_record_t) <= EEPROM_BLOCK_SIZE) ? 1 : -1
+];
+
 typedef struct {
     uint32_t generation;
     uint32_t crc32;
@@ -73,7 +95,7 @@ typedef struct {
     uint8_t erased;
 } ir_slot_info_t;
 
-typedef struct __attribute__((packed)) {
+typedef struct __attribute__((packed, aligned(4))) {
     uint32_t magic;
     uint8_t schema_version;
     uint8_t state;
@@ -106,6 +128,16 @@ static uint8_t storage_startup_flags;
 static connectivity_config_t connectivity_config;
 static uint32_t connectivity_generation;
 static uint32_t connectivity_slot;
+
+/*
+ * DataFlash 擦除/写入是同步阻塞调用。看门狗窗口约 0.56 s 且仅在 100 ms
+ * 周期内喂狗，恢复出厂、IR 整段落盘等长操作必须自行喂狗，否则会被
+ * 看门狗中途复位或留下半步写入。
+ */
+static void storage_kick_watchdog(void)
+{
+    WWDG_SetCounter(0);
+}
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint16_t len)
 {
@@ -186,7 +218,7 @@ void Config_FactoryDefaults(void)
     Dev.linkRole = LINK_DIRECT; Dev.parentRelayId = 0; Dev.mode = 1; Dev.irActType = ACT_TYPE_IR;
     Dev.loraRegisterSf = LORA_SF_LISTEN; Dev.loraRegisterBw = LORA_BW_LISTEN;
     Dev.loraListenSf = LORA_SF_SCAN; Dev.loraListenBw = LORA_BW_SCAN;
-    Dev.irIdx = 0xFF; Dev.errorCode.bit.irMatch = 1;
+    Dev.irIdx = 0xFF; IrBuf.matchError = 1;
     /*
      * t_dev 的运行态枚举并非都以 0 表示安全默认值（PowerOn 恰好为 0）。
      * 恢复出厂和损坏回退后必须留下可直接继续运行的完整 RAM 状态，而不是
@@ -298,11 +330,25 @@ uint8_t Config_Commit(void)
     committed_generation = r.generation;
     committed_crc = r.crc32;
     target = (config_slot == CONFIG_SLOT_A) ? CONFIG_SLOT_B : CONFIG_SLOT_A;
-    if(EEPROM_ERASE(target, EEPROM_BLOCK_SIZE) || EEPROM_WRITE(target, &r, sizeof(r))) return DEVICE_STATUS_IO_ERROR;
+    storage_kick_watchdog();
+    if(EEPROM_ERASE(target, CONFIG_ERASE_BYTES) || EEPROM_WRITE(target, &r, sizeof(r))) {
+        /* 擦写失败：置降级，下一次轮询会用同一份 RAM 状态重试。 */
+        config_load_state = CONFIG_LOAD_DEGRADED;
+        storage_startup_flags |= STORAGE_STARTUP_DEGRADED;
+        return DEVICE_STATUS_IO_ERROR;
+    }
     if(EEPROM_READ(target, &r, sizeof(r)) ||
        !valid_config_record(&r) ||
        r.generation != committed_generation ||
        r.crc32 != committed_crc) {
+        /*
+         * 写入可能已经落盘、只是回读失败。此时若沿用旧 revision/fingerprint，
+         * 调用方回滚 RAM 后会认为“无变化”，重启却加载到这条记录，造成
+         * RAM/Flash 分叉。这里置降级，迫使 Config_CommitIfChanged 用当前
+         * RAM 状态再提交一次，从而让两侧重新一致。
+         */
+        config_load_state = CONFIG_LOAD_DEGRADED;
+        storage_startup_flags |= STORAGE_STARTUP_DEGRADED;
         return DEVICE_STATUS_VERIFY_FAILED;
     }
     config_revision = committed_generation;
@@ -473,10 +519,12 @@ uint8_t Runtime_Append(void)
 
     rolling_over = runtime_next_slot >= RUNTIME_SLOTS;
     if(rolling_over) {
+        storage_kick_watchdog();
         if(runtime_write_backup(&r) != DEVICE_STATUS_OK) return DEVICE_STATUS_VERIFY_FAILED;
     }
     if(runtime_next_slot >= RUNTIME_SLOTS) {
-        if(EEPROM_ERASE(RUNTIME_PAGE, EEPROM_BLOCK_SIZE)) return DEVICE_STATUS_IO_ERROR;
+        storage_kick_watchdog();
+        if(EEPROM_ERASE(RUNTIME_PAGE, RUNTIME_ERASE_BYTES)) return DEVICE_STATUS_IO_ERROR;
         runtime_next_slot = 0;
     }
     address = RUNTIME_PAGE + (uint32_t)runtime_next_slot * sizeof(r);
@@ -510,7 +558,7 @@ static uint8_t ir_validate_slot(uint32_t slot,
                                 uint8_t *io_error)
 {
     ir_record_header_t header;
-    uint8_t chunk[IR_CRC_CHUNK];
+    uint8_t chunk[IR_CRC_CHUNK] __attribute__((aligned(4)));
     uint32_t stored_crc;
     uint32_t crc = 0xFFFFFFFFUL;
     uint32_t offset = 0U;
@@ -670,12 +718,14 @@ uint8_t IrStore_SaveIfChanged(void)
      * CRC 最后写入：任一阶段掉电都会使新槽无效，旧槽仍可回退。
      * 学习码直接从 Dev 分段写入，不在 512 B 系统栈上复制约 2.6 KB 记录。
      */
-    if(EEPROM_ERASE(target, EEPROM_BLOCK_SIZE) ||
+    storage_kick_watchdog();
+    if(EEPROM_ERASE(target, IR_ERASE_BYTES) ||
        EEPROM_WRITE(target, &header, sizeof(header)) ||
        EEPROM_WRITE(target + sizeof(header), Dev.learnCode, IR_CODE_BYTES) ||
        EEPROM_WRITE(target + IR_CRC_OFFSET, &crc, sizeof(crc))) {
         return DEVICE_STATUS_IO_ERROR;
     }
+    storage_kick_watchdog();
     if(!ir_validate_slot(target, &verify, 0) ||
        verify.generation != header.generation ||
        verify.crc32 != crc ||
@@ -1086,15 +1136,23 @@ uint8_t Storage_FactoryReset(void)
      * 避免小程序显示“恢复成功”但旧计量/学习码仍在。健康与复位历史保留，
      * 便于现场追溯恢复出厂前后的异常原因。
      */
+    storage_kick_watchdog();
     if(EEPROM_ERASE(STORAGE_RESERVED_PAGE, EEPROM_BLOCK_SIZE) ||
        EEPROM_ERASE(RUNTIME_PAGE, EEPROM_BLOCK_SIZE) ||
-       EEPROM_ERASE(RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE) ||
-       EEPROM_ERASE(IR_STORAGE_PAGE, EEPROM_BLOCK_SIZE) ||
-       EEPROM_ERASE(IR_STORAGE_SLOT_B, EEPROM_BLOCK_SIZE) ||
-       EEPROM_ERASE(CONFIG_SLOT_A, EEPROM_BLOCK_SIZE) ||
+       EEPROM_ERASE(RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE)) {
+        return DEVICE_STATUS_IO_ERROR;
+    }
+    storage_kick_watchdog();
+    if(EEPROM_ERASE(IR_STORAGE_PAGE, EEPROM_BLOCK_SIZE) ||
+       EEPROM_ERASE(IR_STORAGE_SLOT_B, EEPROM_BLOCK_SIZE)) {
+        return DEVICE_STATUS_IO_ERROR;
+    }
+    storage_kick_watchdog();
+    if(EEPROM_ERASE(CONFIG_SLOT_A, EEPROM_BLOCK_SIZE) ||
        EEPROM_ERASE(CONFIG_SLOT_B, EEPROM_BLOCK_SIZE)) {
         return DEVICE_STATUS_IO_ERROR;
     }
+    storage_kick_watchdog();
 
     runtime_generation = 0;
     runtime_next_slot = 0;

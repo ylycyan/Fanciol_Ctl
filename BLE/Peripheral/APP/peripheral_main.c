@@ -156,11 +156,17 @@ int main(void)
 #endif
     RTC_ProductInit(retainedResetReason, retainedTimestamp);
     LocalTimestamp = Rtc_GetTimestamp();
+    /*
+     * DataFlash contains the production device ID used as the complete BLE
+     * name.  Load it before the GAP role builds its first advertising packet;
+     * updating advertising data after advertising has started is not reliable
+     * on every phone/controller combination and can leave the cached SplitAC
+     * fallback visible until the next power cycle.
+     */
+    LoadDevInfo();
     GAPRole_PeripheralInit();
     Peripheral_Init();
-    LoadDevInfo();
     Ota_Init();
-    Peripheral_RefreshDeviceName();
     ADC_Init();
     HLW8110_Init();
     /*

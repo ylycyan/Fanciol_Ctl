@@ -34,6 +34,8 @@ extern "C" {
 #define OTA_FLASH_ERASE_EVT     0x0020
 #define SBP_DEVICE_RESET_EVT    0x0040
 #define OTA_FLASH_VERIFY_EVT    0x0080
+/* 非阻塞分片应答：每个 TMOS 事件只发一片，避免在 GATT 回调里忙等。 */
+#define SBP_TX_FRAME_EVT        0x0100
 
 /*********************************************************************
  * MACROS

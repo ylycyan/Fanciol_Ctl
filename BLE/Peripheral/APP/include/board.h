@@ -86,6 +86,9 @@ typedef struct{
     uint8_t rxlen; 
     uint8_t isFinish:1;
     IR_CMD_TYPE_t type:7;
+    uint8_t matchError:1;
+    uint8_t learnError:1;
+    uint8_t statusReserved:6;
     uint8_t rxbuf[IRBUFSIZE];
     uint8_t txbuf[IRBUFSIZE];
 }IRBUF_t; //uart3 红外通讯数据包
@@ -155,7 +158,12 @@ typedef struct {
 } child_info_t;
 
 //通道固定含义: 0开机 1关机 2制冷 3制热 4除湿 5送风 6温度+ 7温度- 8风速 9自定义
-typedef struct{  
+/*
+ * 该数组会被整段交给 DataFlash 读写。厂商要求 EEPROM 缓冲区 4 字节对齐，
+ * 且每通道长度 232 本身是 4 的倍数，因此对齐后既满足硬件契约，
+ * 也不改变落盘字节布局（sizeof 仍为 232）。
+ */
+typedef struct __attribute__((aligned(4))){
     uint8_t enable; //是否有效 (0=空, 1=已学习)
     uint8_t cmd[IR_LEARN_CODE_BYTES];
 }IR_LEARNING_t;
@@ -292,12 +300,12 @@ typedef struct{
     uint8_t loraRegisterBw;
     uint8_t loraListenSf;
     uint8_t loraListenBw;
-    union{  // 故障码(0:正常 \\ 异常>> bit 0:lora离线 1:红外学习异常 2：红外匹配异常(未匹配设备或找不到索引或索引错误[或无反馈?]) 3:ad转换异常 4:功率转换异常 5:flash操作异常)
+    union{  // 硬件故障码：bit0 LoRa、bit3 温度采集、bit4 计量、bit5 Flash；bit1/2 保留兼容旧位定义
         uint16_t u16Val; 
         struct{
-            uint16_t lora:1; // lora离线
-            uint16_t irLearn:1; // 红外学习异常(红外自匹配或学习错误)
-            uint16_t irMatch:1; // 红外匹配异常(未匹配设备或找不到索引或索引错误)
+            uint16_t lora:1; // LoRa 硬件/SPI异常
+            uint16_t reserved1:1;
+            uint16_t reserved2:1;
             uint16_t ad:1; // ad转换异常
             uint16_t power:1; // 功率转换异常
             uint16_t flash:1; //flash(内部eeprom)操作异常
