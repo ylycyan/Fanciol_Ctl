@@ -368,6 +368,7 @@ extern uint8_t IrLearnChannel;
 
 // 固定网关云端控制诊断计数（RAM 内饱和计数，不增加 Flash 擦写）
 extern uint8_t Lora_BuildNodeReport(uint8_t *buf, uint8_t tag, uint8_t errorInfo);
+extern uint8_t Lora_BuildNodeReportRssi(uint8_t *buf, uint8_t tag, uint8_t errorInfo, int8_t rssi);
 extern uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len,
                                       uint8_t allow_zero_gateway);
 extern uint8_t Lora_BuildControlResult(uint8_t *buf, uint8_t tag, uint8_t result);

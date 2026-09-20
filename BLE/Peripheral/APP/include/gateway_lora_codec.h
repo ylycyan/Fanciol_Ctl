@@ -11,19 +11,32 @@
 #define GATEWAY_LORA_WORK_SF          10U
 #define GATEWAY_LORA_WORK_BW          0x05U
 
-/* 固定网关 eDeviceFancoil(20)：6 个值、11 字节数据，整包 18 字节。 */
-#define GATEWAY_LORA_FANCOIL_VALUE_COUNT    6U
-#define GATEWAY_LORA_FANCOIL_DATA_LENGTH   11U
-#define GATEWAY_LORA_FANCOIL_REPORT_LENGTH 18U
+/*
+ * 统一数据帧（LoRa 空口与 4G MQTT 完全相同）：
+ *   CMD(1) + TAG(1) + NodeId(2) + RSSI(1) + errorInfo(1) + 数据(31) + CRC(1) = 38 字节
+ * 数据区字段顺序：
+ *   红外码(u16) 开关(u8) 运行模式(u8) 风速(u8) 温度(sf) 湿度(sf) 设定温度(sf)
+ *   电压(float) 电流(float,A) 功率(float,W) 累计电量(float,kWh)
+ *   statusCode1(u16,硬件状态) statusCode2(u16,保留)
+ */
+#define GATEWAY_LORA_REPORT_LENGTH      38U
+#define GATEWAY_LORA_REPORT_DATA_LENGTH 31U
 
 typedef struct {
-    uint16_t set_temperature_sf;  /* v0: 温度设定，small-float */
-    uint8_t power_setting;        /* v1: 开关设定，0=关、1=开 */
-    uint16_t room_temperature_sf; /* 字段 v2: 环境温度，small-float */
-    uint16_t work_mode_sf;        /* v3: 工作模式，small-float */
-    uint16_t fan_speed_sf;        /* v4: 风速档位，small-float */
-    uint16_t run_feedback;        /* v5: 运行反馈，负载电流 mA */
-} GatewayLoraFancoilState;
+    uint16_t ir_code;              /* 红外码，Dev.irType */
+    uint8_t  power_setting;        /* 开关，0=关、1=开 */
+    uint8_t  work_mode;            /* 运行模式 */
+    uint8_t  fan_speed;            /* 风速档位 */
+    int16_t  room_temperature_x10; /* 环境温度 ×10，编码为 small-float */
+    uint16_t humidity_x10;         /* 湿度 ×10，编码为 small-float */
+    uint16_t set_temperature_x10;  /* 设定温度 ×10，编码为 small-float */
+    uint16_t voltage_dv;           /* 电压，0.1V；帧内编码为 IEEE754 小端 float(V) */
+    uint16_t current_ma;           /* 电流，mA；帧内编码为 IEEE754 小端 float(A) */
+    uint16_t power_w_x10;          /* 有功功率，0.1W；帧内编码为 float(W) */
+    uint32_t energy_wh;            /* 累计电量，0.1kWh；帧内编码为 float(kWh) */
+    uint16_t status_code1;         /* 硬件状态（沿用原 errorCode 位域） */
+    uint16_t status_code2;         /* 保留 */
+} GatewayLoraSplitAcState;
 
 uint8_t GatewayLora_Checksum(const uint8_t *data, uint16_t length);
 uint8_t GatewayLora_Validate(const uint8_t *packet, uint16_t length);
@@ -31,12 +44,12 @@ uint32_t GatewayLora_RegisterFrequencyHz(uint8_t channel);
 uint32_t GatewayLora_WorkFrequencyHz(uint8_t channel);
 uint8_t GatewayLora_EncodeSmallFloatX10(int16_t valueX10, uint16_t *encoded);
 int16_t GatewayLora_DecodeSmallFloatX10(uint16_t encoded);
-uint8_t GatewayLora_BuildFancoilReport(uint8_t *out,
+uint8_t GatewayLora_BuildSplitAcReport(uint8_t *out,
                                       uint8_t tag,
                                       uint16_t nodeId,
                                       int8_t rssi,
                                       uint8_t errorInfo,
-                                      const GatewayLoraFancoilState *state);
+                                      const GatewayLoraSplitAcState *state);
 
 /*
  * 中继本身仍使用普通节点登录（role=0）；只有其子节点的本地登录

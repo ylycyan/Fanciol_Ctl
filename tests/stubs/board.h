@@ -124,6 +124,19 @@ typedef struct {
 } IR_LEARNING_t;
 
 typedef struct {
+    uint8_t rxlen;
+    uint8_t isFinish : 1;
+    uint8_t type : 7;
+    uint8_t matchError : 1;
+    uint8_t learnError : 1;
+    uint8_t statusReserved : 6;
+    uint8_t rxbuf[8];
+    uint8_t txbuf[8];
+} IRBUF_t;
+
+extern IRBUF_t IrBuf;
+
+typedef struct {
     uint16_t magicCode;
     uint16_t nodeId;
     uint16_t channel;
@@ -168,6 +181,7 @@ void Meter_Update(uint32_t dt_sec);
 uint8_t Meter_ClearEnergy(void);
 
 extern t_dev Dev;
+extern volatile uint32_t CurTick;
 
 #define BITGET(value, bit) (((value) >> (bit)) & 1u)
 

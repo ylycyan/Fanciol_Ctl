@@ -34,6 +34,11 @@ int main(void)
     assert(HLW8110_CalcVoltageDv(0x7FFFFFUL, 65534U, &value) == 0U);
     assert(HLW8110_CalcPowerX10(1U, 1U) == 0U);
 
+    /* 免校准芯片的出厂系数允许为 0xFFFF，不能误判为通信全 FF。 */
+    assert(HLW8110_CalcCurrentMa(0x010000UL, 0xFFFFU, &value) == 1U);
+    assert(HLW8110_CalcVoltageDv(0x010000UL, 0xFFFFU, &value) == 1U);
+    assert(HLW8110_CalcPowerX10(0x01000000UL, 0xFFFFU) > 0U);
+
     /* 32768 个脉冲在此系数组合下恰好为 1kWh，即 36,000,000 个 0.1W*s。 */
     assert(HLW8110_CalcEnergyTenthWattSeconds(32768U, 0x8000U, 0x1000U,
                                               &energy_fraction) == 36000000ULL);

@@ -235,32 +235,38 @@ static uint8_t BuildFailPacket(uint8_t *buf, uint8_t tag, uint16_t nodeId)
     return 5;
 }
 
-static uint8_t BuildDataPacket(uint8_t *buf, uint8_t tag, uint16_t nodeId, uint8_t errorInfo)
+static uint8_t BuildDataPacket(uint8_t *buf, uint8_t tag, uint16_t nodeId,
+                               uint8_t errorInfo, int8_t rssi)
 {
-    GatewayLoraFancoilState state;
+    GatewayLoraSplitAcState state;
     const HLW8110_Status_t *meter = HLW8110_GetStatus();
-    int16_t roomTemp = Dev.roomTempX10;
-    int16_t setTemp = (int16_t)(Dev.temSet * 10U);
 
-    if(Dev.temSet < 16U || Dev.temSet > 32U ||
-       !GatewayLora_EncodeSmallFloatX10(setTemp, &state.set_temperature_sf)) {
-        state.set_temperature_sf = 0U;
-    }
-    if(!GatewayLora_EncodeSmallFloatX10(roomTemp, &state.room_temperature_sf)) {
-        state.room_temperature_sf = 0U;
-    }
+    memset(&state, 0, sizeof(state));
+    state.ir_code = Dev.irType;
     state.power_setting = Dev.onOff == PowerOn ? 1U : 0U;
-    state.work_mode_sf = (uint16_t)(uint8_t)Dev.ctlMode << 8;
-    state.fan_speed_sf = (uint16_t)(uint8_t)Dev.wind << 8;
-    state.run_feedback = meter->valid ? meter->current_ma : 0U;
+    state.work_mode = (uint8_t)Dev.ctlMode;
+    state.fan_speed = (uint8_t)Dev.wind;
+    state.room_temperature_x10 = Dev.roomTempX10;
+    state.humidity_x10 = ADC_GetHumidityX10();
+    state.set_temperature_x10 = (int16_t)(Dev.temSet * 10U);
+    state.voltage_dv = meter->valid ? meter->voltage_dv : 0U;
+    state.current_ma = meter->valid ? meter->current_ma : 0U;
+    state.power_w_x10 = meter->valid ? meter->power_w_x10 : 0U;
+    state.energy_wh = Dev.meter.energy_wh;
+    state.status_code1 = Dev.errorCode.u16Val;
+    state.status_code2 = 0U;
 
-    return GatewayLora_BuildFancoilReport(buf, tag, nodeId,
-                                          Lora_GetRssi(), errorInfo, &state);
+    return GatewayLora_BuildSplitAcReport(buf, tag, nodeId, rssi, errorInfo, &state);
 }
 
 uint8_t Lora_BuildNodeReport(uint8_t *buf, uint8_t tag, uint8_t errorInfo)
 {
-    return BuildDataPacket(buf, tag, Dev.nodeId, errorInfo);
+    return BuildDataPacket(buf, tag, Dev.nodeId, errorInfo, Lora_GetRssi());
+}
+
+uint8_t Lora_BuildNodeReportRssi(uint8_t *buf, uint8_t tag, uint8_t errorInfo, int8_t rssi)
+{
+    return BuildDataPacket(buf, tag, Dev.nodeId, errorInfo, rssi);
 }
 
 static uint8_t Lora_IsConfigForNode(uint8_t *buf, uint8_t len, uint16_t nodeId)

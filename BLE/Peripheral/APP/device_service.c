@@ -377,7 +377,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         payload[0]=CONNECTIVITY_SCHEMA;payload[1]=config->transport_mask;payload[2]=cell->phase;
         payload[3]=cell->sim_ready;payload[4]=cell->network_registered;payload[5]=cell->mqtt_online;
         payload[6]=(uint8_t)cell->signal_rssi;payload[7]=cell->last_error;payload[8]=cell->consecutive_failures;
-        put16(payload+9,cell->reset_count);put16(payload+11,cell->publish_count);
+        put16(payload+9,cell->power_cycle_count);put16(payload+11,cell->publish_count);
         put16(payload+13,cell->command_executed_count);payload[15]=0u;payload[16]=0u;
         put16(payload+17,cell->command_rejected_count);put16(payload+19,cell->rx_overflow_count);
         put32(payload+21,cell->last_connected_ms);put32(payload+25,cell->last_report_ms);

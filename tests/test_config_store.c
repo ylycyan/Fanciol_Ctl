@@ -23,6 +23,7 @@ typedef struct {
 } failure_t;
 
 t_dev Dev;
+IRBUF_t IrBuf;
 static uint8_t dataflash[DATAFLASH_SIZE];
 static failure_t failure;
 

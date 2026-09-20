@@ -108,19 +108,76 @@ int16_t GatewayLora_DecodeSmallFloatX10(uint16_t encoded)
 }
 
 /**
- * @brief 构建风机盘管状态上报帧（eDeviceFancoil 类型，固定 18 字节）
- *
- * 布局：CMD(1) + TAG(1) + NodeId(2) + RSSI(1) + errorInfo(1) + 6 个值(11 字节) + CRC(1)
- * 6 个值依次为：设定温度(sf) / 开关(u8) / 环境温度(sf) / 模式(sf) / 风速(sf) / 负载电流 mA(u16)
+ * @brief 写 IEEE754 单精度（小端 4 字节）
  */
-uint8_t GatewayLora_BuildFancoilReport(uint8_t *out,
+static void GatewayLora_PutU32Le(uint8_t *out, uint32_t bits)
+{
+    out[0] = (uint8_t)bits;
+    out[1] = (uint8_t)(bits >> 8);
+    out[2] = (uint8_t)(bits >> 16);
+    out[3] = (uint8_t)(bits >> 24);
+}
+
+/**
+ * @brief 由整数比 numerator/denominator 生成 IEEE754 单精度位型（纯整数运算）
+ *
+ * CH583 无 FPU，直接使用 float 会链接 __mulsf3 等软浮点运行时，既占 Flash
+ * 又被资源门限禁止。这里用定点 + 舍入得到与 float 除法一致的结果。
+ * 仅支持非负值；分母非 0。
+ */
+static uint32_t GatewayLora_FloatBitsFromRatio(uint32_t numerator, uint32_t denominator)
+{
+    uint64_t q;
+    uint32_t k = 0U;
+    int32_t shift;
+    int32_t exponent;
+    uint32_t mantissa;
+
+    if(numerator == 0U || denominator == 0U) return 0U;
+    /* 24 位小数定点；numerator<=2^32 时 (numerator<<24)<=2^56，不溢出。 */
+    q = ((uint64_t)numerator << 24) / denominator;
+    if(q == 0U) return 0U;
+    while((q >> (k + 1U)) != 0U) k++;
+    exponent = (int32_t)k - 24;
+    shift = (int32_t)k - 23;
+    if(shift > 0) {
+        mantissa = (uint32_t)((q + ((uint64_t)1U << (shift - 1))) >> shift);
+    } else if(shift == 0) {
+        mantissa = (uint32_t)q;
+    } else {
+        mantissa = (uint32_t)(q << (uint32_t)(-shift));
+    }
+    if(mantissa >= 0x01000000U) { /* 舍入进位 */
+        mantissa >>= 1;
+        exponent += 1;
+    }
+    if(exponent > 127) return 0x7F800000U;
+    if(exponent < -126) return 0U;
+    return ((uint32_t)(exponent + 127) << 23) | (mantissa & 0x007FFFFFU);
+}
+
+/**
+ * @brief 构建统一数据帧（LoRa 空口与 4G MQTT 共用，固定 38 字节）
+ *
+ * 布局：CMD(1) + TAG(1) + NodeId(2) + RSSI(1) + errorInfo(1) + 数据(31) + CRC(1)
+ * 数据区见 gateway_lora_codec.h 的 GatewayLoraSplitAcState 说明。
+ */
+uint8_t GatewayLora_BuildSplitAcReport(uint8_t *out,
                                       uint8_t tag,
                                       uint16_t nodeId,
                                       int8_t rssi,
                                       uint8_t errorInfo,
-                                      const GatewayLoraFancoilState *state)
+                                      const GatewayLoraSplitAcState *state)
 {
+    uint16_t room_sf = 0U;
+    uint16_t humidity_sf = 0U;
+    uint16_t set_sf = 0U;
+
     if(out == 0 || state == 0 || nodeId == 0U) return 0U;
+
+    if(!GatewayLora_EncodeSmallFloatX10(state->room_temperature_x10, &room_sf)) room_sf = 0U;
+    if(!GatewayLora_EncodeSmallFloatX10((int16_t)state->humidity_x10, &humidity_sf)) humidity_sf = 0U;
+    if(!GatewayLora_EncodeSmallFloatX10((int16_t)state->set_temperature_x10, &set_sf)) set_sf = 0U;
 
     out[0] = GATEWAY_LORA_CMD_DATA;
     out[1] = tag;
@@ -128,14 +185,22 @@ uint8_t GatewayLora_BuildFancoilReport(uint8_t *out,
     out[4] = (uint8_t)rssi;
     out[5] = errorInfo;
 
-    GatewayLora_PutU16Le(out + 6, state->set_temperature_sf);
+    GatewayLora_PutU16Le(out + 6, state->ir_code);
     out[8] = state->power_setting;
-    GatewayLora_PutU16Le(out + 9, state->room_temperature_sf);
-    GatewayLora_PutU16Le(out + 11, state->work_mode_sf);
-    GatewayLora_PutU16Le(out + 13, state->fan_speed_sf);
-    GatewayLora_PutU16Le(out + 15, state->run_feedback);
-    out[17] = GatewayLora_Checksum(out, 17U);
-    return GATEWAY_LORA_FANCOIL_REPORT_LENGTH;
+    out[9] = state->work_mode;
+    out[10] = state->fan_speed;
+    GatewayLora_PutU16Le(out + 11, room_sf);
+    GatewayLora_PutU16Le(out + 13, humidity_sf);
+    GatewayLora_PutU16Le(out + 15, set_sf);
+    GatewayLora_PutU32Le(out + 17, GatewayLora_FloatBitsFromRatio(state->voltage_dv, 10U));
+    GatewayLora_PutU32Le(out + 21, GatewayLora_FloatBitsFromRatio(state->current_ma, 1000U));
+    GatewayLora_PutU32Le(out + 25, GatewayLora_FloatBitsFromRatio(state->power_w_x10, 10U));
+    GatewayLora_PutU32Le(out + 29, GatewayLora_FloatBitsFromRatio(state->energy_wh, 10U));
+    GatewayLora_PutU16Le(out + 33, state->status_code1);
+    GatewayLora_PutU16Le(out + 35, state->status_code2);
+
+    out[37] = GatewayLora_Checksum(out, 37U);
+    return GATEWAY_LORA_REPORT_LENGTH;
 }
 
 /**

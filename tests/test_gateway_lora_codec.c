@@ -5,34 +5,43 @@
 
 #include "gateway_lora_codec.h"
 
-static void test_fancoil_type20_fixed_report(void)
+static void test_splitac_unified_report(void)
 {
-    static const uint8_t expected[] = {
-        0x01U, 0x00U, 0x34U, 0x12U, 0xD8U, 0x00U,
-        0x00U, 0x1AU, 0x01U, 0x00U, 0x19U,
-        0x00U, 0x01U, 0x00U, 0x03U, 0xD2U, 0x04U, 0x19U
+    GatewayLoraSplitAcState state = {
+        0x1234U, 1U, 1U, 3U,
+        250, 500U, 260U,
+        2200U, 2500U, 5500U, 123U,
+        0x0000U, 0x0000U
     };
-    GatewayLoraFancoilState state = {
-        0x1A00U, 1U, 0x1900U, 0x0100U, 0x0300U, 1234U
-    };
-    uint8_t packet[GATEWAY_LORA_FANCOIL_REPORT_LENGTH];
+    int16_t sf = 0;
+    float f;
+    uint8_t packet[GATEWAY_LORA_REPORT_LENGTH];
 
-    assert(GATEWAY_LORA_FANCOIL_VALUE_COUNT == 6U);
-    assert(GATEWAY_LORA_FANCOIL_DATA_LENGTH == 11U);
-    assert(GATEWAY_LORA_FANCOIL_REPORT_LENGTH == 18U);
-    assert(GatewayLora_BuildFancoilReport(packet, 0U, 0x1234U,
-                                          -40, 0U, &state) == sizeof(expected));
-    assert(memcmp(packet, expected, sizeof(expected)) == 0);
-    assert(GatewayLora_Validate(packet, sizeof(expected)));
+    assert(GATEWAY_LORA_REPORT_LENGTH == 38U);
+    assert(GATEWAY_LORA_REPORT_DATA_LENGTH == 31U);
+    assert(GatewayLora_BuildSplitAcReport(packet, 0U, 0x1234U, -40, 0U, &state) == 38U);
+    assert(GatewayLora_Validate(packet, sizeof(packet)));
 
-    assert(GatewayLora_EncodeSmallFloatX10(-325, &state.room_temperature_sf));
-    assert(GatewayLora_BuildFancoilReport(packet, 0U, 0x1234U,
-                                          -40, 0U, &state) == sizeof(expected));
-    assert(packet[9] == 0xC0U && packet[10] == 0xE0U);
-    assert(GatewayLora_DecodeSmallFloatX10(state.room_temperature_sf) == -325);
-    assert(!GatewayLora_EncodeSmallFloatX10(1280, &state.room_temperature_sf));
-    assert(GatewayLora_BuildFancoilReport(packet, 0U, 0U,
-                                          -40, 0U, &state) == 0U);
+    assert(packet[0] == 0x01U && packet[1] == 0x00U);
+    assert(packet[2] == 0x34U && packet[3] == 0x12U);
+    assert(packet[4] == 0xD8U && packet[5] == 0x00U);
+    assert(packet[6] == 0x34U && packet[7] == 0x12U);          /* 红外码 */
+    assert(packet[8] == 0x01U && packet[9] == 0x01U && packet[10] == 0x03U);
+    assert(packet[11] == 0x00U && packet[12] == 0x19U);        /* 温度 25.0 sf */
+    assert(packet[13] == 0x00U && packet[14] == 0x32U);        /* 湿度 50.0 sf */
+    assert(packet[15] == 0x00U && packet[16] == 0x1AU);        /* 设定 26.0 sf */
+    memcpy(&f, packet + 17, 4); assert(f == 220.0f);           /* 电压 V */
+    memcpy(&f, packet + 21, 4); assert(f == 2.5f);             /* 电流 A */
+    memcpy(&f, packet + 25, 4); assert(f == 550.0f);           /* 功率 W */
+    memcpy(&f, packet + 29, 4); assert(f > 12.29f && f < 12.31f); /* 电量 kWh */
+    assert(packet[33] == 0x00U && packet[34] == 0x00U);
+    assert(packet[35] == 0x00U && packet[36] == 0x00U);
+
+    /* small-float 编解码边界 */
+    assert(GatewayLora_EncodeSmallFloatX10(-325, (uint16_t *)&sf));
+    assert(GatewayLora_DecodeSmallFloatX10((uint16_t)sf) == -325);
+    assert(!GatewayLora_EncodeSmallFloatX10(1280, (uint16_t *)&sf));
+    assert(GatewayLora_BuildSplitAcReport(packet, 0U, 0U, -40, 0U, &state) == 0U);
 }
 
 static void test_relay_is_also_a_normal_gateway_node(void)
@@ -112,7 +121,7 @@ static void test_relay_inner_round_trip_and_rejection(void)
 
 int main(void)
 {
-    test_fancoil_type20_fixed_report();
+    test_splitac_unified_report();
     test_relay_is_also_a_normal_gateway_node();
     test_channel_matches_fixed_gateway_radio_table();
     test_child_login_carries_parent_only_on_local_hop();

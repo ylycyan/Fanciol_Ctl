@@ -425,21 +425,21 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
         meter_state = HLW_STATE_CAL_RMS_IAC;
         break;
     case HLW_STATE_CAL_RMS_IAC:
-        /* 校准系数：电流有效值（0 或全 FF 视为无效） */
+        /* 芯片免校准出厂系数的默认值可以是 0xFFFF，只有 0 表示无效。 */
         rms_iac = parse_be16(response);
-        if(rms_iac == 0U || rms_iac == 0xFFFFU) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, rms_iac); return; }
+        if(rms_iac == 0U) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, rms_iac); return; }
         meter_state = HLW_STATE_CAL_RMS_UC;
         break;
     case HLW_STATE_CAL_RMS_UC:
         /* 校准系数：电压有效值 */
         rms_uc = parse_be16(response);
-        if(rms_uc == 0U || rms_uc == 0xFFFFU) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, rms_uc); return; }
+        if(rms_uc == 0U) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, rms_uc); return; }
         meter_state = HLW_STATE_CAL_POWER_PAC;
         break;
     case HLW_STATE_CAL_POWER_PAC:
         /* 校准系数：功率 */
         power_pac = parse_be16(response);
-        if(power_pac == 0U || power_pac == 0xFFFFU) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, power_pac); return; }
+        if(power_pac == 0U) { begin_recovery(now, HLW8110_ERROR_COEFFICIENT, power_pac); return; }
         meter_state = HLW_STATE_CAL_ENERGY_AC;
         break;
     case HLW_STATE_CAL_ENERGY_AC:

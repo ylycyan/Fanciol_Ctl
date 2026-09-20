@@ -7,6 +7,11 @@ static ota_metadata_t candidate;
 static uint32_t metadata_slot;
 static uint8_t copy_buffer[256] __attribute__((aligned(4)));
 
+/* 固定地址描述符供运行应用在 OTA 前确认 Updater 与当前元数据协议兼容。 */
+const uint32_t updater_info[4] __attribute__((section(".updater_info"), used)) = {
+    OTA_UPDATER_MAGIC, OTA_UPDATER_SCHEMA, OTA_METADATA_MAGIC, 0U
+};
+
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint16_t length)
 {
     uint16_t index;

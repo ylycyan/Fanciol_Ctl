@@ -13,6 +13,10 @@
 #define OTA_METADATA_B            0x00007100UL
 #define OTA_URL_SIZE              128U
 #define OTA_METADATA_MAGIC        0x3154414FUL
+#define OTA_BOOT_ENTRY_WORD       0x0006D06FUL
+#define OTA_UPDATER_INFO_ADDRESS  0x0006FFF0UL
+#define OTA_UPDATER_MAGIC         0x31504455UL
+#define OTA_UPDATER_SCHEMA        1U
 
 #ifndef FIRMWARE_BUILD_VERSION
 #error "FIRMWARE_BUILD_VERSION must come from production.csv"
@@ -49,6 +53,7 @@ void Ota_Init(void);
 const ota_metadata_t *Ota_Get(void);
 uint32_t Ota_StagingAddress(void);
 uint32_t Ota_GetWriteOffset(void);
+uint8_t Ota_BootloaderReady(void);
 uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_crc32,
                         const char *url, uint8_t url_length);
 uint8_t Ota_BeginLocal(uint32_t version, uint32_t image_size, uint32_t image_crc32);

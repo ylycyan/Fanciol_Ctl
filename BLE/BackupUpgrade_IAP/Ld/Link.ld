@@ -174,6 +174,11 @@ SECTIONS
         . = . + __stack_size;
         PROVIDE( _eusrstack = .);
     } >RAM 
+
+	.updater_info ORIGIN(FLASH) + LENGTH(FLASH) - 16 :
+	{
+		KEEP(*(.updater_info))
+	} >FLASH
 }
 
 

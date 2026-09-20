@@ -1134,6 +1134,9 @@ static void ProcessOtaCommand(const uint8_t *command)
             send_buf[12] = (uint8_t)(Ota_Get()->current_version >> 16);
             send_buf[13] = (uint8_t)(Ota_Get()->current_version >> 24);
             send_buf[14] = 1U;
+            /* 旧 Updater 无法识别当前安装元数据。传输前明确告诉上位机，
+             * 避免完整写入后只重启回旧应用却被误报为成功。 */
+            send_buf[15] = Ota_BootloaderReady();
 
             OTA_IAP_SendData(send_buf, 20);
 

@@ -68,7 +68,7 @@ void Main_Circulation()
         Period_1s();
         /*
          * HEAD 已验证的 BLE/TMOS 启动路径必须先获得调度。新增的蜂窝硬件
-         * 只能在协议栈稳定运行后初始化；仅 LoRa 配置则不会触碰 UART1/PB5。
+         * 只能在协议栈稳定运行后初始化；PB5 在此时按通信配置控制 4G 电源。
          */
         if(!ml307Initialized && CurTick >= 1000U) {
             Ml307_Init();
@@ -88,6 +88,7 @@ void Main_Circulation()
 int main(void)
 {
     SetSysClock(CLK_SOURCE_PLL_60MHz);
+    Ml307_EarlyPowerOff();
 #ifdef DEBUG
 #if DEBUG == Debug_UART1
     GPIOA_SetBits(bTXD1);
@@ -119,6 +120,7 @@ int main(void)
     uint8_t retainedResetReason;
     uint32_t retainedTimestamp;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
+    Ml307_EarlyPowerOff();
     retainedResetReason = (uint8_t)SYS_GetLastResetSta();
     retainedTimestamp = Rtc_GetTimestamp();
     //timer0 init

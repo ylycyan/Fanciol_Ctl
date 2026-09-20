@@ -153,6 +153,8 @@ static bool Rule_Execute(DEV_RULE_T *r)
 
     PRINT("[Rule] exec rule trig=%d act=%d\r\n",
           r->ctrl.trig_type, Dev.irActType);
+    /* 本地智控改变了物理状态，4G 在线时立即上报；离线时由重连流程补报。 */
+    Ml307_RequestReport();
     return true;
 }
 
@@ -364,8 +366,10 @@ void Rule_DailyReset(void)
 /*  计量模块                                                           */
 /* ------------------------------------------------------------------ */
 
-#define METER_SAVE_INTERVAL          600UL /* 每 10 分钟持久化一次运行数据 */
+#define METER_SAVE_INTERVAL_MS    600000UL /* 每 10 分钟持久化一次运行数据 */
 #define METER_TENTH_KWH_DIVISOR  3600000UL /* (W*10)*s -> 0.1 kWh */
+static uint32_t meter_next_save_ms;
+static uint8_t meter_save_armed;
 /**
  * @brief 计量数据更新 (每秒调用一次)
  * @param dt_sec 时间增量 (秒), 通常为1
@@ -395,13 +399,16 @@ void Meter_Update(uint32_t dt_sec)
         else Dev.meter.energy_wh += increments;
     }
 
-    /* RTC 对时可能回拨，避免无符号下溢导致连续擦写。 */
-    if(!RTC_IsTimeValid()) {
-        /* 未对时阶段不以 2026-01-01 的安全基准覆盖真实保存时间。 */
-    } else if(Dev.meter.last_save_ts == 0U || LocalTimestamp < Dev.meter.last_save_ts) {
-        Dev.meter.last_save_ts = LocalTimestamp;
-    } else if(LocalTimestamp - Dev.meter.last_save_ts >= METER_SAVE_INTERVAL) {
-        Dev.meter.last_save_ts = LocalTimestamp;
+    /*
+     * 落盘周期使用单调运行时钟，不依赖网关/NTP 对时。这样设备长期离线时，
+     * 掉电也只会损失最多 10 分钟的累计值；RTC 仅作为可读的保存时间记录。
+     */
+    if(!meter_save_armed) {
+        meter_next_save_ms = CurTick + METER_SAVE_INTERVAL_MS;
+        meter_save_armed = 1U;
+    } else if((int32_t)(CurTick - meter_next_save_ms) >= 0) {
+        meter_next_save_ms = CurTick + METER_SAVE_INTERVAL_MS;
+        if(RTC_IsTimeValid()) Dev.meter.last_save_ts = LocalTimestamp;
         SaveDevInfo(0);
     }
 }

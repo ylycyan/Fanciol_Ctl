@@ -6,6 +6,7 @@
 
 t_dev Dev;
 uint32_t LocalTimestamp;
+volatile uint32_t CurTick;
 
 static uint8_t ir_accept;
 static uint8_t ir_calls;
@@ -290,13 +291,14 @@ int main(void)
     Meter_Update(0u);
     assert(Dev.meter.energy_wh == 1u);
 
-    /* Flash 定时保存边界：第 599 秒不保存，第 600 秒才安排一次保存。 */
+    /* Flash 定时保存使用单调时钟：未对时也必须每 10 分钟保存。 */
     memset(&Dev, 0, sizeof(Dev));
     save_calls = 0u;
     LocalTimestamp = 20000u;
-    Dev.meter.last_save_ts = LocalTimestamp - 599u;
+    CurTick = 599999u;
     Meter_Update(0u);
     assert(save_calls == 0u);
+    CurTick = 600000u;
     LocalTimestamp++;
     Meter_Update(0u);
     assert(save_calls == 1u);

@@ -146,6 +146,18 @@ uint32_t Ota_GetWriteOffset(void)
     return write_offset;
 }
 
+uint8_t Ota_BootloaderReady(void)
+{
+    uint32_t boot_entry = 0U;
+    uint32_t updater_info[2] = {0U, 0U};
+
+    FLASH_ROM_READ(0U, &boot_entry, sizeof(boot_entry));
+    FLASH_ROM_READ(OTA_UPDATER_INFO_ADDRESS, updater_info, sizeof(updater_info));
+    return boot_entry == OTA_BOOT_ENTRY_WORD &&
+           updater_info[0] == OTA_UPDATER_MAGIC &&
+           updater_info[1] == OTA_UPDATER_SCHEMA;
+}
+
 uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_crc32,
                         const char *url, uint8_t url_length)
 {

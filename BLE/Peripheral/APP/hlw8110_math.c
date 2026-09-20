@@ -70,7 +70,8 @@ uint16_t HLW8110_CalcPowerX10(uint32_t raw, uint16_t coefficient)
      */
     uint64_t numerator;
 
-    if(coefficient == 0U || coefficient == 0xFFFFU) return 0U;
+    /* 0xFFFF 是免校准芯片的合法出厂系数，只有 0 表示系数无效。 */
+    if(coefficient == 0U) return 0U;
     magnitude = signed_raw < 0 ? (uint32_t)(-(int64_t)signed_raw) : (uint32_t)signed_raw;
     numerator = (uint64_t)magnitude * coefficient * 10ULL;
     {
@@ -89,7 +90,7 @@ uint8_t HLW8110_CalcCurrentMa(uint32_t raw, uint16_t coefficient, uint16_t *resu
     uint64_t numerator;
     uint64_t value;
 
-    if(!result || coefficient == 0U || coefficient == 0xFFFFU) return 0U;
+    if(!result || coefficient == 0U) return 0U;
     /* 手册：交流有效值最高位为 1 时表示零值。 */
     if((raw & 0x800000UL) != 0U) {
         *result = 0U;
@@ -111,7 +112,7 @@ uint8_t HLW8110_CalcVoltageDv(uint32_t raw, uint16_t coefficient, uint16_t *resu
     uint32_t scaled;
     uint32_t value;
 
-    if(!result || coefficient == 0U || coefficient == 0xFFFFU) return 0U;
+    if(!result || coefficient == 0U) return 0U;
     /* 手册：交流有效值最高位为 1 时表示零值。 */
     if((raw & 0x800000UL) != 0U) {
         *result = 0U;

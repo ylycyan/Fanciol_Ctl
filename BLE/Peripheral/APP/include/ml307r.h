@@ -5,7 +5,7 @@
 
 typedef enum {
     ML307_PHASE_DISABLED = 0,
-    ML307_PHASE_RESETTING,
+    ML307_PHASE_POWER_OFF,
     ML307_PHASE_BOOTING,
     ML307_PHASE_AT_SYNC,
     ML307_PHASE_SIM,
@@ -60,7 +60,7 @@ typedef struct {
 typedef struct {
     uint32_t last_connected_ms;
     uint32_t last_report_ms;
-    uint16_t reset_count;
+    uint16_t power_cycle_count;
     uint16_t publish_count;
     uint16_t command_executed_count;
     uint16_t command_rejected_count;
@@ -83,6 +83,7 @@ typedef struct {
 } ml307_status_t;
 
 void Ml307_Init(void);
+void Ml307_EarlyPowerOff(void);
 void Ml307_Process(void);
 void Ml307_ApplyConfiguration(void);
 void Ml307_RequestReport(void);
