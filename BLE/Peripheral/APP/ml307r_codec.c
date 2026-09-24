@@ -53,8 +53,8 @@ static uint8_t quoted(const char **cursor, const char *end,
     return 1U;
 }
 
-int8_t Ml307Codec_ParsePublish(const char *line, uint16_t length,
-                               ml307_publish_t *publish)
+int8_t Ml307Codec_ParsePublishHeader(const char *header, uint16_t length,
+                                     ml307_publish_header_t *publish)
 {
     static const char prefix[] = "+MQTTURC:";
     const char *cursor;
@@ -66,12 +66,11 @@ int8_t Ml307Codec_ParsePublish(const char *line, uint16_t length,
     uint32_t total_length;
     uint32_t chunk_length;
 
-    if(!line || !publish || length < sizeof(prefix) - 1U) return ML307_CODEC_INVALID;
-    end = line + length;
-    while(end > line && (end[-1] == '\r' || end[-1] == '\n')) end--;
-    if((uint16_t)(end - line) < sizeof(prefix) - 1U ||
-       memcmp(line, prefix, sizeof(prefix) - 1U) != 0) return ML307_CODEC_NOT_PUBLISH;
-    cursor = line + sizeof(prefix) - 1U;
+    if(!header || !publish || length < sizeof(prefix) - 1U) return ML307_CODEC_INVALID;
+    end = header + length;
+    if(memcmp(header, prefix, sizeof(prefix) - 1U) != 0)
+        return ML307_CODEC_NOT_PUBLISH;
+    cursor = header + sizeof(prefix) - 1U;
     if(!quoted(&cursor, end, &kind, &kind_length)) return ML307_CODEC_INVALID;
     if(kind_length != 7U || memcmp(kind, "publish", 7U) != 0)
         return ML307_CODEC_NOT_PUBLISH;
@@ -81,14 +80,12 @@ int8_t Ml307Codec_ParsePublish(const char *line, uint16_t length,
        !quoted(&cursor, end, &publish->topic, &topic_length) || topic_length > 255U ||
        !consume(&cursor, end, ',') || !parse_u32(&cursor, end, &total_length) ||
        !consume(&cursor, end, ',') || !parse_u32(&cursor, end, &chunk_length) ||
-       !consume(&cursor, end, ',')) return ML307_CODEC_INVALID;
-
-    cursor = skip_space(cursor, end);
-    publish->payload = cursor;
-    publish->payload_length = (uint16_t)(end - cursor);
-    publish->topic_length = (uint8_t)topic_length;
-    if(chunk_length != publish->payload_length || total_length < chunk_length)
+       !consume(&cursor, end, ',') || cursor != end || chunk_length > 65535U)
         return ML307_CODEC_INVALID;
+
+    publish->payload_length = (uint16_t)chunk_length;
+    publish->topic_length = (uint8_t)topic_length;
+    if(total_length < chunk_length) return ML307_CODEC_INVALID;
     if(total_length != chunk_length) return ML307_CODEC_FRAGMENTED;
     return ML307_CODEC_OK;
 }
@@ -135,43 +132,4 @@ uint8_t Ml307Codec_ParseClock(const char *line, uint16_t length,
        clock->hour > 23U || clock->minute > 59U || clock->second > 59U)
         return 0U;
     return 1U;
-}
-
-static int8_t hex_nibble(char value)
-{
-    if(value >= '0' && value <= '9') return (int8_t)(value - '0');
-    if(value >= 'A' && value <= 'F') return (int8_t)(value - 'A' + 10);
-    if(value >= 'a' && value <= 'f') return (int8_t)(value - 'a' + 10);
-    return -1;
-}
-
-uint16_t Ml307Codec_HexEncode(const uint8_t *input, uint8_t length,
-                              char *output, uint16_t capacity)
-{
-    static const char digits[] = "0123456789ABCDEF";
-    uint16_t encoded_length = (uint16_t)length * 2U;
-    uint8_t i;
-    if(!input || !output || !length || capacity < encoded_length) return 0U;
-    for(i = 0U; i < length; i++) {
-        output[(uint16_t)i * 2U] = digits[input[i] >> 4];
-        output[(uint16_t)i * 2U + 1U] = digits[input[i] & 0x0FU];
-    }
-    return encoded_length;
-}
-
-uint8_t Ml307Codec_HexDecode(const char *input, uint16_t length,
-                             uint8_t *output, uint8_t capacity)
-{
-    uint16_t decoded_length;
-    uint16_t i;
-    if(!input || !output || !length || (length & 1U)) return 0U;
-    decoded_length = length / 2U;
-    if(decoded_length > capacity || decoded_length > 255U) return 0U;
-    for(i = 0U; i < decoded_length; i++) {
-        int8_t high = hex_nibble(input[i * 2U]);
-        int8_t low = hex_nibble(input[i * 2U + 1U]);
-        if(high < 0 || low < 0) return 0U;
-        output[i] = (uint8_t)(((uint8_t)high << 4) | (uint8_t)low);
-    }
-    return (uint8_t)decoded_length;
 }

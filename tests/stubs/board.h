@@ -12,6 +12,7 @@
 #define MAX_IR_LEARNNUM    10u
 #define IR_LEARN_CODE_BYTES 231u
 #define MAX_RULES          10u
+#define MAX_POLICY_GROUPS  6u
 #define LORA_SF_LISTEN     9u
 #define LORA_BW_LISTEN     4u
 #define LORA_SF_SCAN       10u
@@ -71,8 +72,15 @@ typedef enum {
 } TrigType_t;
 
 typedef enum {
+    IR_CMD_TEMP_16 = 0x40,
+    IR_CMD_FAN_AUTO = 0x51,
     IR_CMD_POWER_OFF = 0x80,
-    IR_CMD_POWER_ON = 0x81
+    IR_CMD_POWER_ON = 0x81,
+    IR_CMD_MODE_AUTO = 0xA1,
+    IR_CMD_MODE_COOL = 0xA2,
+    IR_CMD_MODE_DRY = 0xA3,
+    IR_CMD_MODE_FAN = 0xA4,
+    IR_CMD_MODE_HEAT = 0xA5
 } IR_CMD_t;
 
 typedef struct {
@@ -106,9 +114,26 @@ typedef struct {
     } act;
 } DEV_RULE_T;
 
-#define RULE_TIME_ACTION_MARKER 0xA5u
-#define RULE_TIME_START_ACTION(rule) ((rule)->act.raw[5])
-#define RULE_TIME_ACTION_TAG(rule)   ((rule)->act.raw[6])
+#define RULE_ACTION_NONE       0u
+#define RULE_ACTION_POWER_ON   1u
+#define RULE_ACTION_POWER_OFF  2u
+#define RULE_ACTION_COOL       3u
+#define RULE_ACTION_HEAT       4u
+#define RULE_ACTION_DRY        5u
+#define RULE_ACTION_FAN        6u
+#define RULE_ACTION_MAX        RULE_ACTION_FAN
+#define POLICY_UPPER_X10(rule) \
+    ((uint16_t)((rule)->act.raw[0] | ((uint16_t)(rule)->act.raw[1] << 8)))
+#define POLICY_MIN_INTERVAL(rule) \
+    ((uint16_t)((rule)->act.raw[2] | ((uint16_t)(rule)->act.raw[3] << 8)))
+#define POLICY_HIGH_ACTION(rule)  ((uint8_t)((rule)->act.raw[4] & 0x0Fu))
+#define POLICY_LOW_ACTION(rule)   ((uint8_t)(((rule)->act.raw[4] >> 4) & 0x0Fu))
+#define POLICY_START_ACTION(rule) ((uint8_t)((rule)->act.raw[5] & 0x0Fu))
+#define POLICY_END_OFF(rule)      ((uint8_t)(((rule)->act.raw[5] >> 4) & 0x01u))
+#define POLICY_TARGET_TEMP(rule)  ((rule)->act.raw[6])
+#define POLICY_FAN(rule)          ((rule)->act.raw[7])
+#define POLICY_LATCH_HIGH         0x01u
+#define POLICY_LATCH_LOW          0x02u
 
 typedef struct {
     uint32_t energy_wh;
@@ -187,6 +212,8 @@ extern volatile uint32_t CurTick;
 
 uint8_t ADC_IsValid(void);
 uint8_t Ir_ExecuteVerified(IR_CMD_t cmd);
+uint8_t Ir_ExecuteConfiguredProfileVerified(uint8_t mode, uint8_t temperature, uint8_t wind);
+uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t cmd);
 uint8_t Ir_SendLearnedVerified(uint8_t channel);
 void SaveDevInfo(uint16_t delay);
 

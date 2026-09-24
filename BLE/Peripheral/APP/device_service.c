@@ -33,6 +33,7 @@ typedef struct __attribute__((packed)) {
 static uint32_t identify_until;
 
 static uint16_t get16(const uint8_t *p){return (uint16_t)p[0]|((uint16_t)p[1]<<8);}
+static uint32_t get32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
 static void put16(uint8_t *p,uint16_t v){p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);}
 static void put32(uint8_t *p,uint32_t v){p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);p[2]=(uint8_t)(v>>16);p[3]=(uint8_t)(v>>24);}
 static uint8_t before(uint32_t a,uint32_t b){return (int32_t)(a-b)<0;}
@@ -75,40 +76,66 @@ static uint8_t parse_config(const uint8_t *p,uint16_t len,staged_config_t *cfg)
     return DEVICE_STATUS_OK;
 }
 
+static uint8_t policy_time_contains(uint16_t minute, uint16_t start, uint16_t end)
+{
+    if(start == end) return 1u;
+    return start < end ? (uint8_t)(minute >= start && minute < end)
+                       : (uint8_t)(minute >= start || minute < end);
+}
+
+static uint8_t policy_times_overlap(uint16_t start_a, uint16_t end_a,
+                                    uint16_t start_b, uint16_t end_b)
+{
+    return (uint8_t)(policy_time_contains(start_a, start_b, end_b) ||
+                     policy_time_contains(start_b, start_a, end_a));
+}
+
 static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules)
 {
     uint8_t count, i;
     uint16_t off = 1u;
     if (len < 1u) return DEVICE_STATUS_INVALID_ARG;
     count = p[0];
-    if (count > MAX_RULES || len != (uint16_t)(1u + (uint16_t)count * 14u)) return DEVICE_STATUS_INVALID_ARG;
+    if (count > MAX_POLICY_GROUPS || len != (uint16_t)(1u + (uint16_t)count * 18u)) return DEVICE_STATUS_INVALID_ARG;
     memset(rules, 0, sizeof(Dev.rules));
-    for (i = 0u; i < count; i++, off = (uint16_t)(off + 14u)) {
+    for (i = 0u; i < count; i++, off = (uint16_t)(off + 18u)) {
         DEV_RULE_T *r = &rules[i];
-        uint16_t start = get16(p + off + 3u), end = get16(p + off + 5u);
-        uint16_t threshold = get16(p + off + 7u), hysteresis = get16(p + off + 9u);
-        uint16_t minimum = get16(p + off + 11u);
-        uint8_t type = p[off + 1u], action = p[off + 13u];
+        uint16_t start = get16(p + off + 2u), end = get16(p + off + 4u);
+        uint16_t lower = get16(p + off + 6u), upper = get16(p + off + 8u);
+        uint16_t minimum = get16(p + off + 10u);
+        uint8_t start_action = p[off + 12u], end_off = p[off + 13u];
+        uint8_t low_action = p[off + 14u], high_action = p[off + 15u];
+        uint8_t target = p[off + 16u], fan = p[off + 17u];
 
-        if (type < TRIG_TIME || type > TRIG_TEMP_BELOW || minimum < 1u || minimum > 1440u || action < 1u || action > 2u) return DEVICE_STATUS_INVALID_ARG;
-        if (type == TRIG_TIME && (start > 1439u || end > 1439u || threshold > 2u || !(p[off + 2u] & 0x7Fu))) return DEVICE_STATUS_INVALID_ARG;
-        if (type != TRIG_TIME && (threshold < 160u || threshold > 400u || hysteresis < 5u || hysteresis > 100u)) return DEVICE_STATUS_INVALID_ARG;
+        if (!(p[off + 1u] & 0x7Fu) || start > 1439u || end > 1439u ||
+            lower < 160u || lower > 400u || upper < 160u || upper > 400u || lower >= upper ||
+            minimum < 1u || minimum > 1440u || start_action > RULE_ACTION_MAX ||
+            end_off > 1u || low_action > RULE_ACTION_MAX || high_action > RULE_ACTION_MAX ||
+            target < 16u || target > 31u || fan > Wind_High) return DEVICE_STATUS_INVALID_ARG;
+        if (!start_action && !end_off && !low_action && !high_action) return DEVICE_STATUS_INVALID_ARG;
 
         r->ctrl.enable = p[off] ? 1u : 0u;
-        r->ctrl.trig_type = type;
-        r->flags = p[off + 2u] & 0x7Fu;
-        r->trig_val = (type == TRIG_TIME) ? start : threshold;
-        r->trig_val2 = (type == TRIG_TIME) ? end : hysteresis;
-        r->act.ir.onOff = (type == TRIG_TIME || action == 1u) ? 1u : 0u;
-        r->act.ir.mode = Mode_Auto;
-        r->act.ir.wind = Wind_Auto;
-        r->act.ir.temSet = 25u;
+        r->ctrl.trig_type = TRIG_COMBINED;
+        r->flags = p[off + 1u] & 0x7Fu;
+        r->trig_val = start;
+        r->trig_val2 = end;
+        r->sched = lower;
+        r->act.raw[0] = (uint8_t)upper;
+        r->act.raw[1] = (uint8_t)(upper >> 8);
         r->act.raw[2] = (uint8_t)minimum;
         r->act.raw[3] = (uint8_t)(minimum >> 8);
-        r->act.raw[4] = (type == TRIG_TIME && action == 2u) ? 1u : 0u;
-        if (type == TRIG_TIME) {
-            RULE_TIME_START_ACTION(r) = (uint8_t)threshold;
-            RULE_TIME_ACTION_TAG(r) = RULE_TIME_ACTION_MARKER;
+        r->act.raw[4] = (uint8_t)(high_action | (uint8_t)(low_action << 4));
+        r->act.raw[5] = (uint8_t)(start_action | (uint8_t)(end_off << 4));
+        r->act.raw[6] = target;
+        r->act.raw[7] = fan;
+        if(r->ctrl.enable) {
+            uint8_t j;
+            for(j = 0u; j < i; ++j) {
+                DEV_RULE_T *previous = &rules[j];
+                if(previous->ctrl.enable && (previous->flags & r->flags) &&
+                   policy_times_overlap(previous->trig_val, previous->trig_val2,
+                                        r->trig_val, r->trig_val2)) return DEVICE_STATUS_CONFLICT;
+            }
         }
     }
     return DEVICE_STATUS_OK;
@@ -226,12 +253,17 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
     case DEVICE_OP_GET_STATE:{
         const HLW8110_Status_t *meter=HLW8110_GetStatus();
         int16_t room=Dev.roomTempX10;
+        uint32_t energy_fraction_centi=Dev.meter.energy_watt_tenth_seconds/360000UL;
+        uint32_t energy_centi=0xFFFFFFFFUL;
+        if(Dev.meter.energy_wh<=(0xFFFFFFFFUL-energy_fraction_centi)/10UL)
+            energy_centi=Dev.meter.energy_wh*10UL+energy_fraction_centi;
         payload[0]=(Dev.onOff==PowerOn)?1u:0u;payload[1]=(uint8_t)Dev.ctlMode;put16(payload+2,(uint16_t)(Dev.temSet*10u));put16(payload+4,(uint16_t)room);
         payload[6]=(uint8_t)Dev.wind;put16(payload+7,Dev.errorCode.u16Val);payload[9]=(uint8_t)Dev.loraStatus;
         payload[10]=(Dev.mode==0u)?1u:0u;put32(payload+11,0u);put32(payload+15,Config_GetRevision());
         payload[19]=meter->valid;put16(payload+20,meter->voltage_dv);put16(payload+22,meter->current_ma);put16(payload+24,meter->power_w_x10);
         put32(payload+26,Dev.meter.energy_wh);put16(payload+30,meter->communication_errors);
-        payload[32]=ADC_GetSensorStatus();put16(payload+33,ADC_GetHumidityX10());put16(payload+35,ADC_GetSht40Errors());*payload_len=37;break;}
+        payload[32]=ADC_GetSensorStatus();put16(payload+33,ADC_GetHumidityX10());put16(payload+35,ADC_GetSht40Errors());
+        put32(payload+37,energy_centi);*payload_len=41;break;}
     case DEVICE_OP_GET_CONFIG:
         put16(payload,Dev.nodeId);payload[2]=(uint8_t)Dev.channel;payload[3]=Dev.linkRole;put16(payload+4,Dev.parentRelayId);payload[6]=Dev.mode;
         payload[7]=(uint8_t)Dev.irActType;put16(payload+8,Dev.irType);payload[10]=Dev.irIdx;*payload_len=11;break;
@@ -262,32 +294,27 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
     case DEVICE_OP_GET_RULES:{
         uint8_t i, count = 0u;
         uint16_t off = 1u;
-        for (i = 0u; i < MAX_RULES; i++) {
-            if (!Dev.rules[i].ctrl.enable) continue;
-            count++;
+        for (i = 0u; i < MAX_POLICY_GROUPS; i++) {
+            if (Dev.rules[i].ctrl.trig_type == TRIG_COMBINED) count++;
         }
         payload[0] = count;
-        for (i = 0u; i < MAX_RULES; i++) {
+        for (i = 0u; i < MAX_POLICY_GROUPS; i++) {
             DEV_RULE_T *r = &Dev.rules[i];
-            uint8_t is_time, start_action;
-            if (!r->ctrl.enable) continue;
-            is_time = (r->ctrl.trig_type == TRIG_TIME) ? 1u : 0u;
-            start_action = 0u;
-            if (is_time) {
-                start_action = (RULE_TIME_ACTION_TAG(r) == RULE_TIME_ACTION_MARKER &&
-                                RULE_TIME_START_ACTION(r) <= 2u)
-                    ? RULE_TIME_START_ACTION(r) : 0u;
-            }
-            payload[off] = 1u;
-            payload[off + 1u] = r->ctrl.trig_type;
-            payload[off + 2u] = r->flags & 0x7Fu;
-            put16(payload + off + 3u, is_time ? r->trig_val : 0u);
-            put16(payload + off + 5u, is_time ? r->trig_val2 : 0u);
-            put16(payload + off + 7u, is_time ? start_action : r->trig_val);
-            put16(payload + off + 9u, is_time ? 5u : r->trig_val2);
-            put16(payload + off + 11u, (uint16_t)r->act.raw[2] | ((uint16_t)r->act.raw[3] << 8));
-            payload[off + 13u] = (is_time && r->act.raw[4]) ? 2u : (r->act.ir.onOff ? 1u : 2u);
-            off = (uint16_t)(off + 14u);
+            if (r->ctrl.trig_type != TRIG_COMBINED) continue;
+            payload[off] = r->ctrl.enable ? 1u : 0u;
+            payload[off + 1u] = r->flags & 0x7Fu;
+            put16(payload + off + 2u, r->trig_val);
+            put16(payload + off + 4u, r->trig_val2);
+            put16(payload + off + 6u, r->sched);
+            put16(payload + off + 8u, POLICY_UPPER_X10(r));
+            put16(payload + off + 10u, POLICY_MIN_INTERVAL(r));
+            payload[off + 12u] = POLICY_START_ACTION(r);
+            payload[off + 13u] = POLICY_END_OFF(r);
+            payload[off + 14u] = POLICY_LOW_ACTION(r);
+            payload[off + 15u] = POLICY_HIGH_ACTION(r);
+            payload[off + 16u] = POLICY_TARGET_TEMP(r);
+            payload[off + 17u] = POLICY_FAN(r);
+            off = (uint16_t)(off + 18u);
         }
         *payload_len = off;
         break;}
@@ -415,6 +442,18 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         response_length=Ml307_AtCopyResponse(payload+15,(uint8_t)(DEVICE_MAX_PAYLOAD-15u));
         payload[14]=response_length;*payload_len=(uint16_t)response_length+15u;break;
     }
+    case DEVICE_OP_DEVICE_TIME:
+        if(req->payload_len==4u) {
+            uint32_t timestamp=get32(req->payload);
+            if(timestamp<1672531200u||timestamp>2147483000u){status=DEVICE_STATUS_INVALID_ARG;break;}
+            RTC_SetTimestamp(timestamp);
+            LocalTimestamp=Rtc_GetTimestamp();
+            if(!RTC_IsTimeValid()||LocalTimestamp<timestamp||LocalTimestamp>timestamp+2u){
+                status=DEVICE_STATUS_IO_ERROR;break;
+            }
+        } else if(req->payload_len!=0u){status=DEVICE_STATUS_INVALID_ARG;break;}
+        payload[0]=RTC_IsTimeValid();put32(payload+1,Rtc_GetTimestamp());*payload_len=5u;
+        break;
     case DEVICE_OP_RESTART_DEVICE:
         if(req->payload_len!=0u){status=DEVICE_STATUS_INVALID_ARG;break;}
         Peripheral_RequestReset();

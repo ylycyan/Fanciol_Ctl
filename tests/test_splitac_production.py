@@ -14,6 +14,8 @@ def provision_args(source, output):
     return SimpleNamespace(
         input=str(source), output_dir=str(output), broker='mqtt.internal', port=1883,
         device_id=None,
+        username='ecac', password='ecac2026',
+        publish_topic='pub/ac/{uid}', subscribe_topic='sub/ac/{uid}',
         keepalive=60, qos=0, clean_session=True, pdp_type=0, network_timeout=120,
         apn='', report_interval=60,
         register_sf=9, register_bw=4, listen_sf=10, listen_bw=5

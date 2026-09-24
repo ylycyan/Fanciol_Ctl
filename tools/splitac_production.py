@@ -13,7 +13,7 @@ APP_ADDRESS = 0x00001000
 UPDATER_ADDRESS = 0x0006D000
 CONNECTIVITY_MAGIC = 0x3154454E
 CONNECTIVITY_STATE_ACTIVE = 0xA1
-CONNECTIVITY_SCHEMA = 4
+CONNECTIVITY_SCHEMA = 5
 CONFIG_MAGIC = 0x31474643
 CONFIG_SCHEMA = 4
 DATAFLASH_SIZE = 32 * 1024
@@ -101,20 +101,30 @@ def fixed_text(value, size, field):
     return encoded + b'\0' * (size - len(encoded))
 
 
+def topic_text(value, field):
+    if value.count('{uid}') != 1:
+        raise ValueError(f'{field} must contain exactly one {{uid}}')
+    return fixed_text(value, 40, field)
+
+
 def connectivity_record(row, args):
     communication_mode = row['communication_mode'].strip().lower()
     transport = COMMUNICATION_MODES.get(communication_mode)
     if transport is None:
         raise ValueError('communication_mode is invalid')
     payload = struct.pack(
-        '<BBBBBBBBHHHH48s20s10s',
+        '<BBBBBBBBHHHH48s20s10s24s32s40s40s',
         transport, args.register_sf, args.register_bw,
         args.listen_sf, args.listen_bw, args.pdp_type, args.qos,
         1 if args.clean_session else 0, args.port, args.keepalive,
         args.report_interval, args.network_timeout,
         fixed_text(row.get('mqtt_host') or args.broker, 48, 'broker'),
         fixed_text(row.get('apn') or args.apn, 20, 'apn'),
-        fixed_text(row['device_id'], 10, 'device_id')
+        fixed_text(row['device_id'], 10, 'device_id'),
+        fixed_text(args.username, 24, 'username'),
+        fixed_text(args.password, 32, 'password'),
+        topic_text(args.publish_topic, 'publish_topic'),
+        topic_text(args.subscribe_topic, 'subscribe_topic')
     )
     prefix = struct.pack('<IBBIH', CONNECTIVITY_MAGIC, CONNECTIVITY_SCHEMA,
                          CONNECTIVITY_STATE_ACTIVE, 1, len(payload))
@@ -222,8 +232,12 @@ def main():
     provision_cmd.add_argument('--input', required=True, help='CSV with device_id,communication_mode,lora_channel,firmware_version,hardware_version')
     provision_cmd.add_argument('--output-dir', required=True)
     provision_cmd.add_argument('--device-id', help='generate only the selected device; used by the production flashing script')
-    provision_cmd.add_argument('--broker', default='', help='optional initial Broker; may be configured later in the mini program')
+    provision_cmd.add_argument('--broker', default='118.178.128.26')
     provision_cmd.add_argument('--port', type=int, default=1883)
+    provision_cmd.add_argument('--username', default='ecac')
+    provision_cmd.add_argument('--password', default='ecac2026')
+    provision_cmd.add_argument('--publish-topic', default='pub/ac/{uid}')
+    provision_cmd.add_argument('--subscribe-topic', default='sub/ac/{uid}')
     provision_cmd.add_argument('--keepalive', type=int, default=60)
     provision_cmd.add_argument('--qos', type=int, choices=(0, 1), default=0)
     provision_cmd.add_argument('--clean-session', action=argparse.BooleanOptionalAction, default=True)

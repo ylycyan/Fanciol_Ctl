@@ -135,7 +135,10 @@ uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *mon, uint16_t *day,
                         uint16_t *hour, uint16_t *min, uint16_t *sec)
 {
     time_fields_t fields;
-    if(!TimeUtil_FromUnix(Rtc_GetTimestamp(), &fields)) return 0;
+    uint32_t timestamp = Rtc_GetTimestamp();
+    /* RTC keeps UTC; weekly policies and daily reset use site time (UTC+8). */
+    if(timestamp > 2147483000UL - 8UL * 3600UL ||
+       !TimeUtil_FromUnix(timestamp + 8UL * 3600UL, &fields)) return 0;
     if(year) *year = fields.year;
     if(mon) *mon = fields.month;
     if(day) *day = fields.day;

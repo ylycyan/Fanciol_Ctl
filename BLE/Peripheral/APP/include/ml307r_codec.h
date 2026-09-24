@@ -6,9 +6,8 @@
 typedef struct {
     const char *topic;
     uint8_t topic_length;
-    const char *payload;
     uint16_t payload_length;
-} ml307_publish_t;
+} ml307_publish_header_t;
 
 typedef struct {
     uint16_t year;
@@ -27,13 +26,9 @@ enum {
     ML307_CODEC_FRAGMENTED = -2
 };
 
-int8_t Ml307Codec_ParsePublish(const char *line, uint16_t length,
-                               ml307_publish_t *publish);
+int8_t Ml307Codec_ParsePublishHeader(const char *header, uint16_t length,
+                                     ml307_publish_header_t *publish);
 uint8_t Ml307Codec_ParseClock(const char *line, uint16_t length,
                               ml307_clock_t *clock);
-uint16_t Ml307Codec_HexEncode(const uint8_t *input, uint8_t length,
-                              char *output, uint16_t capacity);
-uint8_t Ml307Codec_HexDecode(const char *input, uint16_t length,
-                             uint8_t *output, uint8_t capacity);
 
 #endif

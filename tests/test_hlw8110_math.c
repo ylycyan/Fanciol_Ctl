@@ -21,9 +21,9 @@ int main(void)
 
     /* 手册公式的整值向量，板级 K1=2、K2=1。 */
     assert(HLW8110_CalcCurrentMa(0x400000UL, 10000U, &value) == 1U);
-    assert(value == 2500U);
+    assert(value == 2452U);
     assert(HLW8110_CalcVoltageDv(0x200000UL, 44000U, &value) == 1U);
-    assert(value == 2200U);
+    assert(value == 2150U);
     assert(HLW8110_CalcPowerX10(0x40000000UL, 4000U) == 10000U);
     assert(HLW8110_CalcPowerX10(0xC0000000UL, 4000U) == 10000U);
 
@@ -31,6 +31,8 @@ int main(void)
     assert(HLW8110_CalcCurrentMa(0x800001UL, 10000U, &value) == 1U && value == 0U);
     assert(HLW8110_CalcVoltageDv(0x800001UL, 44000U, &value) == 1U && value == 0U);
     assert(HLW8110_CalcCurrentMa(1U, 0U, &value) == 0U);
+    assert(HLW8110_CalcCurrentMa(1U, 10000U, &value) == 1U && value == 0U);
+    assert(HLW8110_CalcVoltageDv(1U, 44000U, &value) == 1U && value == 0U);
     assert(HLW8110_CalcVoltageDv(0x7FFFFFUL, 65534U, &value) == 0U);
     assert(HLW8110_CalcPowerX10(1U, 1U) == 0U);
 

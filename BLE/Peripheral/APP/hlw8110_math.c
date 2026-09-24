@@ -10,6 +10,9 @@
 #define HLW_K1_NUM              2ULL
 #define HLW_K2_NUM              1ULL
 #define HLW_POWER_NOISE_X10     20ULL
+/* 16 A 成品板与台表比对后的固定零点补偿。结果在零点截断，避免无负载时出现负值。 */
+#define HLW_CURRENT_OFFSET_MA    48ULL
+#define HLW_VOLTAGE_OFFSET_DV    50UL
 /*
  * 换算分母保持“编译期常量”形式。若写成 uint64_t 变量，RV32 上会退化成
  * __udivdi3/__umoddi3 调用（约 2.7 KB Flash，且明显更慢）。常量形式下
@@ -98,6 +101,7 @@ uint8_t HLW8110_CalcCurrentMa(uint32_t raw, uint16_t coefficient, uint16_t *resu
     }
     numerator = (uint64_t)raw * coefficient;
     value = (numerator + (1ULL << (HLW_CURRENT_SHIFT - 1U))) >> HLW_CURRENT_SHIFT;
+    value = value > HLW_CURRENT_OFFSET_MA ? value - HLW_CURRENT_OFFSET_MA : 0U;
     if(value > 0xFFFFULL) return 0U;
     *result = (uint16_t)value;
     return 1U;
@@ -125,6 +129,7 @@ uint8_t HLW8110_CalcVoltageDv(uint32_t raw, uint16_t coefficient, uint16_t *resu
      * 右移后商不超过 2^26，可安全降到 32 位除法，避免 64 位除法库调用。 */
     scaled = (uint32_t)(((uint64_t)raw * coefficient) >> HLW_VOLTAGE_SHIFT);
     value = (scaled + HLW_VOLTAGE_FACTOR / 2U) / HLW_VOLTAGE_FACTOR;
+    value = value > HLW_VOLTAGE_OFFSET_DV ? value - HLW_VOLTAGE_OFFSET_DV : 0U;
     if(value > 3000U) return 0U;
     *result = (uint16_t)value;
     return 1U;

@@ -43,7 +43,6 @@ static void resume_uart1_debug(void)
 #define ML307_AT_RETRY_MS           700U
 #define ML307_AT_RETRY_LIMIT        2U
 #define ML307_SYNC_RETRY_LIMIT      4U
-#define ML307_MQTT_ROOT             "ac"
 #define ML307_MQTT_FRAME_SIZE       GATEWAY_LORA_REPORT_LENGTH
 /* 下行控制帧仍是 18 字节，独立于上行数据帧长度。 */
 #define ML307_CONTROL_FRAME_SIZE    18U
@@ -130,6 +129,11 @@ typedef struct {
     uint16_t http_header_remaining;
     uint16_t http_raw_length;
     uint16_t http_raw_received;
+    uint16_t mqtt_raw_length;
+    uint16_t mqtt_raw_received;
+    uint32_t mqtt_raw_deadline_ms;
+    uint8_t mqtt_raw_state;
+    uint8_t mqtt_raw_accept;
     uint32_t ota_write_offset;
     uint32_t ota_reported_bytes;
     uint32_t ota_retry_at_ms;
@@ -259,6 +263,11 @@ static void uart_disable(void)
     modem.uart_enabled = 0U;
     modem.status.uart_active = 0U;
     modem.line_length = 0U;
+    modem.mqtt_raw_state = 0U;
+    modem.mqtt_raw_length = 0U;
+    modem.mqtt_raw_received = 0U;
+    modem.mqtt_raw_deadline_ms = 0U;
+    modem.mqtt_raw_accept = 0U;
     modem.discard_line = 0U;
     modem.tx_length = 0U;
     modem.tx_offset = 0U;
@@ -272,6 +281,11 @@ static void uart_enable(void)
 {
     if(modem.uart_enabled) return;
     modem.line_length = 0U;
+    modem.mqtt_raw_state = 0U;
+    modem.mqtt_raw_length = 0U;
+    modem.mqtt_raw_received = 0U;
+    modem.mqtt_raw_deadline_ms = 0U;
+    modem.mqtt_raw_accept = 0U;
     modem.discard_line = 0U;
     rx_head = 0U;
     rx_tail = 0U;
@@ -420,11 +434,15 @@ static uint8_t tx_append_u32(uint16_t *length, uint32_t value)
     return 1U;
 }
 
-static uint8_t tx_append_topic(uint16_t *length, const char *suffix)
+static uint8_t tx_append_topic(uint16_t *length, const char *topic_template)
 {
-    return tx_append_text(length, ML307_MQTT_ROOT) &&
-           tx_append_char(length, '/') && tx_append_text(length, DeviceUid_Get()) &&
-           tx_append_text(length, suffix);
+    while(*topic_template) {
+        if(strncmp(topic_template, "{uid}", 5U) == 0) {
+            if(!tx_append_text(length, DeviceUid_Get())) return 0U;
+            topic_template += 5;
+        } else if(!tx_append_char(length, *topic_template++)) return 0U;
+    }
+    return 1U;
 }
 
 static uint8_t tx_start(uint16_t length)
@@ -509,16 +527,19 @@ static uint8_t send_mqtt_connect(void)
        !tx_append_text(&length, config->mqtt_host) ||
        !tx_append_text(&length, "\",") || !tx_append_u32(&length, config->mqtt_port) ||
        !tx_append_text(&length, ",\"") || !tx_append_text(&length, DeviceUid_Get()) ||
-       !tx_append_text(&length, "\",\"\",\"\"\r\n") || !tx_start(length)) return 0U;
+       !tx_append_text(&length, "\",\"") || !tx_append_text(&length, config->mqtt_username) ||
+       !tx_append_text(&length, "\",\"") || !tx_append_text(&length, config->mqtt_password) ||
+       !tx_append_text(&length, "\"\r\n") || !tx_start(length)) return 0U;
     transition_wait(ML307_PHASE_MQTT_CONNECT, ML307_MQTT_TIMEOUT_MS);
     return 1U;
 }
 
 static uint8_t send_mqtt_subscribe(void)
 {
+    const connectivity_config_t *config = Connectivity_Get();
     uint16_t length = 0U;
     if(!tx_append_text(&length, "AT+MQTTSUB=0,\"") ||
-       !tx_append_topic(&length, "/d") ||
+       !tx_append_topic(&length, config->subscribe_topic) ||
        !tx_append_text(&length, "\",1") ||
        !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
     transition_wait(ML307_PHASE_MQTT_SUBSCRIBE, ML307_MQTT_TIMEOUT_MS);
@@ -714,9 +735,9 @@ static uint8_t start_publish(void)
         frame_length = build_publish_frame(frame);
         if(frame_length == 0U) return 0U;
     }
-    payload_length = frame_length * 2U;
+    payload_length = frame_length;
     if(!tx_append_text(&length, "AT+MQTTPUB=0,\"") ||
-       !tx_append_topic(&length, "/u") ||
+       !tx_append_topic(&length, Connectivity_Get()->publish_topic) ||
        !tx_append_text(&length, "\",") ||
        !tx_append_u32(&length, modem.publishing_management ? 1U :
                       Connectivity_Get()->mqtt_qos) ||
@@ -734,33 +755,35 @@ static uint8_t send_publish_payload(void)
 {
     uint8_t frame[ML307_MQTT_FRAME_SIZE];
     uint8_t frame_length;
-    uint16_t length;
     if(modem.publishing_management) {
         frame_length = modem.management_length;
-        length = Ml307Codec_HexEncode(management_frame, frame_length,
-                                      tx_buffer, sizeof(tx_buffer));
+        memcpy(tx_buffer, management_frame, frame_length);
     } else {
         frame_length = build_publish_frame(frame);
-        length = Ml307Codec_HexEncode(frame, frame_length, tx_buffer, sizeof(tx_buffer));
+        memcpy(tx_buffer, frame, frame_length);
     }
-    if(!length || !tx_start(length)) return 0U;
+    if(!frame_length || !tx_start(frame_length)) return 0U;
     modem.prompt_seen = 1U;
     modem.deadline_ms = CurTick + 10000U;
     return 1U;
 }
 
-static uint8_t topic_matches(const ml307_publish_t *publish, const char *suffix)
+static uint8_t topic_matches(const char *topic, uint8_t topic_length)
 {
-    uint16_t root_length = sizeof(ML307_MQTT_ROOT) - 1U;
-    uint16_t suffix_length = bounded_length(suffix, 8U);
-    uint16_t length = root_length + 1U + DEVICE_UID_LENGTH + suffix_length;
-    return length == publish->topic_length &&
-           memcmp(publish->topic, ML307_MQTT_ROOT, root_length) == 0 &&
-           publish->topic[root_length] == '/' &&
-           memcmp(publish->topic + root_length + 1U, DeviceUid_Get(),
-                  DEVICE_UID_LENGTH) == 0 &&
-           memcmp(publish->topic + root_length + 1U + DEVICE_UID_LENGTH,
-                  suffix, suffix_length) == 0;
+    const char *pattern = Connectivity_Get()->subscribe_topic;
+    const char *uid = DeviceUid_Get();
+    uint16_t offset = 0U;
+    while(*pattern) {
+        if(strncmp(pattern, "{uid}", 5U) == 0) {
+            if((uint16_t)(offset + DEVICE_UID_LENGTH) > topic_length ||
+               memcmp(topic + offset, uid, DEVICE_UID_LENGTH) != 0) return 0U;
+            offset = (uint16_t)(offset + DEVICE_UID_LENGTH);
+            pattern += 5;
+        } else {
+            if(offset >= topic_length || topic[offset++] != *pattern++) return 0U;
+        }
+    }
+    return offset == topic_length;
 }
 
 static uint16_t frame_u16(const uint8_t *value)
@@ -815,18 +838,13 @@ static void queue_management_result(uint8_t request_type, uint16_t transaction,
     queue_management_frame(ML307_MGMT_RESULT, transaction, payload, sizeof(payload));
 }
 
-static void handle_management(const ml307_publish_t *publish)
+static void handle_management(const uint8_t *frame, uint16_t length)
 {
-    uint8_t frame[ML307_MGMT_MAX_FRAME];
-    uint8_t length;
     uint8_t type;
     uint8_t status = DEVICE_STATUS_INVALID_ARG;
     uint16_t transaction;
     uint16_t payload_length;
 
-    if(!topic_matches(publish, "/d")) return;
-    length = Ml307Codec_HexDecode(publish->payload, publish->payload_length,
-                                  frame, sizeof(frame));
     if(length < 9U || frame[0] != ML307_MGMT_MAGIC ||
        frame[1] != ML307_MGMT_VERSION) return;
     type = frame[2];
@@ -927,13 +945,8 @@ static void execute_command(const uint8_t *frame, uint8_t length)
     modem.report_requested = 1U;
 }
 
-static void handle_downlink(const ml307_publish_t *publish)
+static void handle_downlink(const uint8_t *frame, uint16_t frame_length)
 {
-    uint8_t frame[ML307_MQTT_FRAME_SIZE];
-    uint8_t frame_length;
-    if(!topic_matches(publish, "/d")) return;
-    frame_length = Ml307Codec_HexDecode(publish->payload, publish->payload_length,
-                                        frame, sizeof(frame));
     if(frame_length != ML307_CONTROL_FRAME_SIZE || frame[0] != 0x0DU ||
        frame[1] != ML307_LORA_TAG_CONTROL ||
        frame_u16(frame + 2) != 0U || frame_u16(frame + 4) != Dev.nodeId ||
@@ -944,7 +957,14 @@ static void handle_downlink(const ml307_publish_t *publish)
         return;
     }
     /* MQTT command-as-action: every valid frame executes immediately. */
-    execute_command(frame, frame_length);
+    execute_command(frame, (uint8_t)frame_length);
+}
+
+static void handle_mqtt_payload(const uint8_t *payload, uint16_t length)
+{
+    if(!payload || !length) return;
+    if(payload[0] == ML307_MGMT_MAGIC) handle_management(payload, length);
+    else handle_downlink(payload, length);
 }
 
 static uint8_t parse_cereg(const char *line)
@@ -1375,23 +1395,8 @@ static uint8_t at_process_line(const char *line, uint16_t length)
 
 static void process_line(char *line, uint16_t length)
 {
-    ml307_publish_t publish;
-    int8_t publish_status;
     uint8_t phase = modem.status.phase;
     if(at_process_line(line, length)) return;
-
-    publish_status = Ml307Codec_ParsePublish(line, length, &publish);
-    if(publish_status == ML307_CODEC_OK) {
-        if(topic_matches(&publish, "/d") && publish.payload_length >= 2U &&
-           (publish.payload[0] == 'C' || publish.payload[0] == 'c') &&
-           publish.payload[1] == '7') handle_management(&publish);
-        else handle_downlink(&publish);
-        return;
-    }
-    if(publish_status == ML307_CODEC_FRAGMENTED) {
-        modem.status.last_error = ML307_ERROR_COMMAND;
-        return;
-    }
     if(http_process_line(line, length)) return;
     if(mqtt_urc_is(line, "conn")) {
         uint16_t result = 0xFFFFU;
@@ -1565,6 +1570,40 @@ static void process_line(char *line, uint16_t length)
     }
 }
 
+static uint8_t mqtt_header_complete(void)
+{
+    static const char prefix[] = "+MQTTURC:";
+    uint16_t index;
+    uint8_t quoted = 0U;
+    uint8_t commas = 0U;
+    if(modem.line_length < sizeof(prefix) - 1U ||
+       memcmp(rx_line, prefix, sizeof(prefix) - 1U) != 0) return 0U;
+    for(index = sizeof(prefix) - 1U; index < modem.line_length; index++) {
+        if(rx_line[index] == '"') quoted = (uint8_t)!quoted;
+        else if(rx_line[index] == ',' && !quoted && ++commas == 6U)
+            return index + 1U == modem.line_length;
+    }
+    return 0U;
+}
+
+static void mqtt_begin_payload(void)
+{
+    ml307_publish_header_t header;
+    int8_t status;
+    memset(&header, 0, sizeof(header));
+    status = Ml307Codec_ParsePublishHeader(rx_line, modem.line_length, &header);
+    modem.mqtt_raw_accept = (status == ML307_CODEC_OK &&
+                             topic_matches(header.topic, header.topic_length) &&
+                             header.payload_length <= ML307_MGMT_MAX_FRAME);
+    modem.mqtt_raw_length = header.payload_length;
+    modem.mqtt_raw_received = 0U;
+    modem.mqtt_raw_deadline_ms = CurTick + ML307_COMMAND_TIMEOUT_MS;
+    modem.mqtt_raw_state = header.payload_length ? 1U : 0U;
+    modem.line_length = 0U;
+    if(status != ML307_CODEC_OK || !modem.mqtt_raw_accept)
+        modem.status.last_error = ML307_ERROR_COMMAND;
+}
+
 static void consume_uart(void)
 {
     uint16_t budget = 192U;
@@ -1632,6 +1671,22 @@ static void consume_uart(void)
             }
             continue;
         }
+        if(modem.mqtt_raw_state) {
+            if(modem.mqtt_raw_accept && modem.mqtt_raw_received < sizeof(rx_line))
+                rx_line[modem.mqtt_raw_received] = value;
+            modem.mqtt_raw_received++;
+            if(modem.mqtt_raw_received == modem.mqtt_raw_length) {
+                if(modem.mqtt_raw_accept)
+                    handle_mqtt_payload((const uint8_t *)rx_line, modem.mqtt_raw_length);
+                modem.mqtt_raw_state = 0U;
+                modem.mqtt_raw_length = 0U;
+                modem.mqtt_raw_received = 0U;
+                modem.mqtt_raw_deadline_ms = 0U;
+                modem.mqtt_raw_accept = 0U;
+                modem.line_length = 0U;
+            }
+            continue;
+        }
         if(value == '>' && modem.status.phase == ML307_PHASE_PUBLISH &&
            !modem.prompt_seen) {
             modem.line_length = 0U;
@@ -1656,7 +1711,10 @@ static void consume_uart(void)
             if(modem.status.rx_overflow_count != 0xFFFFU)
                 modem.status.rx_overflow_count++;
             modem.status.last_error = ML307_ERROR_RX_OVERFLOW;
-        } else rx_line[modem.line_length++] = value;
+        } else {
+            rx_line[modem.line_length++] = value;
+            if(value == ',' && mqtt_header_complete()) mqtt_begin_payload();
+        }
     }
 }
 
@@ -1836,6 +1894,16 @@ void Ml307_Process(void)
         tx_pump();
         consume_uart();
         tx_pump();
+    }
+    if(modem.mqtt_raw_state && reached(now, modem.mqtt_raw_deadline_ms)) {
+        modem.mqtt_raw_state = 0U;
+        modem.mqtt_raw_length = 0U;
+        modem.mqtt_raw_received = 0U;
+        modem.mqtt_raw_deadline_ms = 0U;
+        modem.mqtt_raw_accept = 0U;
+        modem.line_length = 0U;
+        rx_tail = rx_head;
+        modem.status.last_error = ML307_ERROR_COMMAND;
     }
     if(modem.at_status.state == ML307_AT_RUNNING) {
         if(modem.at_status.response_length == 0U &&

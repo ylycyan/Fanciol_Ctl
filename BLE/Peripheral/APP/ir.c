@@ -18,11 +18,16 @@ static volatile uint8_t irTxActive = 0;
 static volatile uint8_t irTxWaitResponse = 0;
 static uint32_t irOperationDeadline = 0;
 static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd);
+#define IR_PROFILE_COMMANDS_MAX 4U
+static IR_CMD_t irProfileCommands[IR_PROFILE_COMMANDS_MAX];
+static uint8_t irProfileCount = 0U;
+static uint8_t irProfileOffset = 0U;
 
 static uint8_t Ir_IsControlPathIdle(void)
 {
     return !irTxActive &&
-           IrBuf.isFinish;
+           IrBuf.isFinish &&
+           irProfileOffset >= irProfileCount;
 }
 
 static void Ir_TxFillFifo(void)
@@ -82,6 +87,18 @@ void Ir_Pro(void)
             irOperationDeadline = 0U;
         }
         return;
+    }
+
+    /* 场景命令按 UART 空闲逐条提交，不阻塞 TMOS，也不占用额外动态内存。 */
+    if(irProfileOffset < irProfileCount) {
+        if(Ir_SubmitInternalCommand(irProfileCommands[irProfileOffset])) {
+            irProfileOffset++;
+        }
+        return;
+    }
+    if(irProfileCount != 0U) {
+        irProfileCount = 0U;
+        irProfileOffset = 0U;
     }
 
 }
@@ -191,6 +208,8 @@ void IR_Init(void){ //uart3
     irTxWaitResponse = 0U;
     irOperationDeadline = 0U;
     irPipelineHighWater = 0U;
+    irProfileCount = 0U;
+    irProfileOffset = 0U;
     GPIOPinRemap(ENABLE,RB_PIN_UART3);
     GPIOB_SetBits(bTXD3_);
     GPIOB_ModeCfg(bRXD3_, GPIO_ModeIN_PU);      // RXD-配置上拉输入
@@ -325,6 +344,34 @@ uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t cmd)
 
     channel = IrControl_LearnedChannel(cmd);
     return Ir_SendLearnedVerified((uint8_t)channel);
+}
+
+uint8_t Ir_ExecuteConfiguredProfileVerified(uint8_t mode, uint8_t temperature, uint8_t wind)
+{
+    uint8_t count = 0U;
+
+    if(Dev.irActType != ACT_TYPE_IR || mode > Mode_Heat ||
+       temperature < 16U || temperature > 31U || wind > Wind_High ||
+       !Ir_ConfiguredCommandSupported(IR_CMD_POWER_ON) || !Ir_IsControlPathIdle()) {
+        return 0U;
+    }
+
+    irProfileCommands[count++] = IR_CMD_POWER_ON;
+    irProfileCommands[count++] = (IR_CMD_t)(IR_CMD_MODE_AUTO + mode);
+    if(mode != Mode_Fan) {
+        irProfileCommands[count++] = (IR_CMD_t)(IR_CMD_TEMP_16 + temperature - 16U);
+    }
+    irProfileCommands[count++] = (IR_CMD_t)(IR_CMD_FAN_AUTO + wind);
+    irProfileCount = count;
+    irProfileOffset = 0U;
+    irPipelineHighWater = count > irPipelineHighWater ? count : irPipelineHighWater;
+
+    if(!Ir_SubmitInternalCommand(irProfileCommands[irProfileOffset])) {
+        irProfileCount = 0U;
+        return 0U;
+    }
+    irProfileOffset++;
+    return 1U;
 }
 
 uint8_t Ir_StartMatch(void)
@@ -484,8 +531,10 @@ uint8_t Ir_TransmitRawAsync(const uint8_t *data, uint16_t len)
 
 uint8_t Ir_GetQueueDepth(void)
 {
-    return (irTxActive || !IrBuf.isFinish)
-        ? 1U
+    uint8_t pending = (irProfileOffset < irProfileCount)
+        ? (uint8_t)(irProfileCount - irProfileOffset)
         : 0U;
+    if(irTxActive || !IrBuf.isFinish) pending++;
+    return pending;
 }
 uint8_t Ir_GetQueueHighWater(void) { return irPipelineHighWater; }

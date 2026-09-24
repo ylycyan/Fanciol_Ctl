@@ -1,15 +1,11 @@
 /**
  * @file rule.c
- * @brief 本地规则引擎 - 定时/条件触发 + 计量
+ * @brief 本地智控策略组 + 计量
  * @author opencode
  * @date 2026-05-12
  *
- * 规则评估流程:
- *   1. 每秒调用 Rule_Pro() (从 Period_1s 调用)
- *   2. 遍历 rules[], 跳过 enable=0 的规则
- *   3. 按 trig_type 判断触发条件
- *   4. 触发时调用 Rule_Execute() 执行动作
- *   5. 条件触发支持回差和锁存
+ * 最多六组策略，每组独立日期、时段、温度范围和运行场景。
+ * 相同日期的时段在保存时禁止重叠，因此热路径只运行一个活动组。
  *
  * 计量流程:
  *   1. 每秒调用 Meter_Update(1) 汇总芯片累计电量
@@ -27,8 +23,8 @@
 extern t_dev Dev;
 extern uint32_t LocalTimestamp;
 
-static uint8_t policy_window_known;
-static uint8_t policy_window_active;
+static int8_t policy_active_index = -1;
+static uint8_t policy_active_known;
 
 /* ------------------------------------------------------------------ */
 /*  内部工具函数                                                       */
@@ -72,49 +68,66 @@ static int16_t rule_get_temp_x10(void)
     return Dev.roomTempX10;
 }
 
-/**
- * @brief 执行空调控制动作
- */
-static bool rule_exec_ir(const DEV_RULE_T *r)
+static uint8_t rule_action_mode(uint8_t action)
 {
-    const uint8_t onOff = r->act.ir.onOff;
-    uint8_t previous = Dev.onOff;
-
-    /*
-     * 规则每秒都会重试，不能先塞入通用队列再乐观修改运行状态：
-     * 配置无效或红外忙碌时必须保持规则待执行。这里直接走已配置方案
-     * 校验和空闲互斥，只有命令真正提交到 UART
-     * 后才更新本机的期望状态；忙碌或配置错误均保持 executed=0。
-     */
-    if(!Ir_ExecuteVerified(onOff ? IR_CMD_POWER_ON : IR_CMD_POWER_OFF)) return false;
-
-    Dev.onOff = onOff ? PowerOn : PowerOff;
-    if(previous != Dev.onOff) {
-        if(Dev.meter.onoff_count != 0xFFFFu) Dev.meter.onoff_count++;
-        if(onOff) Dev.lastOnTime = LocalTimestamp;
+    switch(action) {
+    case RULE_ACTION_COOL: return Mode_Cool;
+    case RULE_ACTION_HEAT: return Mode_Heat;
+    case RULE_ACTION_DRY:  return Mode_Dry;
+    case RULE_ACTION_FAN:  return Mode_Fan;
+    default: return Mode_Auto;
     }
-    return true;
 }
 
-
+static IR_CMD_t rule_action_command(uint8_t action)
+{
+    switch(action) {
+    case RULE_ACTION_POWER_ON:  return IR_CMD_POWER_ON;
+    case RULE_ACTION_POWER_OFF: return IR_CMD_POWER_OFF;
+    case RULE_ACTION_COOL:      return IR_CMD_MODE_COOL;
+    case RULE_ACTION_HEAT:      return IR_CMD_MODE_HEAT;
+    case RULE_ACTION_DRY:       return IR_CMD_MODE_DRY;
+    case RULE_ACTION_FAN:       return IR_CMD_MODE_FAN;
+    default:                    return IR_CMD_POWER_OFF;
+    }
+}
 
 /**
- * @brief 执行学习码动作
+ * @brief 提交一个本地智控动作。内部码可执行完整场景；学习模式只执行已学习的模式键。
  */
-static bool rule_exec_learn(const DEV_RULE_T *r)
+static bool rule_exec_action(const DEV_RULE_T *r, uint8_t action)
 {
-    /* 规则持久化始终保存绝对开/关语义；学习模式只在执行时映射到通道 0/1。 */
-    uint8_t idx = r->act.ir.onOff ? 0u : 1u;
-    if (idx < Dev.learnNum && Dev.learnCode[idx].enable) {
-        uint8_t previous = Dev.onOff;
-        if(!Ir_SendLearnedVerified(idx)) return false;
-        if(idx == 0u) Dev.onOff = PowerOn;
-        else if(idx == 1u) Dev.onOff = PowerOff;
-        if(previous != Dev.onOff && Dev.meter.onoff_count != 0xFFFFu) Dev.meter.onoff_count++;
-        if(previous != Dev.onOff && Dev.onOff == PowerOn) Dev.lastOnTime = LocalTimestamp;
-        return true;
+    uint8_t previous = Dev.onOff;
+    uint8_t mode;
+    bool accepted;
+
+    if(action < RULE_ACTION_POWER_ON || action > RULE_ACTION_MAX) return false;
+    mode = rule_action_mode(action);
+
+    if(action >= RULE_ACTION_COOL && Dev.irActType == ACT_TYPE_IR) {
+        accepted = Ir_ExecuteConfiguredProfileVerified(mode, POLICY_TARGET_TEMP(r), POLICY_FAN(r)) != 0u;
+    } else if(Dev.irActType == ACT_TYPE_IR) {
+        accepted = Ir_ExecuteVerified(rule_action_command(action)) != 0u;
+    } else if(Dev.irActType == ACT_TYPE_LEARN) {
+        accepted = Ir_ExecuteConfiguredVerified(rule_action_command(action)) != 0u;
+    } else {
+        return false;
     }
-    return false;
+    if(!accepted) return false;
+
+    Dev.onOff = action == RULE_ACTION_POWER_OFF ? PowerOff : PowerOn;
+    if(action >= RULE_ACTION_COOL) {
+        Dev.ctlMode = (Mode_t)mode;
+        if(Dev.irActType == ACT_TYPE_IR) {
+            Dev.temSet = POLICY_TARGET_TEMP(r);
+            Dev.wind = (Wind_t)POLICY_FAN(r);
+        }
+    }
+    if(previous != Dev.onOff) {
+        if(Dev.meter.onoff_count != 0xFFFFu) Dev.meter.onoff_count++;
+        if(Dev.onOff == PowerOn) Dev.lastOnTime = LocalTimestamp;
+    }
+    return true;
 }
 
 /**
@@ -122,13 +135,13 @@ static bool rule_exec_learn(const DEV_RULE_T *r)
  */
 static uint16_t rule_minimum_interval(const DEV_RULE_T *r)
 {
-    return (uint16_t)r->act.raw[2] | ((uint16_t)r->act.raw[3] << 8);
+    return POLICY_MIN_INTERVAL(r);
 }
 
-static bool Rule_Execute(DEV_RULE_T *r)
+static bool Rule_Execute(DEV_RULE_T *r, uint8_t action)
 {
     uint16_t minimum = rule_minimum_interval(r);
-    uint8_t requested = r->act.ir.onOff ? PowerOn : PowerOff;
+    uint8_t requested = action == RULE_ACTION_POWER_OFF ? PowerOff : PowerOn;
     bool changesPower = requested != Dev.onOff;
     bool executed;
     if(changesPower && Dev.lastPowerChange != 0u &&
@@ -137,94 +150,39 @@ static bool Rule_Execute(DEV_RULE_T *r)
         return false;
     }
 
-    switch (Dev.irActType) {
-    case ACT_TYPE_IR:     executed = rule_exec_ir(r);     break;
-    case ACT_TYPE_LEARN:  executed = rule_exec_learn(r);  break;
-    default: return false;
-    }
+    executed = rule_exec_action(r, action);
 
     if(!executed) return false;
 
-    if(changesPower) {
+    if(changesPower || action >= RULE_ACTION_COOL) {
         Dev.lastPowerChange = LocalTimestamp;
         /* 与计量共用运行日志；同一秒内的多个状态变化会合并成一次追加。 */
         SaveDevInfo(50u);
     }
 
-    PRINT("[Rule] exec rule trig=%d act=%d\r\n",
-          r->ctrl.trig_type, Dev.irActType);
+    PRINT("[Rule] exec trig=%d action=%d\r\n", r->ctrl.trig_type, action);
     /* 本地智控改变了物理状态，4G 在线时立即上报；离线时由重连流程补报。 */
     Ml307_RequestReport();
     return true;
 }
 
-static bool Rule_ExecutePower(DEV_RULE_T *r, uint8_t on)
-{
-    uint8_t saved = r->act.ir.onOff;
-    r->act.ir.onOff = on ? 1u : 0u;
-    bool result = Rule_Execute(r);
-    r->act.ir.onOff = saved;
-    return result;
-}
-
-static uint8_t rule_time_start_action(const DEV_RULE_T *r)
-{
-    if (RULE_TIME_ACTION_TAG(r) == RULE_TIME_ACTION_MARKER &&
-        RULE_TIME_START_ACTION(r) <= 2u) return RULE_TIME_START_ACTION(r);
-    /* 非当前格式不猜测动作，避免损坏数据导致空调意外开机。 */
-    return 0u;
-}
-
-/* ------------------------------------------------------------------ */
-/*  触发条件判断                                                      */
-/* ------------------------------------------------------------------ */
-
-/**
- * @brief 时间触发判断
- *   trig_val  = 起始分钟
- *   trig_val2 = 停止分钟 (0=不停止, 0xFFFF=单点)
- *   flags     = 星期调度 bit[0~6]=周日~周六
- *   sched     = 月份调度 bit[0~11]=1~12月, 0=每月
- */
-static bool trig_check_time(const DEV_RULE_T *r)
+static bool policy_window_matches(const DEV_RULE_T *r)
 {
     uint16_t hour, min, weekday, month;
+    uint16_t now_min;
     if(!RTC_IsTimeValid()) return false;
     rule_get_time(&hour, &min, &weekday, &month);
-
-    uint16_t now_min = hour * 60 + min;
+    (void)month;
+    now_min = (uint16_t)(hour * 60u + min);
 
     /* 跨午夜时，结束段仍归属于前一天的计划。 */
-    if (r->trig_val > r->trig_val2 && r->trig_val2 != 0u &&
-        r->trig_val2 != 0xFFFFu && now_min < r->trig_val2) {
+    if (r->trig_val > r->trig_val2 && now_min < r->trig_val2) {
         weekday = (uint16_t)((weekday + 6u) % 7u);
     }
-
-    /* 星期匹配: flags 的 bit0=周日, bit1=周一 ... bit6=周六 */
-    if (!BITGET(r->flags, weekday)) {
-        return false;
-    }
-
-    /* 月份匹配: sched 全0 或对应 bit 为1 */
-    if (r->sched != 0 && !BITGET(r->sched, month - 1)) {
-        return false;
-    }
-
-    /* 时间窗口匹配 */
-    if (r->trig_val == r->trig_val2) {
-        return true;
-    } else if (r->trig_val2 == 0xFFFF) {
-        /* 单点触发: 精确到分钟 */
-        return (now_min == r->trig_val);
-    } else if (r->trig_val2 == 0) {
-        /* 无停止时间: 只要 >= 起始时间就触发 (每天一次) */
-        return (now_min == r->trig_val);
-    } else if(r->trig_val < r->trig_val2) {
-        return (now_min >= r->trig_val && now_min < r->trig_val2);
-    } else {
-        /* 跨午夜窗口，例如 22:00-06:00。 */
-        return (now_min >= r->trig_val || now_min < r->trig_val2);
-    }
+    if (!BITGET(r->flags, weekday)) return false;
+    if (r->trig_val == r->trig_val2) return true; /* 全天 */
+    if (r->trig_val < r->trig_val2) return now_min >= r->trig_val && now_min < r->trig_val2;
+    return now_min >= r->trig_val || now_min < r->trig_val2;
 }
 
 /* ------------------------------------------------------------------ */
@@ -235,116 +193,69 @@ static bool trig_check_time(const DEV_RULE_T *r)
 /**
  * @brief 规则引擎主循环 (每秒调用一次)
  *
- * 遍历所有规则, 评估触发条件, 满足则执行动作.
- * 条件触发支持:
- *   - 锁存模式 (flags.bit0=1): 触发后保持, 直到条件不满足且 bit1=1 时执行恢复动作
- *   - 单次模式 (executed=1): 触发一次后不再触发, 直到手动清除 executed
+ * 最多六个互不重叠的策略组；每次只运行当前时间窗口对应的一组。
  */
 void Rule_Pro(void)
 {
     uint8_t i;
-    bool hasTime = false, hasTemperature = false, windowActive = false;
-    bool enteringWindow;
+    int8_t selected = -1;
     int16_t temp;
-    DEV_RULE_T *shutdownRule = NULL;
+    DEV_RULE_T *r;
 
     /* 仅远程控制模式不执行本地规则；混合模式不依赖网络状态。 */
-    if (Dev.mode != 0u) return;
-
-    /* 时间规则组成运行窗口；温控规则只在窗口内参与控制。 */
-    for (i = 0; i < MAX_RULES; i++) {
-        DEV_RULE_T *r = &Dev.rules[i];
-        if (!r->ctrl.enable) continue;
-        if (r->ctrl.trig_type == TRIG_TIME) {
-            hasTime = true;
-            if (!r->act.raw[4] && shutdownRule == NULL) shutdownRule = r;
-        } else if (r->ctrl.trig_type == TRIG_TEMP_ABOVE ||
-                   r->ctrl.trig_type == TRIG_TEMP_BELOW) {
-            hasTemperature = true;
-        }
-    }
-
-    if (!hasTime && !hasTemperature) {
-        policy_window_known = 0u;
-        policy_window_active = 0u;
+    if (Dev.mode != 0u) {
+        policy_active_known = 0u;
+        policy_active_index = -1;
         return;
     }
 
-    if (hasTime) {
-        if (!RTC_IsTimeValid()) return;
-        for (i = 0; i < MAX_RULES; i++) {
-            DEV_RULE_T *r = &Dev.rules[i];
-            if (r->ctrl.enable && r->ctrl.trig_type == TRIG_TIME && trig_check_time(r)) {
-                windowActive = true;
-            }
+    if(!RTC_IsTimeValid()) return;
+    for(i = 0u; i < MAX_POLICY_GROUPS; ++i) {
+        r = &Dev.rules[i];
+        if(r->ctrl.enable && r->ctrl.trig_type == TRIG_COMBINED && policy_window_matches(r)) {
+            selected = (int8_t)i;
+            break;
         }
-
-        enteringWindow = !policy_window_known || (!policy_window_active && windowActive);
-        if (!windowActive) {
-            if ((!policy_window_known || policy_window_active) && shutdownRule != NULL &&
-                Dev.onOff != PowerOff && !Rule_ExecutePower(shutdownRule, 0u)) return;
-            for (i = 0; i < MAX_RULES; i++) {
-                if (Dev.rules[i].ctrl.trig_type == TRIG_TIME ||
-                    Dev.rules[i].ctrl.trig_type == TRIG_TEMP_ABOVE ||
-                    Dev.rules[i].ctrl.trig_type == TRIG_TEMP_BELOW) {
-                    Dev.rules[i].ctrl.executed = 0u;
-                }
-            }
-            policy_window_known = 1u;
-            policy_window_active = 0u;
-            return;
-        }
-
-        if (enteringWindow) {
-            for (i = 0; i < MAX_RULES; i++) {
-                DEV_RULE_T *r = &Dev.rules[i];
-                if (r->ctrl.enable && r->ctrl.trig_type == TRIG_TIME && trig_check_time(r)) {
-                    uint8_t action = rule_time_start_action(r);
-                    if (action != 0u && Dev.onOff != (action == 1u ? PowerOn : PowerOff) &&
-                        !Rule_ExecutePower(r, action == 1u)) return;
-                    break;
-                }
-            }
-        }
-
-        for (i = 0; i < MAX_RULES; i++) {
-            DEV_RULE_T *r = &Dev.rules[i];
-            if (!r->ctrl.enable) continue;
-            if (r->ctrl.trig_type == TRIG_TIME) r->ctrl.executed = trig_check_time(r) ? 1u : 0u;
-            else if (enteringWindow && (r->ctrl.trig_type == TRIG_TEMP_ABOVE ||
-                                        r->ctrl.trig_type == TRIG_TEMP_BELOW)) r->ctrl.executed = 0u;
-        }
-        policy_window_known = 1u;
-        policy_window_active = 1u;
-        if (!hasTemperature) return;
-    } else {
-        policy_window_known = 0u;
-        policy_window_active = 0u;
     }
 
-    for (i = 0; i < MAX_RULES; i++) {
-        DEV_RULE_T *r = &Dev.rules[i];
-
-        /* 跳过未启用的规则 */
-        if (!r->ctrl.enable) {
-            continue;
+    if(!policy_active_known || selected != policy_active_index) {
+        if(policy_active_known && policy_active_index >= 0) {
+            r = &Dev.rules[(uint8_t)policy_active_index];
+            if(POLICY_END_OFF(r) && Dev.onOff != PowerOff) {
+                if(!Rule_Execute(r, RULE_ACTION_POWER_OFF)) return;
+                policy_active_index = -1;
+                return;
+            }
+            r->ctrl.reserved = 0u;
         }
-
-        switch ((TrigType_t)r->ctrl.trig_type) {
-        case TRIG_TEMP_ABOVE:
-            if(!ADC_IsValid()) break;
-            temp = rule_get_temp_x10();
-            if(!r->ctrl.executed && temp > (int16_t)r->trig_val && Rule_Execute(r)) r->ctrl.executed = 1;
-            if(r->ctrl.executed && temp <= (int16_t)r->trig_val - (int16_t)r->trig_val2) r->ctrl.executed = 0;
-            break;
-        case TRIG_TEMP_BELOW:
-            if(!ADC_IsValid()) break;
-            temp = rule_get_temp_x10();
-            if(!r->ctrl.executed && temp < (int16_t)r->trig_val && Rule_Execute(r)) r->ctrl.executed = 1;
-            if(r->ctrl.executed && temp >= (int16_t)r->trig_val + (int16_t)r->trig_val2) r->ctrl.executed = 0;
-            break;
-        default: break;
+        policy_active_known = 1u;
+        policy_active_index = selected;
+        if(selected < 0) return;
+        r = &Dev.rules[(uint8_t)selected];
+        r->ctrl.reserved = 0u;
+        if(POLICY_START_ACTION(r) != RULE_ACTION_NONE) {
+            if(!Rule_Execute(r, POLICY_START_ACTION(r))) policy_active_index = -1;
+            return;
         }
+    }
+
+    if(selected < 0 || !ADC_IsValid()) return;
+    r = &Dev.rules[(uint8_t)selected];
+    temp = rule_get_temp_x10();
+
+    if((r->ctrl.reserved & POLICY_LATCH_HIGH) && temp <= (int16_t)POLICY_UPPER_X10(r) - 5)
+        r->ctrl.reserved &= (uint8_t)~POLICY_LATCH_HIGH;
+    if((r->ctrl.reserved & POLICY_LATCH_LOW) && temp >= (int16_t)r->sched + 5)
+        r->ctrl.reserved &= (uint8_t)~POLICY_LATCH_LOW;
+
+    if(temp > (int16_t)POLICY_UPPER_X10(r) && POLICY_HIGH_ACTION(r) != RULE_ACTION_NONE &&
+       !(r->ctrl.reserved & POLICY_LATCH_HIGH) && Rule_Execute(r, POLICY_HIGH_ACTION(r))) {
+        r->ctrl.reserved |= POLICY_LATCH_HIGH;
+        return;
+    }
+    if(temp < (int16_t)r->sched && POLICY_LOW_ACTION(r) != RULE_ACTION_NONE &&
+       !(r->ctrl.reserved & POLICY_LATCH_LOW) && Rule_Execute(r, POLICY_LOW_ACTION(r))) {
+        r->ctrl.reserved |= POLICY_LATCH_LOW;
     }
 }
 
@@ -356,9 +267,10 @@ void Rule_DailyReset(void)
     uint8_t i;
     for (i = 0; i < MAX_RULES; i++) {
         Dev.rules[i].ctrl.executed = 0;
+        Dev.rules[i].ctrl.reserved = 0;
     }
-    policy_window_known = 0u;
-    policy_window_active = 0u;
+    policy_active_known = 0u;
+    policy_active_index = -1;
 }
 
 

@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,6 +27,34 @@ t_dev Dev;
 IRBUF_t IrBuf;
 static uint8_t dataflash[DATAFLASH_SIZE];
 static failure_t failure;
+
+typedef struct __attribute__((packed)) {
+    uint8_t transport_mask;
+    uint8_t lora_register_sf;
+    uint8_t lora_register_bw;
+    uint8_t lora_listen_sf;
+    uint8_t lora_listen_bw;
+    uint8_t cellular_pdp_type;
+    uint8_t mqtt_qos;
+    uint8_t mqtt_clean_session;
+    uint16_t mqtt_port;
+    uint16_t mqtt_keepalive_sec;
+    uint16_t report_interval_sec;
+    uint16_t network_timeout_sec;
+    char mqtt_host[48];
+    char apn[20];
+    char device_id[10];
+} connectivity_v4_payload_t;
+
+typedef struct __attribute__((packed, aligned(4))) {
+    uint32_t magic;
+    uint8_t schema_version;
+    uint8_t state;
+    uint32_t generation;
+    uint16_t payload_length;
+    uint32_t crc32;
+    connectivity_v4_payload_t payload;
+} connectivity_v4_record_t;
 
 static void clear_failure(void)
 {
@@ -477,6 +506,54 @@ static void test_connectivity_round_trip(void)
     assert(Connectivity_Decode(wire, length, &decoded) == DEVICE_STATUS_INVALID_ARG);
 }
 
+static void test_connectivity_v4_migrates_to_current_mqtt_defaults(void)
+{
+    connectivity_v4_record_t record;
+    uint8_t crc_input[offsetof(connectivity_v4_record_t, crc32) +
+                      sizeof(connectivity_v4_payload_t)];
+
+    reset_flash();
+    memset(&record, 0, sizeof(record));
+    record.magic = 0x3154454EUL;
+    record.schema_version = 4U;
+    record.state = 0xA1U;
+    record.generation = 7U;
+    record.payload_length = sizeof(record.payload);
+    record.payload.transport_mask = CONNECTIVITY_LORA | CONNECTIVITY_CELLULAR;
+    record.payload.lora_register_sf = 9U;
+    record.payload.lora_register_bw = 4U;
+    record.payload.lora_listen_sf = 10U;
+    record.payload.lora_listen_bw = 5U;
+    record.payload.cellular_pdp_type = CONNECTIVITY_PDP_IPV4;
+    record.payload.mqtt_port = 1883U;
+    record.payload.mqtt_keepalive_sec = 90U;
+    record.payload.report_interval_sec = 45U;
+    record.payload.network_timeout_sec = 180U;
+    strcpy(record.payload.mqtt_host, "106.15.11.119");
+    strcpy(record.payload.apn, "CMIOT");
+    strcpy(record.payload.device_id, "A26091002");
+    memcpy(crc_input, &record, offsetof(connectivity_v4_record_t, crc32));
+    memcpy(crc_input + offsetof(connectivity_v4_record_t, crc32),
+           &record.payload, sizeof(record.payload));
+    record.crc32 = Config_Crc32(crc_input, sizeof(crc_input));
+    memcpy(dataflash + CONNECTIVITY_SLOT_A, &record, sizeof(record));
+
+    assert(Connectivity_Load() == DEVICE_STATUS_OK);
+    assert(strcmp(Connectivity_Get()->mqtt_host, "118.178.128.26") == 0);
+    assert(strcmp(Connectivity_Get()->mqtt_username, "ecac") == 0);
+    assert(strcmp(Connectivity_Get()->mqtt_password, "ecac2026") == 0);
+    assert(strcmp(Connectivity_Get()->publish_topic, "pub/ac/{uid}") == 0);
+    assert(strcmp(Connectivity_Get()->subscribe_topic, "sub/ac/{uid}") == 0);
+    assert(strcmp(Connectivity_Get()->apn, "CMIOT") == 0);
+    assert(strcmp(Connectivity_Get()->device_id, "A26091002") == 0);
+    Dev.nodeId = 0x1002U;
+    assert(strcmp(DeviceUid_Get(), "A26091002") == 0);
+    assert(Connectivity_Get()->report_interval_sec == 45U);
+    assert(Connectivity_Get()->network_timeout_sec == 180U);
+    assert(dataflash[CONNECTIVITY_SLOT_B + 4U] == CONNECTIVITY_SCHEMA);
+    assert(Connectivity_Load() == DEVICE_STATUS_OK);
+}
+
 static void test_connectivity_power_loss_keeps_previous_slot(void)
 {
     connectivity_config_t next;
@@ -524,6 +601,7 @@ int main(void)
     test_lora_parameter_read_error_is_visible_and_non_destructive();
     test_factory_reset_reports_partial_failure();
     test_connectivity_round_trip();
+    test_connectivity_v4_migrates_to_current_mqtt_defaults();
     test_connectivity_power_loss_keeps_previous_slot();
     test_device_uid_format_is_required_for_cellular();
     puts("Config/runtime/IR/connectivity power-loss recovery: PASS");

@@ -36,6 +36,8 @@ extern "C" {
 #define OTA_FLASH_VERIFY_EVT    0x0080
 /* 非阻塞分片应答：每个 TMOS 事件只发一片，避免在 GATT 回调里忙等。 */
 #define SBP_TX_FRAME_EVT        0x0100
+/* 手机建立链路后必须在限定时间内完成一次有效协议请求，否则释放占用。 */
+#define SBP_HANDSHAKE_TIMEOUT_EVT 0x0200
 
 /*********************************************************************
  * MACROS

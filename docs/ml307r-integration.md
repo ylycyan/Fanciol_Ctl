@@ -2,9 +2,9 @@
 
 ## 接线与产品边界
 
-- CH583 UART1：PA9 TX → ML307R 主 AT 口 UART0_RXD，PA8 RX ← UART0_TXD，PB5 → RESET。
-- 使用普通 MQTT/TCP 和 HTTP，不使用 TLS、证书、用户名、密码或 MCU 加密库。业务、设备登记和 OTA 均为二进制帧的连续 Hex。
-- MQTT 业务载荷直接复用固定 LoRa 报文的连续 Hex；LoRa 空口和网关协议不变。
+- CH583 UART1：PA9 TX → ML307R 主 AT 口 UART0_RXD，PA8 RX ← UART0_TXD，PB5 控制 4G 电源（高电平开机），不再连接 RESET。
+- 使用普通 MQTT/TCP 和 HTTP，不使用 TLS、证书或 MCU 加密库。MQTT 使用平台提供的普通用户名/密码；业务、设备登记和 OTA 均直接发送原始二进制帧。
+- MQTT 业务载荷直接复用固定 LoRa 报文，不再转换成 Hex 字符串；LoRa 空口和网关协议不变。
 - CRC16/CRC32 只校验传输损坏，不提供公网链路防篡改能力。
 
 ## MQTT
@@ -13,18 +13,18 @@
 
 | 主题 | QoS | 内容 |
 |---|---:|---|
-| `{prefix}/{uid}/u` | 配置值/1 | 状态、控制结果、设备登记和 OTA 状态 Hex |
-| `{prefix}/{uid}/d` | 发布端决定 | 业务控制 QoS 0；OTA 指令 QoS 1 |
+| `pub/ac/{uid}` | 配置值/1 | 状态、控制结果、设备登记和 OTA 状态原始二进制帧 |
+| `sub/ac/{uid}` | 发布端决定 | 业务控制 QoS 0；OTA 指令 QoS 1 |
 
-业务控制不缓存、不去重，每个节点 ID 和 CRC 有效的下行报文执行一次。管理页配置 APN、PDP 类型、Broker、端口、Client ID、主题前缀、保活、上报周期、QoS 和 Clean Session。Broker 未配置时模组仍完成基础初始化并保留 UART1 AT 调试能力。
+默认 Broker 为 `118.178.128.26:1883`，用户名 `ecac`，密码 `ecac2026`。管理页可修改 Broker、端口、用户名、密码、发布/订阅主题模板和网络参数；每个主题模板必须恰好包含一个 `{uid}`。Client ID 始终使用设备 UID，不单独配置。业务控制不缓存、不去重，每个节点 ID 和校验有效的下行报文执行一次。
 
-上电时依次使用 `AT+CGSN=1` 和 `AT+MCCID` 读取 IMEI、ICCID，网络注册后使用 `AT+COPS?` 读取运营商。查询失败不会阻塞联网；信息保存在 RAM，不周期读取。设备只订阅自己的 `/d`。每次 MQTT 订阅完成后，在 `/u` 使用 QoS 1 发布一次非 retained 紧凑登记帧，之后继续普通状态上报；服务端依靠 MySQL 保存登记信息，避免后端重连时 EMQX 重放所有设备信息。
+上电时依次使用 `AT+CGSN=1` 和 `AT+MCCID` 读取 IMEI、ICCID，网络注册后使用 `AT+COPS?` 读取运营商。查询失败不会阻塞联网；信息保存在 RAM，不周期读取。设备只订阅自己的下行主题。每次 MQTT 订阅完成后，在上行主题使用 QoS 1 发布一次非 retained 紧凑登记帧，之后继续普通状态上报；服务端依靠 MySQL 保存登记信息，避免后端重连时 Broker 重放所有设备信息。
 
 失败恢复始终继续：5/10/20/40/60/120/240/300 秒退避，之后固定 300 秒。先重连 MQTT，再恢复网络，最后硬复位模组。管理页保留当前阶段、SIM/网络/MQTT 状态、信号、最近错误、重试时间和 UART 收发量。
 
 ## 远程 OTA 管理帧
 
-`/u` 和 `/d` 中以 `C7` 开头的载荷为管理帧：
+上行和下行主题中以 `C7` 开头的载荷为管理帧：
 
 `C7 | 01 | type | flags | transactionId:u16LE | payloadLength:u16LE | payload | CRC16-CCITT-FALSE:u16LE`
 
@@ -72,7 +72,7 @@ A26091001,lora,9,2.22.19,HW1.0
 - `firmware_version` 同时用于固件编译、BLE 设备信息、MQTT 登记和 OTA 当前版本。
 - `hardware_version` 同时用于固件编译和 MQTT 登记，最长 12 个 ASCII 字符。
 - 同一份 CSV 对应同一批构建，所有行的软件和硬件版本必须一致；工具不再提供写死的版本默认值。
-- 不再生成重复的 `platform-import.csv`。MQTT client ID、主题、DataFlash 文件名和地址都由工具或固件派生，量产只维护这一份六列 CSV。
+- 不再生成重复的 `platform-import.csv`。MQTT client ID、主题、DataFlash 文件名和地址都由工具或固件派生，量产只维护这一份五列 CSV。
 
 量产工位只需要输入或扫码得到 `device_id`：
 
@@ -81,7 +81,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\flash_production.ps1 `
   -DeviceId A26091001
 ```
 
-若出厂时预置 MQTT 地址，可附加 `-Broker 106.15.11.119 -Port 1883`；不预置时保持为空，之后在小程序管理页配置。脚本会依次校验 CSV、写入并校验 `splitac-burn.hex`、临时生成并写入 DataFlash、读回校验、复位设备，最后清除临时文件。设备须先进入 USB Boot ISP 模式；`wchisp` 在 Windows 下使用 WinUSB 驱动。
+出厂默认写入上述平台参数；需要其他平台时可使用生成工具的 `--broker`、`--port`、`--username`、`--password`、`--publish-topic` 和 `--subscribe-topic` 参数，或在小程序管理页修改。烧写脚本会校验 CSV、写入并校验 `splitac-burn.hex`、临时生成并写入 DataFlash、读回校验、复位设备，最后清除临时文件。设备须先进入 USB Boot ISP 模式；`wchisp` 在 Windows 下使用 WinUSB 驱动。
 
 不接硬件时可先验证工单和 CSV：
 

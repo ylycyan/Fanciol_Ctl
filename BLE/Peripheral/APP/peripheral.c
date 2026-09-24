@@ -48,6 +48,7 @@
 
 // How often to perform read rssi event
 #define SBP_READ_RSSI_EVT_PERIOD             3200
+#define BLE_HANDSHAKE_TIMEOUT_MS              20000U
 
 // Parameter update delay
 #define SBP_PARAM_UPDATE_DELAY               6400
@@ -119,6 +120,7 @@ static uint16_t deviceTxChunk;
 static uint8_t deviceTxIndex;
 static uint8_t deviceTxCount;
 static uint8_t deviceTxActive;
+static uint8_t deviceSessionReady;
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
@@ -508,6 +510,15 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
         return (events ^ SBP_TX_FRAME_EVT);
     }
 
+    if(events & SBP_HANDSHAKE_TIMEOUT_EVT)
+    {
+        if(peripheralConnList.connHandle != GAP_CONNHANDLE_INIT && !deviceSessionReady) {
+            PRINT("BLE handshake timeout, release connection\r\n");
+            GAPRole_TerminateLink(peripheralConnList.connHandle);
+        }
+        return (events ^ SBP_HANDSHAKE_TIMEOUT_EVT);
+    }
+
     // Discard unknown events
     return 0;
 }
@@ -623,6 +634,10 @@ static void Peripheral_LinkEstablished(gapRoleEvent_t *pEvent)
         deviceTxActive = 0U;
         deviceTxIndex = 0U;
         deviceTxOffset = 0U;
+        deviceSessionReady = 0U;
+        tmos_stop_task(Peripheral_TaskID, SBP_HANDSHAKE_TIMEOUT_EVT);
+        tmos_start_task(Peripheral_TaskID, SBP_HANDSHAKE_TIMEOUT_EVT,
+                        MS1_TO_SYSTEM_TIME(BLE_HANDSHAKE_TIMEOUT_MS));
         // Set timer for periodic event
         tmos_start_task(Peripheral_TaskID, SBP_PERIODIC_EVT, SBP_PERIODIC_EVT_PERIOD);
 
@@ -660,7 +675,9 @@ static void Peripheral_LinkTerminated(gapRoleEvent_t *pEvent)
         tmos_stop_task(Peripheral_TaskID, OTA_FLASH_ERASE_EVT);
         tmos_stop_task(Peripheral_TaskID, OTA_FLASH_VERIFY_EVT);
         tmos_stop_task(Peripheral_TaskID, SBP_TX_FRAME_EVT);
+        tmos_stop_task(Peripheral_TaskID, SBP_HANDSHAKE_TIMEOUT_EVT);
         deviceTxActive = 0U;
+        deviceSessionReady = 0U;
         DeviceProtocol_Reset(&deviceReassembler);
         DeviceService_ResetSession();
         OtaGuard_Reset(&otaGuard);
@@ -951,6 +968,10 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                 uint8_t frameStatus = DeviceProtocol_Reassemble(&deviceReassembler, pValue, len, deviceFrame, sizeof(deviceFrame), &requestLen);
                 if(frameStatus == DEVICE_STATUS_BUSY) break;
                 if(frameStatus == DEVICE_STATUS_OK && DeviceService_HandleFrame(deviceFrame, requestLen, deviceFrame, sizeof(deviceFrame), &responseLen) == DEVICE_STATUS_OK) {
+                    if(!deviceSessionReady) {
+                        deviceSessionReady = 1U;
+                        tmos_stop_task(Peripheral_TaskID, SBP_HANDSHAKE_TIMEOUT_EVT);
+                    }
                     SendDeviceFrame(deviceFrame, responseLen);
                 } else {
                     DeviceProtocol_Reset(&deviceReassembler);

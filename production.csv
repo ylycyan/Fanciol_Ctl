@@ -1,4 +1,4 @@
-device_id,communication_mode,lora_channel,firmware_version,hardware_version,mqtt_host
-A26091001,lora,9,2.22.19,HW1.0,
-A26091002,4g,0,2.22.19,HW1.0,106.15.11.119
-A26091421,4g,10,2.22.19,HW1.0,106.15.11.119
+device_id,communication_mode,lora_channel,firmware_version,hardware_version
+A26091001,lora,9,2.22.19,HW1.0
+A26091002,4g,0,2.22.19,HW1.0
+A26091421,4g,10,2.22.19,HW1.0

@@ -33,6 +33,20 @@ uint8_t Ir_ExecuteVerified(IR_CMD_t cmd)
     return ir_accept;
 }
 
+uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t cmd)
+{
+    return Ir_ExecuteVerified(cmd);
+}
+
+uint8_t Ir_ExecuteConfiguredProfileVerified(uint8_t mode, uint8_t temperature, uint8_t wind)
+{
+    (void)temperature;
+    (void)wind;
+    ir_calls++;
+    last_ir_cmd = (IR_CMD_t)(IR_CMD_MODE_AUTO + mode);
+    return ir_accept;
+}
+
 uint8_t Ir_SendLearnedVerified(uint8_t channel)
 {
     (void)channel;
@@ -89,7 +103,8 @@ uint8_t Runtime_Append(void)
 void Rule_Pro(void);
 void Rule_DailyReset(void);
 
-static void setup_temperature_power_on_rule(void)
+static void setup_policy(uint16_t start, uint16_t end, uint8_t start_action,
+                         uint8_t end_off, uint8_t low_action, uint8_t high_action)
 {
     DEV_RULE_T *rule;
     memset(&Dev, 0, sizeof(Dev));
@@ -102,19 +117,26 @@ static void setup_temperature_power_on_rule(void)
 
     rule = &Dev.rules[0];
     rule->ctrl.enable = 1u;
-    rule->ctrl.trig_type = TRIG_TEMP_ABOVE;
-    rule->trig_val = 250u;
-    rule->trig_val2 = 10u;
-    rule->act.ir.onOff = 1u;
+    rule->ctrl.trig_type = TRIG_COMBINED;
+    rule->flags = 0x7Fu;
+    rule->trig_val = start;
+    rule->trig_val2 = end;
+    rule->sched = 260u;
+    rule->act.raw[0] = (uint8_t)280u;
+    rule->act.raw[1] = (uint8_t)(280u >> 8);
     rule->act.raw[2] = 1u;
     rule->act.raw[3] = 0u;
+    rule->act.raw[4] = (uint8_t)(high_action | (uint8_t)(low_action << 4));
+    rule->act.raw[5] = (uint8_t)(start_action | (uint8_t)(end_off << 4));
+    rule->act.raw[6] = 26u;
+    rule->act.raw[7] = Wind_Mid;
 }
 
 int main(void)
 {
     DEV_RULE_T *rule;
 
-    setup_temperature_power_on_rule();
+    setup_policy(0u, 0u, 0u, 0u, RULE_ACTION_POWER_OFF, RULE_ACTION_COOL);
     rule = &Dev.rules[0];
 
     /*
@@ -126,7 +148,7 @@ int main(void)
     save_calls = 0u;
     Rule_Pro();
     assert(ir_calls == 1u);
-    assert(last_ir_cmd == IR_CMD_POWER_ON);
+    assert(last_ir_cmd == IR_CMD_MODE_COOL);
     assert(rule->ctrl.executed == 0u);
     assert(Dev.onOff == PowerOff);
     assert(Dev.meter.onoff_count == 0u);
@@ -139,7 +161,7 @@ int main(void)
     LocalTimestamp++;
     Rule_Pro();
     assert(ir_calls == 2u);
-    assert(rule->ctrl.executed == 1u);
+    assert((rule->ctrl.reserved & POLICY_LATCH_HIGH) != 0u);
     assert(Dev.onOff == PowerOn);
     assert(Dev.meter.onoff_count == 1u);
     assert(Dev.lastOnTime == LocalTimestamp);
@@ -147,7 +169,7 @@ int main(void)
     assert(save_calls == 1u);
 
     /* 仅远程模式与链路状态无关，始终禁止本地规则。 */
-    setup_temperature_power_on_rule();
+    setup_policy(0u, 0u, 0u, 0u, RULE_ACTION_POWER_OFF, RULE_ACTION_COOL);
     Dev.mode = 1U;
     ir_accept = 1U;
     ir_calls = 0U;
@@ -163,19 +185,16 @@ int main(void)
     assert(ir_calls == 1U);
     assert(Dev.onOff == PowerOn);
 
-    /* 温控策略只在定时窗口内运行，首次发现位于窗口外时执行关机。 */
-    setup_temperature_power_on_rule();
+    /* 策略只在自己的时间窗口内运行，离开窗口按配置关机。 */
+    setup_policy(8u * 60u, 10u * 60u, 0u, 1u, RULE_ACTION_POWER_OFF, RULE_ACTION_COOL);
     Rule_DailyReset();
     Dev.onOff = PowerOn;
-    Dev.rules[1].ctrl.enable = 1u;
-    Dev.rules[1].ctrl.trig_type = TRIG_TIME;
-    Dev.rules[1].flags = 0x7Fu;
-    Dev.rules[1].trig_val = 8u * 60u;
-    Dev.rules[1].trig_val2 = 10u * 60u;
-    Dev.rules[1].act.ir.onOff = 1u;
-    Dev.rules[1].act.raw[2] = 5u;
+    Dev.roomTempX10 = 270;
     ir_calls = 0u;
     LocalTimestamp = 4000u;
+    rtc_hour = 9u;
+    Rule_Pro();
+    assert(ir_calls == 0u);
     rtc_hour = 12u;
     Rule_Pro();
     assert(ir_calls == 1u);
@@ -185,55 +204,33 @@ int main(void)
     /* 保持状态选项不在时段结束时发送关机。 */
     Rule_DailyReset();
     Dev.onOff = PowerOn;
-    Dev.rules[1].act.raw[4] = 1u;
+    Dev.rules[0].act.raw[5] &= 0x0Fu;
     ir_calls = 0u;
+    rtc_hour = 9u;
+    Rule_Pro();
+    rtc_hour = 12u;
     Rule_Pro();
     assert(ir_calls == 0u);
     assert(Dev.onOff == PowerOn);
 
-    /* 制热策略使用“低于下限开机”，且在有效时段内执行。 */
-    memset(&Dev, 0, sizeof(Dev));
+    /* 制热策略使用“低于下限制热”，并应用目标温度和风速。 */
+    setup_policy(11u * 60u, 13u * 60u, 0u, 0u, RULE_ACTION_HEAT, RULE_ACTION_POWER_OFF);
     Rule_DailyReset();
-    Dev.mode = 0u;
-    Dev.irActType = ACT_TYPE_IR;
-    Dev.onOff = PowerOff;
     Dev.roomTempX10 = 180;
-    Dev.rules[0].ctrl.enable = 1u;
-    Dev.rules[0].ctrl.trig_type = TRIG_TIME;
-    Dev.rules[0].flags = 0x7Fu;
-    Dev.rules[0].trig_val = 11u * 60u;
-    Dev.rules[0].trig_val2 = 13u * 60u;
-    Dev.rules[0].act.ir.onOff = 1u;
-    Dev.rules[0].act.raw[2] = 5u;
-    Dev.rules[1].ctrl.enable = 1u;
-    Dev.rules[1].ctrl.trig_type = TRIG_TEMP_BELOW;
-    Dev.rules[1].trig_val = 200u;
-    Dev.rules[1].trig_val2 = 5u;
-    Dev.rules[1].act.ir.onOff = 1u;
-    Dev.rules[1].act.raw[2] = 5u;
     ir_calls = 0u;
     LocalTimestamp = 5000u;
     rtc_hour = 12u;
     Rule_Pro();
     assert(ir_calls == 1u);
-    assert(last_ir_cmd == IR_CMD_POWER_ON);
+    assert(last_ir_cmd == IR_CMD_MODE_HEAT);
     assert(Dev.onOff == PowerOn);
+    assert(Dev.ctlMode == Mode_Heat);
+    assert(Dev.temSet == 26u);
+    assert(Dev.wind == Wind_Mid);
 
-    /* 全天模式使用相同起止时间，任意时刻都应处于运行窗口。 */
-    memset(&Dev, 0, sizeof(Dev));
+    /* 全天策略进入时可执行指定动作。 */
+    setup_policy(0u, 0u, RULE_ACTION_POWER_ON, 0u, 0u, 0u);
     Rule_DailyReset();
-    Dev.mode = 0u;
-    Dev.irActType = ACT_TYPE_IR;
-    Dev.onOff = PowerOff;
-    Dev.rules[0].ctrl.enable = 1u;
-    Dev.rules[0].ctrl.trig_type = TRIG_TIME;
-    Dev.rules[0].flags = 0x7Fu;
-    Dev.rules[0].trig_val = 0u;
-    Dev.rules[0].trig_val2 = 0u;
-    Dev.rules[0].act.ir.onOff = 1u;
-    Dev.rules[0].act.raw[2] = 5u;
-    RULE_TIME_START_ACTION(&Dev.rules[0]) = 1u;
-    RULE_TIME_ACTION_TAG(&Dev.rules[0]) = RULE_TIME_ACTION_MARKER;
     ir_calls = 0u;
     LocalTimestamp = 6000u;
     rtc_hour = 12u;
@@ -242,20 +239,10 @@ int main(void)
     assert(last_ir_cmd == IR_CMD_POWER_ON);
     assert(Dev.onOff == PowerOn);
 
-    /* 进入时段可以明确选择不操作，不得隐式开机。 */
-    memset(&Dev, 0, sizeof(Dev));
+    /* 进入时段选择不操作时不得隐式开机。 */
+    setup_policy(11u * 60u, 13u * 60u, 0u, 0u, RULE_ACTION_POWER_OFF, RULE_ACTION_COOL);
     Rule_DailyReset();
-    Dev.mode = 0u;
-    Dev.irActType = ACT_TYPE_IR;
-    Dev.onOff = PowerOff;
-    Dev.rules[0].ctrl.enable = 1u;
-    Dev.rules[0].ctrl.trig_type = TRIG_TIME;
-    Dev.rules[0].flags = 0x7Fu;
-    Dev.rules[0].trig_val = 11u * 60u;
-    Dev.rules[0].trig_val2 = 13u * 60u;
-    Dev.rules[0].act.raw[2] = 5u;
-    RULE_TIME_START_ACTION(&Dev.rules[0]) = 0u;
-    RULE_TIME_ACTION_TAG(&Dev.rules[0]) = RULE_TIME_ACTION_MARKER;
+    Dev.roomTempX10 = 270;
     ir_calls = 0u;
     LocalTimestamp = 7000u;
     rtc_hour = 12u;
@@ -263,10 +250,10 @@ int main(void)
     assert(ir_calls == 0u);
     assert(Dev.onOff == PowerOff);
 
-    /* 进入时段也可由用户明确指定关机。 */
+    /* 进入时段也可明确指定关机。 */
     Rule_DailyReset();
     Dev.onOff = PowerOn;
-    RULE_TIME_START_ACTION(&Dev.rules[0]) = 2u;
+    Dev.rules[0].act.raw[5] = RULE_ACTION_POWER_OFF;
     ir_calls = 0u;
     LocalTimestamp = 8000u;
     Rule_Pro();

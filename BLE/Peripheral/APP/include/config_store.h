@@ -34,11 +34,14 @@ typedef enum {
 
 #define CONNECTIVITY_LORA          0x01U
 #define CONNECTIVITY_CELLULAR      0x02U
-#define CONNECTIVITY_SCHEMA        4U
+#define CONNECTIVITY_SCHEMA        5U
 
 /* 数组长度包含结尾 NUL；上位机可写入的最大字符数需减一。 */
 #define CONNECTIVITY_HOST_SIZE        48U
 #define CONNECTIVITY_APN_SIZE         20U
+#define CONNECTIVITY_USERNAME_SIZE    24U
+#define CONNECTIVITY_PASSWORD_SIZE    32U
+#define CONNECTIVITY_TOPIC_SIZE       40U
 #define DEVICE_UID_LENGTH             9U
 #define DEVICE_UID_SIZE               (DEVICE_UID_LENGTH + 1U)
 
@@ -61,6 +64,10 @@ typedef struct __attribute__((packed)) {
     char mqtt_host[CONNECTIVITY_HOST_SIZE];
     char apn[CONNECTIVITY_APN_SIZE];
     char device_id[DEVICE_UID_SIZE];
+    char mqtt_username[CONNECTIVITY_USERNAME_SIZE];
+    char mqtt_password[CONNECTIVITY_PASSWORD_SIZE];
+    char publish_topic[CONNECTIVITY_TOPIC_SIZE];
+    char subscribe_topic[CONNECTIVITY_TOPIC_SIZE];
 } connectivity_config_t;
 
 uint32_t Config_Crc32(const uint8_t *data, uint16_t len);

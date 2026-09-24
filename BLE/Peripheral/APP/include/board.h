@@ -141,6 +141,7 @@ typedef enum{
 
 #define MAX_IR_LEARNNUM 10
 #define MAX_RULES       10
+#define MAX_POLICY_GROUPS 6
 #define MAX_CHILD_NODES 8  // 中继节点最大子节点数
 #define RELAY_TRIAL_MAX_CHILD_NODES 4
 #define RELAY_RELEASE_MAX_CHILD_NODES 8
@@ -250,10 +251,33 @@ typedef struct {
     } act;
 } DEV_RULE_T;                               // 精确16字节, 无填充
 
-/* 时间规则在动作保留区保存进入时段动作，保持既有 Flash 结构不变。 */
-#define RULE_TIME_ACTION_MARKER 0xA5u
-#define RULE_TIME_START_ACTION(rule) ((rule)->act.raw[5])
-#define RULE_TIME_ACTION_TAG(rule)   ((rule)->act.raw[6])
+/* 本地智控动作。 */
+#define RULE_ACTION_NONE       0u
+#define RULE_ACTION_POWER_ON   1u
+#define RULE_ACTION_POWER_OFF  2u
+#define RULE_ACTION_COOL       3u
+#define RULE_ACTION_HEAT       4u
+#define RULE_ACTION_DRY        5u
+#define RULE_ACTION_FAN        6u
+#define RULE_ACTION_MAX        RULE_ACTION_FAN
+
+/*
+ * 每个策略组复用一个既有 16 字节 DEV_RULE_T，不改变 DataFlash 布局：
+ * trig_val/trig_val2=起止分钟，sched=低温阈值；raw 保存高温阈值、
+ * 启停间隔、四个动作、目标温度和风速。最多使用 rules[0..5]。
+ */
+#define POLICY_UPPER_X10(rule) \
+    ((uint16_t)((rule)->act.raw[0] | ((uint16_t)(rule)->act.raw[1] << 8)))
+#define POLICY_MIN_INTERVAL(rule) \
+    ((uint16_t)((rule)->act.raw[2] | ((uint16_t)(rule)->act.raw[3] << 8)))
+#define POLICY_HIGH_ACTION(rule)  ((uint8_t)((rule)->act.raw[4] & 0x0Fu))
+#define POLICY_LOW_ACTION(rule)   ((uint8_t)(((rule)->act.raw[4] >> 4) & 0x0Fu))
+#define POLICY_START_ACTION(rule) ((uint8_t)((rule)->act.raw[5] & 0x0Fu))
+#define POLICY_END_OFF(rule)      ((uint8_t)(((rule)->act.raw[5] >> 4) & 0x01u))
+#define POLICY_TARGET_TEMP(rule)  ((rule)->act.raw[6])
+#define POLICY_FAN(rule)          ((rule)->act.raw[7])
+#define POLICY_LATCH_HIGH         0x01u
+#define POLICY_LATCH_LOW          0x02u
 
 // 本地计量累计与限频保存状态
 typedef struct {
@@ -282,7 +306,7 @@ typedef struct{
     uint16_t irType; // HXD039B 红外模块适配码
     uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
-    DEV_RULE_T    rules[MAX_RULES];       //本地规则引擎(定时/条件触发/计量,不上云, 160字节)
+    DEV_RULE_T    rules[MAX_RULES];       //前6项为本地智控策略组，保留160字节落盘布局
     DEV_METER_T   meter;                  // 计量数据（运行区轮转保存）
     //上报数据
     OnOff_t onOff; // 空调开关状态,0:关 1:开
@@ -350,6 +374,7 @@ extern int ChkCrc(uint8_t *buf, uint16_t len);
 
 //红外函数
 extern uint8_t Ir_ExecuteVerified(IR_CMD_t cmd);
+extern uint8_t Ir_ExecuteConfiguredProfileVerified(uint8_t mode, uint8_t temperature, uint8_t wind);
 extern uint8_t Ir_ConfiguredCommandSupported(IR_CMD_t cmd);
 extern uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t cmd);
 extern uint8_t Ir_StartMatch(void);
