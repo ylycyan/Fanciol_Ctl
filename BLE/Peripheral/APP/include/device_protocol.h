@@ -76,7 +76,7 @@ typedef enum {
     CONTROL_FIELD_LIGHT = 9,
     CONTROL_FIELD_ENERGY = 10,
     CONTROL_FIELD_FAST_MODE = 11,
-    CONTROL_FIELD_MUTE = 12,
+    CONTROL_FIELD_QUIET_STRONG = 12, /* value: 0=静音, 1=强劲 */
     CONTROL_FIELD_TEMP_STEP = 13,
     /* 仅 BLE 现场控制使用：value 为已学习通道 0~9。 */
     CONTROL_FIELD_LEARNED_CHANNEL = 14

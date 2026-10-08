@@ -201,7 +201,7 @@ uint8_t SplitAcControl_Execute(uint8_t control,uint16_t value)
     case CONTROL_FIELD_LIGHT: if(value>1u)return DEVICE_STATUS_INVALID_ARG;cmd=value?IR_CMD_LIGHT_ON:IR_CMD_LIGHT_OFF;break;
     case CONTROL_FIELD_ENERGY: if(value>1u)return DEVICE_STATUS_INVALID_ARG;cmd=value?IR_CMD_SLEEP_ENERGY_ON:IR_CMD_SLEEP_ENERGY_OFF;break;
     case CONTROL_FIELD_FAST_MODE: if(value>1u)return DEVICE_STATUS_INVALID_ARG;cmd=value?IR_CMD_FAST_HEAT:IR_CMD_FAST_COOL;break;
-    case CONTROL_FIELD_MUTE: if(value>1u)return DEVICE_STATUS_INVALID_ARG;cmd=value?IR_CMD_MUTE_ON:IR_CMD_MUTE_OFF;break;
+    case CONTROL_FIELD_QUIET_STRONG: if(value>1u)return DEVICE_STATUS_INVALID_ARG;cmd=value?IR_CMD_STRONG:IR_CMD_QUIET;break;
     case CONTROL_FIELD_TEMP_STEP: if(value>1u)return DEVICE_STATUS_INVALID_ARG;cmd=value?IR_CMD_TEMP_UP:IR_CMD_TEMP_DOWN;break;
     default:return DEVICE_STATUS_NOT_SUPPORTED;
     }

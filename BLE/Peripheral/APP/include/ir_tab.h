@@ -65,9 +65,9 @@ typedef enum {
   // fan speed
   IR_CMD_FAST_COOL = 0x9c, // 快速制冷
   IR_CMD_FAST_HEAT = 0x9d, // 快速制热
-  // sleep
-  IR_CMD_MUTE_OFF = 0x9e, // 静音关
-  IR_CMD_MUTE_ON = 0x9f,  // 静音开
+  // independent operating presets, not a mute on/off switch
+  IR_CMD_QUIET = 0x9e,  // 静音
+  IR_CMD_STRONG = 0x9f, // 强劲
     Ir_Illegal
 } IR_CMD_t;
 
