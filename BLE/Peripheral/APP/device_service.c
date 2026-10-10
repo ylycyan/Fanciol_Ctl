@@ -76,20 +76,6 @@ static uint8_t parse_config(const uint8_t *p,uint16_t len,staged_config_t *cfg)
     return DEVICE_STATUS_OK;
 }
 
-static uint8_t policy_time_contains(uint16_t minute, uint16_t start, uint16_t end)
-{
-    if(start == end) return 1u;
-    return start < end ? (uint8_t)(minute >= start && minute < end)
-                       : (uint8_t)(minute >= start || minute < end);
-}
-
-static uint8_t policy_times_overlap(uint16_t start_a, uint16_t end_a,
-                                    uint16_t start_b, uint16_t end_b)
-{
-    return (uint8_t)(policy_time_contains(start_a, start_b, end_b) ||
-                     policy_time_contains(start_b, start_a, end_a));
-}
-
 static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules)
 {
     uint8_t count, i;
@@ -113,6 +99,8 @@ static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules)
             end_off > 1u || low_action > RULE_ACTION_MAX || high_action > RULE_ACTION_MAX ||
             target < 16u || target > 31u || fan > Wind_High) return DEVICE_STATUS_INVALID_ARG;
         if (!start_action && !end_off && !low_action && !high_action) return DEVICE_STATUS_INVALID_ARG;
+        /* 未校时可保存停用策略，但不能启用任何本地指令组。 */
+        if (p[off] && !RTC_IsTimeValid()) return DEVICE_STATUS_CONFLICT;
 
         r->ctrl.enable = p[off] ? 1u : 0u;
         r->ctrl.trig_type = TRIG_COMBINED;
@@ -132,9 +120,7 @@ static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules)
             uint8_t j;
             for(j = 0u; j < i; ++j) {
                 DEV_RULE_T *previous = &rules[j];
-                if(previous->ctrl.enable && (previous->flags & r->flags) &&
-                   policy_times_overlap(previous->trig_val, previous->trig_val2,
-                                        r->trig_val, r->trig_val2)) return DEVICE_STATUS_CONFLICT;
+                if(previous->ctrl.enable && Rule_WindowsOverlap(previous, r)) return DEVICE_STATUS_CONFLICT;
             }
         }
     }
@@ -148,7 +134,7 @@ static void update_power_state(uint8_t on)
     if(previous!=on) {
         if(Dev.meter.onoff_count!=0xFFFFu)Dev.meter.onoff_count++;
         if(on)Dev.lastOnTime=LocalTimestamp;
-        Dev.lastPowerChange=LocalTimestamp;
+        Rule_RecordPowerChange();
     }
 }
 
@@ -244,7 +230,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         payload[8]=(uint8_t)Dev.irActType;put16(payload+9,Ir_GetLearnedMask());*payload_len=11;break;
     case DEVICE_OP_GET_DEVICE_INFO:{
         const char *device_id=DeviceUid_Get();
-        uint8_t device_id_len=DeviceUid_Valid(device_id)?DEVICE_UID_LENGTH:0u;
+        uint8_t device_id_len=DeviceUid_Valid(device_id)?(uint8_t)strlen(device_id):0u;
         payload[0]=2;payload[1]=device_id_len;memcpy(payload+2,device_id,device_id_len);
         *payload_len=(uint16_t)(2u+device_id_len);break;}
     case DEVICE_OP_IDENTIFY:{
@@ -280,13 +266,13 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         IrBuf.matchError=(Dev.irActType==ACT_TYPE_IR&&
             (Dev.irIdx>=IR_BRAND_COUNT||!Dev.irType||Dev.irType==0xFFFFu))?1u:0u;
         IrBuf.learnError=(Dev.irActType==ACT_TYPE_LEARN&&Dev.learnNum==0u)?1u:0u;
-        if(previous.work_mode!=Dev.mode)Rule_DailyReset();
         status=Config_Commit();if(status==DEVICE_STATUS_OK){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);if(previous.node_id!=Dev.nodeId){Peripheral_RefreshDeviceName();Ml307_ApplyConfiguration();}}
         else {Dev.nodeId=previous.node_id;Dev.channel=previous.channel;Dev.linkRole=previous.link_role;Dev.parentRelayId=previous.parent_id;Dev.mode=previous.work_mode;Dev.irActType=(ActType_t)previous.ir_action_type;Dev.irType=previous.ir_type;Dev.irIdx=previous.ir_index;
             IrBuf.matchError=(Dev.irActType==ACT_TYPE_IR&&
                 (Dev.irIdx>=IR_BRAND_COUNT||!Dev.irType||Dev.irType==0xFFFFu))?1u:0u;
             IrBuf.learnError=(Dev.irActType==ACT_TYPE_LEARN&&Dev.learnNum==0u)?1u:0u;
             memcpy(Dev.rules,rollback_rules,sizeof(rollback_rules));}
+        if(status==DEVICE_STATUS_OK&&previous.work_mode!=Dev.mode)Rule_Reset();
         break;
     }
     case DEVICE_OP_EXEC_CONTROL:
@@ -325,6 +311,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         status=parse_rules(req->payload,req->payload_len,Dev.rules);
         if(status==DEVICE_STATUS_OK)status=Config_Commit();
         if(status!=DEVICE_STATUS_OK)memcpy(Dev.rules,previous_rules,sizeof(previous_rules));
+        else Rule_Reset();
         break;
     }
     case DEVICE_OP_IR_CONFIG:
@@ -414,7 +401,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         put32(payload+47,cell->retry_remaining_ms);payload[51]=Ml307_AtGetStatus()->state;
         payload[52]=(uint8_t)(Dev.loraStatus>=Status_Connected?Lora_GetRssi():-127);
         payload[53]=(uint8_t)cell->rsrp_dbm;put16(payload+54,(uint16_t)cell->rsrq_db_x10);
-        payload[56]=DeviceUid_Valid(DeviceUid_Get())?DEVICE_UID_LENGTH:0u;
+        payload[56]=DeviceUid_Valid(DeviceUid_Get())?(uint8_t)strlen(DeviceUid_Get()):0u;
         memcpy(payload+57,DeviceUid_Get(),payload[56]);*payload_len=(uint16_t)(57u+payload[56]);break;
     }
     case DEVICE_OP_RESTART_CELLULAR:
@@ -446,18 +433,32 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         if(req->payload_len==4u) {
             uint32_t timestamp=get32(req->payload);
             if(timestamp<1672531200u||timestamp>2147483000u){status=DEVICE_STATUS_INVALID_ARG;break;}
-            RTC_SetTimestamp(timestamp);
+            if(!RTC_SetTimestamp(timestamp)){status=DEVICE_STATUS_IO_ERROR;break;}
             LocalTimestamp=Rtc_GetTimestamp();
             if(!RTC_IsTimeValid()||LocalTimestamp<timestamp||LocalTimestamp>timestamp+2u){
                 status=DEVICE_STATUS_IO_ERROR;break;
             }
         } else if(req->payload_len!=0u){status=DEVICE_STATUS_INVALID_ARG;break;}
-        payload[0]=RTC_IsTimeValid();put32(payload+1,Rtc_GetTimestamp());*payload_len=5u;
+        LocalTimestamp=Rtc_GetTimestamp();
+        if(Dev.errorCode.bit.rtc){status=DEVICE_STATUS_IO_ERROR;break;}
+        payload[0]=RTC_IsTimeValid();put32(payload+1,LocalTimestamp);*payload_len=5u;
         break;
     case DEVICE_OP_RESTART_DEVICE:
         if(req->payload_len!=0u){status=DEVICE_STATUS_INVALID_ARG;break;}
         Peripheral_RequestReset();
         break;
+    case DEVICE_OP_SET_DEVICE_ID:
+    {
+        const char *uid=DeviceUid_Get();
+        uint8_t changed;
+        if(req->payload_len>DEVICE_UID_LENGTH-4u){status=DEVICE_STATUS_INVALID_ARG;break;}
+        changed=!DeviceUid_Valid(uid)||strlen(uid)!=req->payload_len+4u||
+                (req->payload_len&&memcmp(uid,req->payload,req->payload_len));
+        if(changed&&Ota_Get()->state!=OTA_STATE_IDLE){status=DEVICE_STATUS_BUSY;break;}
+        status=DeviceUid_SavePrefix(req->payload,req->payload_len);
+        if(status==DEVICE_STATUS_OK&&changed){Peripheral_RefreshDeviceName();Ml307_ApplyConfiguration();}
+        break;
+    }
     case DEVICE_OP_GET_REMOTE_OTA_STATUS:
     {
         const ota_metadata_t *ota=Ota_Get();

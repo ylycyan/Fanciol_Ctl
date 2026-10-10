@@ -1,6 +1,7 @@
 #include "CH58x_common.h"
 #include "../../Peripheral/APP/include/ota_update.h"
 #include <stddef.h>
+#include <string.h>
 
 static ota_metadata_t metadata;
 static ota_metadata_t candidate;
@@ -108,8 +109,10 @@ static uint8_t install_image(void)
     for(offset = 0U; offset < metadata.image_size; offset += sizeof(copy_buffer)) {
         uint16_t length = (uint16_t)((metadata.image_size - offset) > sizeof(copy_buffer) ?
                                     sizeof(copy_buffer) : metadata.image_size - offset);
+        uint16_t program_length = (uint16_t)((length + 3U) & ~3U);
+        memset(copy_buffer, 0xFF, sizeof(copy_buffer));
         FLASH_ROM_READ(OTA_STAGING_ADDRESS + offset, copy_buffer, length);
-        if(FLASH_ROM_WRITE(OTA_APP_ADDRESS + offset, copy_buffer, length) != 0U)
+        if(FLASH_ROM_WRITE(OTA_APP_ADDRESS + offset, copy_buffer, program_length) != 0U)
             return 0U;
     }
     return image_crc(OTA_APP_ADDRESS, metadata.image_size) == metadata.image_crc32;

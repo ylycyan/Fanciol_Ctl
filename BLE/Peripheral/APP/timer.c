@@ -8,6 +8,7 @@
 #include "device_service.h"
 #include "hlw8110.h"
 #include "time_utils.h"
+#include "timer.h"
 #include "config_store.h"
 #include "ml307r.h"
 #include "ota_update.h"
@@ -16,98 +17,139 @@ static volatile uint8_t Flag_100ms = 0;
 static volatile uint8_t Flag_1s = 0;
 volatile uint32_t CurTick = 0;  //??tick ,??10ms
 static uint8_t rtcTimeValid = 0;
-static int32_t rtcUnixOffset = 0;
+static uint8_t rtcPolled = 0;
+static uint32_t rtcPollTick, rtcChangeTick;
+#define RTC_CE_PIN   GPIO_Pin_2
+#define RTC_SCLK_PIN GPIO_Pin_18
+#define RTC_IO_PIN   GPIO_Pin_19
 
-static uint8_t rtc_read_hardware_timestamp(uint32_t *timestamp)
+/* DS1302 three-wire, LSB first. CE is idle low, not a reset pulse.
+ * Release I/O before the command's last falling edge: DS1302 drives D0 there.
+ * One burst takes about 220 us; never disable BLE interrupts for this bus. */
+static void rtc_transfer(uint8_t command, uint8_t *data, uint8_t length)
 {
-    time_fields_t fields;
-    uint16_t year, mon, day, hour, min, sec;
-
-    if(timestamp == 0) return 0;
-    RTC_GetTime(&year, &mon, &day, &hour, &min, &sec);
-    fields.year = year;
-    fields.month = (uint8_t)mon;
-    fields.day = (uint8_t)day;
-    fields.hour = (uint8_t)hour;
-    fields.minute = (uint8_t)min;
-    fields.second = (uint8_t)sec;
-    return TimeUtil_ToUnix(&fields, timestamp);
+    uint8_t i, bit, value;
+    GPIOB_ResetBits(RTC_CE_PIN | RTC_SCLK_PIN | RTC_IO_PIN);
+    GPIOB_ModeCfg(RTC_IO_PIN, GPIO_ModeOut_PP_5mA);
+    mDelayuS(1);
+    GPIOB_SetBits(RTC_CE_PIN);
+    mDelayuS(4);
+    for(bit = 0; bit < 8U; bit++) {
+        if(command & (1U << bit)) GPIOB_SetBits(RTC_IO_PIN);
+        else GPIOB_ResetBits(RTC_IO_PIN);
+        mDelayuS(1);
+        GPIOB_SetBits(RTC_SCLK_PIN);
+        mDelayuS(1);
+        if(bit == 7U && (command & 1U)) GPIOB_ModeCfg(RTC_IO_PIN, GPIO_ModeIN_PD);
+        GPIOB_ResetBits(RTC_SCLK_PIN);
+        mDelayuS(1);
+    }
+    for(i = 0; i < length; i++) {
+        value = (command & 1U) ? 0U : data[i];
+        for(bit = 0; bit < 8U; bit++) {
+            if(command & 1U) {
+                if(GPIOB_ReadPortPin(RTC_IO_PIN)) value |= (uint8_t)(1U << bit);
+            } else {
+                if(value & (1U << bit)) GPIOB_SetBits(RTC_IO_PIN);
+                else GPIOB_ResetBits(RTC_IO_PIN);
+            }
+            mDelayuS(1);
+            GPIOB_SetBits(RTC_SCLK_PIN);
+            mDelayuS(1);
+            GPIOB_ResetBits(RTC_SCLK_PIN);
+            mDelayuS(1);
+        }
+        if(command & 1U) data[i] = value;
+    }
+    GPIOB_ResetBits(RTC_CE_PIN);
+    mDelayuS(4);
+    GPIOB_ModeCfg(RTC_IO_PIN, GPIO_ModeIN_PD);
 }
-//??60M????????????? 131072/60000000*255=0.557056s?
+
+static uint8_t rtc_bcd(uint8_t value)
+{
+    if((value & 15U) > 9U || (value >> 4) > 9U) return 0xffU;
+    return (uint8_t)((value >> 4) * 10U + (value & 15U));
+}
+
+static uint8_t rtc_read_timestamp(uint32_t *timestamp)
+{
+    uint8_t data[8];
+    time_fields_t fields;
+    rtc_transfer(0xbfU, data, sizeof(data));
+    /* WP readback distinguishes a disconnected bus from an unset calendar. */
+    if(data[7] != 0x80U) { Dev.errorCode.bit.rtc = 1U; return 0U; }
+    if(data[0] & 0x80U) return 0U; /* oscillator halted: needs synchronisation */
+    fields.second = rtc_bcd(data[0]);
+    fields.minute = rtc_bcd(data[1]);
+    fields.hour = rtc_bcd(data[2] & 0x3fU);
+    if(data[2] & 0x40U) return 0U;
+    if(data[2] & 0x80U) {
+        fields.hour = rtc_bcd(data[2] & 0x1fU);
+        if(fields.hour < 1U || fields.hour > 12U) return 0U;
+        fields.hour = fields.hour % 12U + ((data[2] & 0x20U) ? 12U : 0U);
+    }
+    fields.day = rtc_bcd(data[3]);
+    fields.month = rtc_bcd(data[4]);
+    fields.year = 2000U + rtc_bcd(data[6]);
+    return data[5] >= 1U && data[5] <= 7U &&
+           TimeUtil_ToUnix(&fields, timestamp) && *timestamp >= 1672531200U;
+}
+//主频60M，看门狗超时复位最长时间为 131072/60000000*255=0.557056s?
 void WWDG_Init(void){
-    WWDG_SetCounter(0);//??
-    WWDG_ClearFlag();//??????
-    WWDG_ResetCfg(ENABLE);//???????
+    WWDG_SetCounter(0);//喂狗
+    WWDG_ClearFlag();//清除标志位
+    WWDG_ResetCfg(ENABLE);//使能看门狗复位
 }
 
 void WWDG_Refresh(void){
-    WWDG_SetCounter(0);//??
+    WWDG_SetCounter(0);//喂狗
 }
 
-// ***??!!! ???????????,????tmos?????RTC_InitTime()??????. 
-void RTC_SetTimestamp(uint32_t timestamp)
+/* Only the external calendar is adjusted. Internal RTC belongs to BLE/TMOS. */
+uint8_t RTC_SetTimestamp(uint32_t timestamp)
 {
     time_fields_t fields;
-    uint32_t hardwareTimestamp;
-    uint32_t delta;
-    if ((timestamp < 1672531200u) || (timestamp > 2147483000u)) { //2023-01-01 00:00:00 ~ 2038-01-19 11:03:20
-        PRINT("RTC_SetTimestamp: invalid timestamp %lu\r\n", timestamp);
-        return;
-    }
-    if(!TimeUtil_FromUnix(timestamp, &fields)) {
-        PRINT("RTC_SetTimestamp: conversion failed %lu\r\n", timestamp);
-        return;
-    }
-
-    PRINT("set ts:%lu -> %04u-%02u-%02u %02u:%02u:%02u\r\n",
-          timestamp, fields.year, fields.month, fields.day,
-          fields.hour, fields.minute, fields.second);
-
-    if(!rtc_read_hardware_timestamp(&hardwareTimestamp)) {
-        PRINT("RTC_SetTimestamp: hardware time invalid\r\n");
-        return;
-    }
-
-    /*
-     * BLE/TMOS uses the hardware RTC counter as its scheduler time base.
-     * Keep that counter monotonic and represent wall-clock synchronisation as
-     * a software offset. Reinitialising either RTC or BLE here breaks active
-     * connections and duplicates protocol-stack tasks.
-     */
-    if(timestamp >= hardwareTimestamp) {
-        delta = timestamp - hardwareTimestamp;
-        if(delta > 0x7fffffffUL) {
-            PRINT("RTC_SetTimestamp: offset out of range\r\n");
-            return;
-        }
-        rtcUnixOffset = (int32_t)delta;
-    } else {
-        delta = hardwareTimestamp - timestamp;
-        if(delta > 0x7fffffffUL) {
-            PRINT("RTC_SetTimestamp: offset out of range\r\n");
-            return;
-        }
-        rtcUnixOffset = -(int32_t)delta;
-    }
-    LocalTimestamp = timestamp;
-    rtcTimeValid = 1;
-    PRINT("RTC software offset=%ld\r\n", (long)rtcUnixOffset);
+    uint32_t verified;
+    uint8_t data[8], control = 0U;
+    uint8_t values[7], i;
+    if(timestamp < 1672531200U || !TimeUtil_FromUnix(timestamp, &fields)) return 0U;
+    values[0] = fields.second; values[1] = fields.minute; values[2] = fields.hour;
+    values[3] = fields.day; values[4] = fields.month;
+    values[5] = (uint8_t)((timestamp / 86400U + 4U) % 7U + 1U);
+    values[6] = (uint8_t)(fields.year - 2000U);
+    for(i = 0U; i < 7U; i++) data[i] = (values[i] / 10U << 4) | (values[i] % 10U);
+    data[7] = 0x80U; /* restore write protection in the same clock burst */
+    rtc_transfer(0x8eU, &control, 1U);
+    rtc_transfer(0x90U, &control, 1U); /* never charge a primary backup battery */
+    rtc_transfer(0xbeU, data, sizeof(data));
+    rtcTimeValid = rtc_read_timestamp(&verified) && verified >= timestamp && verified <= timestamp + 1U;
+    Dev.errorCode.bit.rtc = !rtcTimeValid;
+    if(!rtcTimeValid) { PRINT("External RTC write/readback failed\r\n"); return 0U; }
+    LocalTimestamp = verified;
+    rtcPolled = 1U;
+    rtcPollTick = rtcChangeTick = CurTick;
+    PRINT("External RTC synced: %lu\r\n", (unsigned long)verified);
+    return 1U;
 }
 
-void RTC_ProductInit(uint8_t resetReason, uint32_t retainedTimestamp)
+void RTC_ProductInit(void)
 {
-    if(resetReason != RST_STATUS_RPOR &&
-       retainedTimestamp >= 1672531200u && retainedTimestamp <= 2147483000u) {
-        RTC_SetTimestamp(retainedTimestamp);
-        rtcTimeValid = 1;
-        PRINT("RTC retained after reset: %lu\r\n", retainedTimestamp);
-        return;
-    }
-
-    /* 真正掉电后没有可信时钟，先给 RTC 安全基准，等待 LoRa 或 4G 对时。 */
-    RTC_SetTimestamp(1767225600u); /* 2026-01-01 00:00:00 */
-    rtcTimeValid = 0;
-    PRINT("RTC waiting for remote time sync\r\n");
+    uint8_t control = 0U;
+    GPIOB_ResetBits(RTC_CE_PIN | RTC_SCLK_PIN);
+    GPIOB_ModeCfg(RTC_CE_PIN | RTC_SCLK_PIN, GPIO_ModeOut_PP_5mA);
+    GPIOB_ModeCfg(RTC_IO_PIN, GPIO_ModeIN_PD);
+    rtcTimeValid = rtcPolled = 0U;
+    LocalTimestamp = 0U;
+    rtcChangeTick = CurTick;
+    Dev.errorCode.bit.rtc = 0U;
+    rtc_transfer(0x8eU, &control, 1U);
+    rtc_transfer(0x90U, &control, 1U);
+    control = 0x80U;
+    rtc_transfer(0x8eU, &control, 1U);
+    Rtc_GetTimestamp();
+    PRINT("External RTC PB2/PB18/PB19: valid=%u fault=%u time=%lu\r\n",
+          rtcTimeValid, Dev.errorCode.bit.rtc, (unsigned long)LocalTimestamp);
 }
 
 uint8_t RTC_IsTimeValid(void)
@@ -115,20 +157,27 @@ uint8_t RTC_IsTimeValid(void)
     return rtcTimeValid;
 }
 
-//???????
+//获取RTC时间戳
 uint32_t Rtc_GetTimestamp(void){
-    uint32_t hardwareTimestamp;
-    uint32_t magnitude;
-
-    if(!rtc_read_hardware_timestamp(&hardwareTimestamp)) return LocalTimestamp;
-    if(rtcUnixOffset >= 0) {
-        magnitude = (uint32_t)rtcUnixOffset;
-        if(hardwareTimestamp > (0xffffffffUL - magnitude)) return LocalTimestamp;
-        return hardwareTimestamp + magnitude;
+    uint32_t timestamp;
+    if(rtcPolled && (uint32_t)(CurTick - rtcPollTick) < 1000U) return LocalTimestamp;
+    rtcPolled = 1U;
+    rtcPollTick = CurTick;
+    if(!rtc_read_timestamp(&timestamp)) {
+        if(rtcTimeValid) Dev.errorCode.bit.rtc = 1U;
+        rtcTimeValid = 0U;
+        return LocalTimestamp;
     }
-    magnitude = (uint32_t)(-rtcUnixOffset);
-    if(hardwareTimestamp < magnitude) return LocalTimestamp;
-    return hardwareTimestamp - magnitude;
+    if(timestamp != LocalTimestamp) rtcChangeTick = CurTick;
+    if((uint32_t)(CurTick - rtcChangeTick) >= 3000U) {
+        Dev.errorCode.bit.rtc = 1U; /* plausible calendar but oscillator not ticking */
+        rtcTimeValid = 0U;
+        return LocalTimestamp;
+    }
+    LocalTimestamp = timestamp;
+    rtcTimeValid = 1U;
+    Dev.errorCode.bit.rtc = 0U;
+    return timestamp;
 }
 
 uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *mon, uint16_t *day,
@@ -136,8 +185,8 @@ uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *mon, uint16_t *day,
 {
     time_fields_t fields;
     uint32_t timestamp = Rtc_GetTimestamp();
-    /* RTC keeps UTC; weekly policies and daily reset use site time (UTC+8). */
-    if(timestamp > 2147483000UL - 8UL * 3600UL ||
+    /* External RTC keeps UTC; weekly policies use site time (UTC+8). */
+    if(!rtcTimeValid || timestamp > 2147483000UL - 8UL * 3600UL ||
        !TimeUtil_FromUnix(timestamp + 8UL * 3600UL, &fields)) return 0;
     if(year) *year = fields.year;
     if(mon) *mon = fields.month;
@@ -186,7 +235,7 @@ void Period_1s(void){
         Rule_Pro();       //规则引擎: 每秒评估一次触发条件
         Meter_Update(1);  //计量更新: 汇总 HLW8110 累计电量
         /*
-         * 每分钟输出一条机器可解析的健康心跳，供 7 天实验室工具判断
+         * 每分钟输出一条机器可解析的健康心跳
          * 重启、配置漂移、队列滞留、控制成功率和外设恢复情况。
          * 单行输出不会进入网关协议，也不增加 Flash 擦写。
          */
@@ -219,20 +268,6 @@ void Period_1s(void){
         }
 #endif
 
-        // 每天00:00重置规则的executed标志
-        {
-            static uint8_t last_day = 0;
-            uint16_t y, m, d, h, mi, s;
-            if (!RTC_IsTimeValid() ||
-                !RTC_GetWallTime(&y, &m, &d, &h, &mi, &s)) {
-                last_day = 0;
-            } else if (last_day == 0) {
-                last_day = d;
-            } else if (d != last_day) {
-                Rule_DailyReset();
-                last_day = d;
-            }
-        }
     }
 }
 

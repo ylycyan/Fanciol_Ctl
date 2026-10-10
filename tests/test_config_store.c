@@ -575,7 +575,7 @@ static void test_connectivity_power_loss_keeps_previous_slot(void)
     assert(strcmp(Connectivity_Get()->mqtt_host, "broker.example.com") == 0);
 }
 
-static void test_device_uid_format_is_required_for_cellular(void)
+static void test_device_uid_bounds_are_required_for_cellular(void)
 {
     connectivity_config_t next;
     reset_flash();
@@ -585,9 +585,35 @@ static void test_device_uid_format_is_required_for_cellular(void)
     strcpy(next.mqtt_host, "broker.example.com");
     assert(Connectivity_Save(&next) == DEVICE_STATUS_INVALID_ARG);
     strcpy(next.device_id, "A26131001");
-    assert(Connectivity_Save(&next) == DEVICE_STATUS_INVALID_ARG);
+    assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
     strcpy(next.device_id, "A26091001");
     assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
+}
+
+static void test_custom_device_uid_prefix_recovery(void)
+{
+    const uint8_t prefix[] = {'B', 'A', 'F'};
+    reset_flash();
+    assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    Dev.nodeId = 0x1421U;
+    assert(DeviceUid_SavePrefix(prefix, sizeof(prefix)) == DEVICE_STATUS_OK);
+    assert(strcmp(DeviceUid_Get(), "BAF1421") == 0);
+    assert(DeviceUid_Valid(DeviceUid_Get()));
+    Dev.nodeId = 0x00AFU;
+    assert(strcmp(DeviceUid_Get(), "BAF00AF") == 0);
+    assert(Connectivity_Load() == DEVICE_STATUS_OK);
+    assert(strcmp(DeviceUid_Get(), "BAF00AF") == 0);
+    fail_on(FAIL_WRITE, 1, 1);
+    assert(DeviceUid_SavePrefix((const uint8_t *)"AA", 2) != DEVICE_STATUS_OK);
+    clear_failure();
+    assert(Connectivity_Load() == DEVICE_STATUS_OK);
+    assert(strcmp(DeviceUid_Get(), "BAF00AF") == 0);
+    assert(DeviceUid_SavePrefix(0, 0) == DEVICE_STATUS_OK);
+    assert(strcmp(DeviceUid_Get(), "00AF") == 0);
+    assert(DeviceUid_SavePrefix((const uint8_t *)"123456", 6) == DEVICE_STATUS_INVALID_ARG);
+    assert(DeviceUid_SavePrefix((const uint8_t *)"A\0B", 3) == DEVICE_STATUS_INVALID_ARG);
+    assert(DeviceUid_SavePrefix((const uint8_t *)"A2613", 5) == DEVICE_STATUS_OK);
+    assert(strcmp(DeviceUid_Get(), "A261300AF") == 0);
 }
 
 int main(void)
@@ -603,7 +629,8 @@ int main(void)
     test_connectivity_round_trip();
     test_connectivity_v4_migrates_to_current_mqtt_defaults();
     test_connectivity_power_loss_keeps_previous_slot();
-    test_device_uid_format_is_required_for_cellular();
+    test_device_uid_bounds_are_required_for_cellular();
+    test_custom_device_uid_prefix_recovery();
     puts("Config/runtime/IR/connectivity power-loss recovery: PASS");
     return 0;
 }

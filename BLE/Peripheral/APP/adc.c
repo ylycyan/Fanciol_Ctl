@@ -163,13 +163,15 @@ uint16_t ADC_GetHumidityX10(void){ return humidityX10; }
 uint16_t ADC_GetSht40Errors(void){ return sht40Errors; }
 
 void ADC_Pro(void){
-    static uint32_t lastSampStamp = 0;
+    static uint32_t lastSampleTick = 0;
+    static uint8_t sampled = 0U;
     int16_t temperatureX10;
 
     if(sht40Pending) {
         if((uint32_t)(CurTick - sht40StartedMs) < SHT40_MEASURE_TIME_MS) return;
         sht40Pending = 0U;
-        lastSampStamp = LocalTimestamp;
+        lastSampleTick = CurTick;
+        sampled = 1U;
         if(sht40_read(&temperatureX10, &humidityX10)) {
             Dev.roomTempX10 = temperatureX10;
             adcValid = 1U;
@@ -192,12 +194,8 @@ void ADC_Pro(void){
         }
         return;
     }
-    /*
-     * RTC 可能被网关向前或向后校时，不能把无符号差值强转 int 后再 abs：
-     * 大跨度校时会溢出。回拨时立即重新采样，正常情况下按间隔限频。
-     */
-    if(lastSampStamp != 0u && LocalTimestamp >= lastSampStamp &&
-       (LocalTimestamp - lastSampStamp) < AD_INTERVAL){
+    /* Sensor polling must continue even when the external calendar stops. */
+    if(sampled && (uint32_t)(CurTick - lastSampleTick) < AD_INTERVAL * 1000U){
         return;
     }
     if(sht40_begin()) {
@@ -206,7 +204,8 @@ void ADC_Pro(void){
         return;
     }
 
-    lastSampStamp = LocalTimestamp;
+    lastSampleTick = CurTick;
+    sampled = 1U;
     if(sht40Errors != 0xffffU) sht40Errors++;
     if(ntc_sample(&temperatureX10)) {
         Dev.roomTempX10 = temperatureX10;

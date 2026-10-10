@@ -121,6 +121,10 @@ static void test_relay_inner_round_trip_and_rejection(void)
 
 int main(void)
 {
+    /* MQTT 管理帧也使用固定网关的一字节累加校验，不使用 BLE CRC16。 */
+    static const uint8_t management[] = {0xC7,0x01,0x08,0x01,0x34,0x12,0x02,0x00,0x05,0x06,0x10};
+    assert(GatewayLora_Validate(management, sizeof(management)));
+    assert(GatewayLora_Checksum(management, sizeof(management) - 1U) == 0x10U);
     test_splitac_unified_report();
     test_relay_is_also_a_normal_gateway_node();
     test_channel_matches_fixed_gateway_radio_table();

@@ -119,7 +119,7 @@ static uint8_t pending_command;
 static uint8_t request_active;
 static uint8_t rx_failure_reason;
 static uint32_t rx_failure_detail;
-/* A sample is published only after power/current/voltage all pass validation. */
+/* A sample is published only after power/current/voltage/energy all pass validation. */
 static uint16_t sample_power_w_x10;
 static uint16_t sample_current_ma;
 static uint16_t sample_voltage_dv;
@@ -467,7 +467,21 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
             reject_sample(now, HLW8110_ERROR_VOLTAGE_RANGE, raw);
             return;
         }
-        /* 三个量全部通过校验后才发布本轮采样 */
+        meter_state = HLW_STATE_SAMPLE_ENERGY;
+        break;
+    case HLW_STATE_SAMPLE_ENERGY:
+        raw = parse_be24(response);
+        if(discard_next_energy) {
+            /* 清零边界前的芯片脉冲不能重新计入新的累计值。 */
+            discard_next_energy = 0U;
+            energy_fraction = 0U;
+        } else if(raw != 0U) {
+            uint64_t delta = HLW8110_CalcEnergyTenthWattSeconds(raw, energy_ac, hfconst,
+                                                                &energy_fraction);
+            if(UINT64_MAX - pending_energy_tenth_ws < delta) pending_energy_tenth_ws = UINT64_MAX;
+            else pending_energy_tenth_ws += delta;
+        }
+        /* 整轮（包括电量）成功后才发布并清除连续故障，不能掩盖电量读失败。 */
         meter_status.power_w_x10 = sample_power_w_x10;
         meter_status.current_ma = sample_current_ma;
         meter_status.voltage_dv = sample_voltage_dv;
@@ -483,20 +497,6 @@ static void service_read_state(uint8_t reg, uint8_t bytes, uint32_t now)
         meter_status.last_sample_ms = now;
         Dev.loadPower = meter_status.power_w_x10;
         Dev.errorCode.bit.power = 0;
-        meter_state = HLW_STATE_SAMPLE_ENERGY;
-        break;
-    case HLW_STATE_SAMPLE_ENERGY:
-        raw = parse_be24(response);
-        if(discard_next_energy) {
-            /* 清零边界前的芯片脉冲不能重新计入新的累计值。 */
-            discard_next_energy = 0U;
-            energy_fraction = 0U;
-        } else if(raw != 0U) {
-            uint64_t delta = HLW8110_CalcEnergyTenthWattSeconds(raw, energy_ac, hfconst,
-                                                                &energy_fraction);
-            if(UINT64_MAX - pending_energy_tenth_ws < delta) pending_energy_tenth_ws = UINT64_MAX;
-            else pending_energy_tenth_ws += delta;
-        }
         meter_state = HLW_STATE_IDLE;
         next_sample_ms = now + HLW_SAMPLE_INTERVAL_MS;
         break;

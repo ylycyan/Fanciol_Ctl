@@ -94,6 +94,7 @@ uint8_t Connectivity_Validate(const connectivity_config_t *config);
 const connectivity_config_t *Connectivity_Get(void);
 uint8_t DeviceUid_Valid(const char *uid);
 const char *DeviceUid_Get(void);
+uint8_t DeviceUid_SavePrefix(const uint8_t *prefix, uint16_t length);
 uint8_t Connectivity_Encode(uint8_t *payload, uint16_t capacity, uint16_t *length);
 uint8_t Connectivity_Decode(const uint8_t *payload, uint16_t length,
                               connectivity_config_t *config);

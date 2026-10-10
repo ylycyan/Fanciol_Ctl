@@ -17,6 +17,7 @@ static volatile uint16_t irTxOffset = 0;
 static volatile uint8_t irTxActive = 0;
 static volatile uint8_t irTxWaitResponse = 0;
 static uint32_t irOperationDeadline = 0;
+static uint32_t irTxDeadline;
 static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd);
 #define IR_PROFILE_COMMANDS_MAX 4U
 static IR_CMD_t irProfileCommands[IR_PROFILE_COMMANDS_MAX];
@@ -49,6 +50,7 @@ static uint8_t Ir_TxStartCopy(const uint8_t *data,
     irTxOffset = 0U;
     irTxWaitResponse = waitResponse ? 1U : 0U;
     irTxActive = 1U;
+    irTxDeadline = CurTick + 2000U; /* 最大 256 字节，2 秒远大于正常 UART 发送时间。 */
     IrBuf.isFinish = 0U;
     irPipelineHighWater = 1U;
 
@@ -74,7 +76,17 @@ void Ir_Pro(void)
      * 匹配、学习、原始透传以及正在发送的长帧拥有红外模块独占权。
      * 旧逻辑在“尚未收到第一个字节”时会误发规则命令并覆盖 IrBuf.type。
      */
-    if(irTxActive) return;
+    if(irTxActive) {
+        if((int32_t)(CurTick - irTxDeadline) >= 0) {
+            if(IrBuf.type == IR_TYPE_MATCH) IrBuf.matchError = 1U;
+            if(IrBuf.type == IR_TYPE_LEARNing) IrBuf.learnError = 1U;
+            PRINT("IR operation timeout: tx type=%u\r\n", IrBuf.type);
+            PFIC_DisableIRQ(UART3_IRQn);
+            Ir_TxAbort();
+            IR_Init(); /* 清理 FIFO 和场景剩余动作，释放忙状态后允许下一次请求。 */
+        }
+        return;
+    }
     if(!IrBuf.isFinish) {
         if(irOperationDeadline != 0U &&
            (int32_t)(CurTick - irOperationDeadline) >= 0) {

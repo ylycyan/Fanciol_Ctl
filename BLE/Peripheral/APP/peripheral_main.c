@@ -118,11 +118,9 @@ int main(void)
 int main(void)
 {
     uint8_t retainedResetReason;
-    uint32_t retainedTimestamp;
     SetSysClock(CLK_SOURCE_PLL_60MHz);
     Ml307_EarlyPowerOff();
     retainedResetReason = (uint8_t)SYS_GetLastResetSta();
-    retainedTimestamp = Rtc_GetTimestamp();
     //timer0 init
     TMR0_TimerInit(FREQ_SYS / 100);         // TIM0 ?10ms???????
     TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);        //enable peripheral interrupt
@@ -156,8 +154,6 @@ int main(void)
 #else
     PRINT("BLE RTC clock: internal 32.768 kHz RC\r\n");
 #endif
-    RTC_ProductInit(retainedResetReason, retainedTimestamp);
-    LocalTimestamp = Rtc_GetTimestamp();
     /*
      * DataFlash contains the production device ID used as the complete BLE
      * name.  Load it before the GAP role builds its first advertising packet;
@@ -166,6 +162,7 @@ int main(void)
      * fallback visible until the next power cycle.
      */
     LoadDevInfo();
+    RTC_ProductInit();
     GAPRole_PeripheralInit();
     Peripheral_Init();
     Ota_Init();

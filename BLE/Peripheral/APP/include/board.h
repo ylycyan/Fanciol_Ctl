@@ -296,7 +296,7 @@ typedef struct{
     LoraStatus_t loraStatus; // lora状态
     uint32_t lastReportTime; // 上次上报时间戳
     uint32_t lastOnTime; // 上次空调开机时间，用于最短启停间隔
-    uint32_t lastPowerChange; // 最近一次已提交开/关命令时间，用于跨复位保持最短启停间隔
+    uint32_t lastPowerChange; // 最近一次控制时间，仅作运行记录；保护间隔使用单调时钟
     uint32_t loraFrequencyHz; // LoRa 当前频率，单位 Hz
     uint16_t gatewayId; //网关Id
     uint8_t scanCycle; //数据上报周期
@@ -324,7 +324,7 @@ typedef struct{
     uint8_t loraRegisterBw;
     uint8_t loraListenSf;
     uint8_t loraListenBw;
-    union{  // 硬件故障码：bit0 LoRa、bit3 温度采集、bit4 计量、bit5 Flash；bit1/2 保留兼容旧位定义
+    union{  // 硬件故障码：bit0 LoRa、bit3 温度采集、bit4 计量、bit5 Flash、bit6 外部RTC；bit1/2 保留
         uint16_t u16Val; 
         struct{
             uint16_t lora:1; // LoRa 硬件/SPI异常
@@ -333,6 +333,7 @@ typedef struct{
             uint16_t ad:1; // ad转换异常
             uint16_t power:1; // 功率转换异常
             uint16_t flash:1; //flash(内部eeprom)操作异常
+            uint16_t rtc:1; // DS1302 外部时钟读写/停走异常
         }bit;
     }errorCode;
 }t_dev;
@@ -414,7 +415,9 @@ extern uint16_t ADC_GetSht40Errors(void);
 extern void LED_Pro(void);
 extern void LED_NotifyIrTx(void);
 extern void Rule_Pro(void);
-extern void Rule_DailyReset(void);
+extern void Rule_Reset(void);
+extern void Rule_RecordPowerChange(void);
+extern uint8_t Rule_WindowsOverlap(const DEV_RULE_T *a, const DEV_RULE_T *b);
 extern void Meter_Update(uint32_t dt_sec);
 extern uint8_t Meter_ClearEnergy(void);
 extern volatile uint32_t CurTick;

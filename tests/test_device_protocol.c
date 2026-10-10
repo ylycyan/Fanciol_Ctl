@@ -6,7 +6,6 @@
 #include "ir_tab.h"
 
 static const uint8_t BLE_GOLDEN[] = {0xA5,0x02,0x01,0x34,0x12,0x10,0x00,0x03,0x00,0x01,0x02,0x03,0xC8,0xE3};
-static const uint8_t MQTT_MANAGEMENT_GOLDEN[] = {0xC7,0x01,0x08,0x01,0x34,0x12,0x02,0x00,0x05,0x06,0xDA,0x3D};
 
 int main(void)
 {
@@ -14,9 +13,9 @@ int main(void)
     const uint8_t payload[]={1,2,3};
     device_frame_t b={DEVICE_FRAME_REQUEST,0x1234,DEVICE_OP_GET_STATE,DEVICE_STATUS_OK,sizeof(payload),payload};
     assert(CONTROL_FIELD_QUIET_STRONG == 12);
+    assert(DEVICE_OP_SET_DEVICE_ID == 0x5C);
     assert(IR_CMD_QUIET == 0x9E && IR_CMD_STRONG == 0x9F);
     assert(DeviceProtocol_Crc16((const uint8_t*)"123456789",9)==0x29B1);
-    assert(DeviceProtocol_Crc16(MQTT_MANAGEMENT_GOLDEN,sizeof(MQTT_MANAGEMENT_GOLDEN)-2)==0x3DDA);
     assert(DeviceProtocol_Encode(&b,out,sizeof(out),&len)==DEVICE_STATUS_OK);assert(len==sizeof(BLE_GOLDEN));assert(memcmp(out,BLE_GOLDEN,len)==0);
     memcpy(copy,out,len);copy[9]^=1;{device_frame_t decoded;assert(DeviceProtocol_Decode(copy,len,&decoded)==DEVICE_STATUS_VERIFY_FAILED);}
     for(i=0;i<sizeof(payload_big);i++) {

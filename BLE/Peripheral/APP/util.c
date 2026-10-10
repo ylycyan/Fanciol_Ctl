@@ -553,7 +553,7 @@ static uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t p
         case 21:
             if(Dev.onOff != PowerOn) {
                 if(Dev.meter.onoff_count != 0xFFFFU) Dev.meter.onoff_count++;
-                Dev.lastPowerChange = LocalTimestamp;
+                Rule_RecordPowerChange();
             }
             Dev.onOff = PowerOn;
             Dev.lastOnTime = LocalTimestamp;
@@ -561,7 +561,7 @@ static uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t p
         case 22:
             if(Dev.onOff != PowerOff) {
                 if(Dev.meter.onoff_count != 0xFFFFU) Dev.meter.onoff_count++;
-                Dev.lastPowerChange = LocalTimestamp;
+                Rule_RecordPowerChange();
             }
             Dev.onOff = PowerOff;
             break;
@@ -861,11 +861,10 @@ void Lora_Pro(void)
             if(cmd == LORA_CMD_TIME_SYNC) {
                 uint32_t gatewayTimestamp = len >= 9 ? Lora_GetU32Le(LoraBuf + 4) : LocalTimestamp;
                 if(len >= 9 &&
-                   ((gatewayTimestamp > LocalTimestamp + 3) ||
+                   (!RTC_IsTimeValid() || (gatewayTimestamp > LocalTimestamp + 3) ||
                     (LocalTimestamp > gatewayTimestamp + 3))) {
                     PRINT("RTC update %ld -> %ld\n", LocalTimestamp, gatewayTimestamp);
-                    LocalTimestamp = gatewayTimestamp;
-                    RTC_SetTimestamp(LocalTimestamp);
+                    RTC_SetTimestamp(gatewayTimestamp);
                 }
                 if(Dev.linkRole == LINK_RELAY) Relay_ForwardBroadcast(LoraBuf, len);
                 else Lora_Listening();

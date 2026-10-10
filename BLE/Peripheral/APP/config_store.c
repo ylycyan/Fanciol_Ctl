@@ -827,31 +827,41 @@ static uint8_t connectivity_topic_valid(const char *value, uint16_t capacity)
 uint8_t DeviceUid_Valid(const char *uid)
 {
     uint8_t index;
-    if(!uid || uid[0] != 'A' || uid[DEVICE_UID_LENGTH] != '\0') return 0U;
-    for(index = 1U; index < 5U; ++index) {
-        if(uid[index] < '0' || uid[index] > '9') return 0U;
-    }
-    if((uid[3] != '0' && uid[3] != '1') ||
-       (uid[3] == '0' && uid[4] == '0') ||
-       (uid[3] == '1' && (uid[4] < '0' || uid[4] > '2'))) return 0U;
-    for(index = 5U; index < DEVICE_UID_LENGTH; ++index) {
-        if(!((uid[index] >= '0' && uid[index] <= '9') ||
-             (uid[index] >= 'A' && uid[index] <= 'F'))) return 0U;
-    }
-    if(memcmp(uid + 5U, "0000", 4U) == 0) return 0U;
-    return 1U;
+    if(!uid) return 0U;
+    /* The client validates the hex prefix; MCU only checks storage bounds. */
+    for(index = 0U; index < DEVICE_UID_SIZE; index++)
+        if(uid[index] == '\0') return index >= 4U;
+    return 0U;
 }
 
 const char *DeviceUid_Get(void)
 {
     static const char hex[] = "0123456789ABCDEF";
     char *uid = connectivity_config.device_id;
+    uint8_t offset;
     if(!DeviceUid_Valid(uid)) return uid;
-    uid[5] = hex[(Dev.nodeId >> 12) & 0x0FU];
-    uid[6] = hex[(Dev.nodeId >> 8) & 0x0FU];
-    uid[7] = hex[(Dev.nodeId >> 4) & 0x0FU];
-    uid[8] = hex[Dev.nodeId & 0x0FU];
+    offset = (uint8_t)(strlen(uid) - 4U);
+    uid[offset] = hex[(Dev.nodeId >> 12) & 0x0FU];
+    uid[offset + 1U] = hex[(Dev.nodeId >> 8) & 0x0FU];
+    uid[offset + 2U] = hex[(Dev.nodeId >> 4) & 0x0FU];
+    uid[offset + 3U] = hex[Dev.nodeId & 0x0FU];
     return uid;
+}
+
+uint8_t DeviceUid_SavePrefix(const uint8_t *prefix, uint16_t length)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    connectivity_config_t next;
+    uint8_t i;
+    if(length > DEVICE_UID_LENGTH - 4U || (length && (!prefix || memchr(prefix, 0, length))))
+        return DEVICE_STATUS_INVALID_ARG;
+    (void)DeviceUid_Get();
+    memcpy(&next, &connectivity_config, sizeof(next));
+    memset(next.device_id, 0, sizeof(next.device_id));
+    if(length) memcpy(next.device_id, prefix, length);
+    for(i = 0U; i < 4U; i++)
+        next.device_id[length + i] = hex[(Dev.nodeId >> (12U - i * 4U)) & 15U];
+    return Connectivity_Save(&next);
 }
 
 static uint8_t connectivity_record_erased(const connectivity_record_t *record)

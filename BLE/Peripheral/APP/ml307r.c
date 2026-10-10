@@ -116,6 +116,7 @@ typedef struct {
     uint8_t management_pending;
     uint8_t publishing_management;
     uint8_t management_length;
+    uint8_t publishing_management_length;
     uint8_t http_step;
     uint8_t http_id;
     uint8_t http_raw_state;
@@ -155,6 +156,8 @@ static char rx_line[ML307_LINE_SIZE];
 static char tx_buffer[ML307_TX_SIZE];
 static uint16_t device_jitter_ms;
 static uint8_t management_frame[ML307_MGMT_TX_FRAME];
+/* 一个在途快照 + 一个待发响应；不动态分配，不覆盖正在发送的内容。 */
+static uint8_t publishing_management_frame[ML307_MGMT_TX_FRAME];
 static uint8_t http_raw_data[240] __attribute__((aligned(4)));
 
 static void queue_ota_status(uint16_t transaction, uint8_t status);
@@ -372,8 +375,7 @@ static void enter_backoff(ml307_error_t error)
         modem.pending_command_valid = 1U;
         modem.publishing_command_valid = 0U;
     }
-    /* 管理帧本体仍由 management_pending 保存，重连后从头发布。 */
-    modem.publishing_management = 0U;
+    /* 保留在途管理快照，重连后优先从头重发，不清掉随后到达的响应。 */
     if(error == ML307_ERROR_MQTT || error == ML307_ERROR_BROKER_AUTH ||
        error == ML307_ERROR_SUBSCRIBE || error == ML307_ERROR_PUBLISH ||
        error == ML307_ERROR_TIMEOUT) {
@@ -726,8 +728,13 @@ static uint8_t start_publish(void)
     uint16_t payload_length;
     uint16_t length = 0U;
 
-    modem.publishing_management = modem.management_pending;
-    if(modem.publishing_management) frame_length = modem.management_length;
+    if(!modem.publishing_management && modem.management_pending) {
+        modem.publishing_management_length = modem.management_length;
+        memcpy(publishing_management_frame, management_frame, modem.management_length);
+        modem.management_pending = 0U;
+        modem.publishing_management = 1U;
+    }
+    if(modem.publishing_management) frame_length = modem.publishing_management_length;
     else {
         modem.publishing_command_valid = modem.pending_command_valid;
         modem.publishing_command_result = modem.pending_command_result;
@@ -756,8 +763,8 @@ static uint8_t send_publish_payload(void)
     uint8_t frame[ML307_MQTT_FRAME_SIZE];
     uint8_t frame_length;
     if(modem.publishing_management) {
-        frame_length = modem.management_length;
-        memcpy(tx_buffer, management_frame, frame_length);
+        frame_length = modem.publishing_management_length;
+        memcpy(tx_buffer, publishing_management_frame, frame_length);
     } else {
         frame_length = build_publish_frame(frame);
         memcpy(tx_buffer, frame, frame_length);
@@ -772,12 +779,13 @@ static uint8_t topic_matches(const char *topic, uint8_t topic_length)
 {
     const char *pattern = Connectivity_Get()->subscribe_topic;
     const char *uid = DeviceUid_Get();
+    uint8_t uid_length = (uint8_t)strlen(uid);
     uint16_t offset = 0U;
     while(*pattern) {
         if(strncmp(pattern, "{uid}", 5U) == 0) {
-            if((uint16_t)(offset + DEVICE_UID_LENGTH) > topic_length ||
-               memcmp(topic + offset, uid, DEVICE_UID_LENGTH) != 0) return 0U;
-            offset = (uint16_t)(offset + DEVICE_UID_LENGTH);
+            if((uint16_t)(offset + uid_length) > topic_length ||
+               memcmp(topic + offset, uid, uid_length) != 0) return 0U;
+            offset = (uint16_t)(offset + uid_length);
             pattern += 5;
         } else {
             if(offset >= topic_length || topic[offset++] != *pattern++) return 0U;
@@ -815,7 +823,7 @@ static void queue_management_frame(uint8_t type, uint16_t transaction,
                                    const uint8_t *payload, uint8_t payload_length)
 {
     uint16_t total = (uint16_t)payload_length + 9U;
-    if(total > sizeof(management_frame)) return;
+    if(total > sizeof(management_frame) || modem.management_pending) return;
     management_frame[0] = ML307_MGMT_MAGIC;
     management_frame[1] = ML307_MGMT_VERSION;
     management_frame[2] = type;
@@ -854,6 +862,8 @@ static void handle_management(const uint8_t *frame, uint16_t length)
        length != payload_length + 9U ||
        frame[8U + payload_length] !=
        GatewayLora_Checksum(frame, (uint16_t)payload_length + 8U)) return;
+    /* 待发槽满时不执行新的管理操作；请求端必须串行等待结果再发送下一条。 */
+    if(modem.management_pending) return;
     switch(type) {
     case ML307_MGMT_OTA_OFFER:
         /* version:u32, size:u32, crc32:u32, urlLength:u8, URL */
@@ -1063,10 +1073,13 @@ static void complete_publish(void)
 {
     if(modem.status.publish_count != 0xFFFFU) modem.status.publish_count++;
     if(modem.publishing_management) {
-        modem.management_pending = 0U;
         modem.publishing_management = 0U;
         modem.waiting = 0U;
-        if(modem.ota_activate_after_publish) {
+        if(modem.ota_activate_after_publish &&
+           modem.publishing_management_length == 11U &&
+           publishing_management_frame[2] == ML307_MGMT_RESULT &&
+           publishing_management_frame[8] == ML307_MGMT_OTA_ACTIVATE &&
+           publishing_management_frame[9] == DEVICE_STATUS_OK) {
             modem.ota_activate_after_publish = 0U;
             SYS_DisableAllIrq(NULL);
             mDelaymS(10);
@@ -1723,7 +1736,7 @@ void Ml307_Init(void)
     memset(&modem, 0, sizeof(modem));
     modem.ota_reported_bytes = Ota_Get()->downloaded_bytes;
     device_jitter_ms = (uint16_t)(DeviceProtocol_Crc16(
-        (const uint8_t *)DeviceUid_Get(), DEVICE_UID_LENGTH) % 5000U);
+        (const uint8_t *)DeviceUid_Get(), (uint16_t)strlen(DeviceUid_Get())) % 5000U);
     modem.status.signal_rssi = -127;
     modem.status.rsrp_dbm = -127;
     modem.status.rsrq_db_x10 = -32768;
@@ -1754,7 +1767,7 @@ void Ml307_ApplyConfiguration(void)
 {
     uint8_t was_disabled = modem.status.phase == ML307_PHASE_DISABLED;
     device_jitter_ms = (uint16_t)(DeviceProtocol_Crc16(
-        (const uint8_t *)DeviceUid_Get(), DEVICE_UID_LENGTH) % 5000U);
+        (const uint8_t *)DeviceUid_Get(), (uint16_t)strlen(DeviceUid_Get())) % 5000U);
     discard_at_session();
     modem.pending_command_valid = 0U;
     modem.publishing_command_valid = 0U;
@@ -2095,7 +2108,7 @@ void Ml307_Process(void)
             enter_backoff(ML307_ERROR_CONFIG);
         break;
     case ML307_PHASE_ONLINE:
-        if(modem.management_pending ||
+        if(modem.publishing_management || modem.management_pending ||
            (modem.report_requested && reached(now, modem.next_action_ms)) ||
            ((uint32_t)(now - modem.status.last_report_ms) >=
             (uint32_t)config->report_interval_sec * 1000UL)) {

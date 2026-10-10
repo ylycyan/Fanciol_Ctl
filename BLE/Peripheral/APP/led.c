@@ -18,7 +18,7 @@ static uint32_t irFlashUntil;
 
 static void led_write(uint32_t pin, uint8_t on)
 {
-    /* 四盏灯均为低电平点亮。 */
+    /* 低电平点亮。 */
     if(on) GPIOB_ResetBits(pin);
     else GPIOB_SetBits(pin);
 }
@@ -80,7 +80,7 @@ void LED_Pro(void)
 
     /* 普通网络重连由白灯表示；红灯只表示需要排查的硬件级故障。 */
     hardwareFault = Dev.errorCode.bit.flash || Dev.errorCode.bit.ad ||
-                    Dev.errorCode.bit.power ||
+                    Dev.errorCode.bit.power || Dev.errorCode.bit.rtc ||
                     (loraEnabled && Dev.errorCode.bit.lora) ||
                     (cellularEnabled &&
                      (cell->last_error == ML307_ERROR_MODEM ||

@@ -160,6 +160,9 @@ typedef struct {
 } IRBUF_t;
 
 extern IRBUF_t IrBuf;
+void Rule_Reset(void);
+void Rule_RecordPowerChange(void);
+uint8_t Rule_WindowsOverlap(const DEV_RULE_T *a, const DEV_RULE_T *b);
 
 typedef struct {
     uint16_t magicCode;
@@ -198,6 +201,7 @@ typedef struct {
             uint16_t ad : 1;
             uint16_t power : 1;
             uint16_t flash : 1;
+            uint16_t rtc : 1;
         } bit;
     } errorCode;
 } t_dev;

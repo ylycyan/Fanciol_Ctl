@@ -120,6 +120,7 @@ static uint16_t deviceTxChunk;
 static uint8_t deviceTxIndex;
 static uint8_t deviceTxCount;
 static uint8_t deviceTxActive;
+static uint32_t deviceTxDeadline;
 static uint8_t deviceSessionReady;
 /*********************************************************************
  * LOCAL FUNCTIONS
@@ -132,7 +133,7 @@ static void peripheralParamUpdateCB(uint16_t connHandle, uint16_t connInterval,
                                     uint16_t connSlaveLatency, uint16_t connTimeout);
 static void peripheralInitConnItem(peripheralConnItem_t *peripheralConnList);
 static void peripheralRssiCB(uint16_t connHandle, int8_t rssi);
-void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len);
+uint8_t peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len);
 static uint8_t peripheralBuildAdvData(void);
 static void peripheralEnableAdvertising(const char *reason);
 void OTA_IAPReadDataComplete(unsigned char index);
@@ -203,7 +204,7 @@ static void peripheralEnableAdvertising(const char *reason)
  * @param   task_id - the ID assigned by TMOS.  This ID should be
  *                    used to send messages and set timers.
  *
- * @return  none
+ * @return  SUCCESS 表示通知已提交，失败时调用者可以重试同一片
  */
 void Peripheral_Init()
 {
@@ -858,24 +859,28 @@ static void performPeriodicTask(void)
  *
  * @return  none
  */
-void peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len)
+uint8_t peripheralCharNotify(uint8_t charIndex, uint8_t *pValue, uint16_t len)
 {
     attHandleValueNoti_t noti;
+    uint8_t status;
     if(len > (peripheralMTU - 3))
     {
         PRINT("Too large noti\n");
-        return;
+        return INVALIDPARAMETER;
     }
     noti.len = len;
     noti.pValue = GATT_bm_alloc(peripheralConnList.connHandle, ATT_HANDLE_VALUE_NOTI, noti.len, NULL, 0);
     if(noti.pValue)
     {
         tmos_memcpy(noti.pValue, pValue, noti.len);
-        if(simpleProfile_Notify(peripheralConnList.connHandle, charIndex, &noti) != SUCCESS)
+        status = simpleProfile_Notify(peripheralConnList.connHandle, charIndex, &noti);
+        if(status != SUCCESS)
         {
             GATT_bm_free((gattMsg_t *)&noti, ATT_HANDLE_VALUE_NOTI);
         }
+        return status;
     }
+    return MSG_BUFFER_NOT_AVAIL;
 }
 
 static void __attribute__((noinline)) SendDeviceFrame(const uint8_t *frame, uint16_t frameLen)
@@ -895,6 +900,7 @@ static void __attribute__((noinline)) SendDeviceFrame(const uint8_t *frame, uint
     if(deviceTxChunk > DEVICE_MAX_FRAGMENT_CHUNK) deviceTxChunk = DEVICE_MAX_FRAGMENT_CHUNK;
     deviceTxCount = (uint8_t)((frameLen + deviceTxChunk - 1u) / deviceTxChunk);
     deviceTxActive = 1u;
+    deviceTxDeadline = CurTick + 1500U;
     /* 第一片也交给 TMOS 事件，确保不在 GATT 写回调里发送。 */
     tmos_start_task(Peripheral_TaskID, SBP_TX_FRAME_EVT, MS1_TO_SYSTEM_TIME(1));
 }
@@ -916,7 +922,15 @@ static void DeviceTxStep(void)
     fragment[3] = (uint8_t)seq;
     fragment[4] = (uint8_t)(seq >> 8);
     tmos_memcpy(fragment + 5, deviceTxFrame + deviceTxOffset, length);
-    peripheralCharNotify(SIMPLEPROFILE_CHAR1, fragment, (uint16_t)(length + 5u));
+    if(peripheralCharNotify(SIMPLEPROFILE_CHAR1, fragment, (uint16_t)(length + 5u)) != SUCCESS) {
+        if((int32_t)(CurTick - deviceTxDeadline) >= 0) {
+            deviceTxActive = 0u;
+            GAPRole_TerminateLink(peripheralConnList.connHandle);
+        } else {
+            tmos_start_task(Peripheral_TaskID, SBP_TX_FRAME_EVT, MS1_TO_SYSTEM_TIME(10));
+        }
+        return;
+    }
     deviceTxOffset = (uint16_t)(deviceTxOffset + length);
     deviceTxIndex++;
     if(deviceTxIndex < deviceTxCount) {

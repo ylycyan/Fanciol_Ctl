@@ -25,6 +25,8 @@ extern uint32_t LocalTimestamp;
 
 static int8_t policy_active_index = -1;
 static uint8_t policy_active_known;
+/* 上电后保守等待一次保护间隔；运行中的保护不受任何对时影响。 */
+static uint32_t power_change_ms;
 
 /* ------------------------------------------------------------------ */
 /*  内部工具函数                                                       */
@@ -33,19 +35,13 @@ static uint8_t policy_active_known;
 /**
  * @brief 获取当前时间信息 (从RTC解析)
  */
-static void rule_get_time(uint16_t *hour, uint16_t *min, uint16_t *weekday,
+static bool rule_get_time(uint16_t *hour, uint16_t *min, uint16_t *weekday,
                           uint16_t *month)
 {
     uint16_t year, mon, day, h, m, sec;
     static const uint8_t month_offset[12] = {0,3,2,5,0,3,5,1,4,6,2,4};
 
-    if(!RTC_GetWallTime(&year, &mon, &day, &h, &m, &sec)) {
-        year = 2020u;
-        mon = 1u;
-        day = 1u;
-        h = 0u;
-        m = 0u;
-    }
+    if(!RTC_GetWallTime(&year, &mon, &day, &h, &m, &sec)) return false;
 
     if (hour)   *hour   = h;
     if (min)    *min    = m;
@@ -58,6 +54,7 @@ static void rule_get_time(uint16_t *hour, uint16_t *min, uint16_t *weekday,
         *weekday = (uint16_t)((y + y / 4u - y / 100u + y / 400u +
                               month_offset[mon - 1u] + day) % 7u);
     }
+    return true;
 }
 
 /**
@@ -133,19 +130,19 @@ static bool rule_exec_action(const DEV_RULE_T *r, uint8_t action)
 /**
  * @brief 执行规则动作
  */
-static uint16_t rule_minimum_interval(const DEV_RULE_T *r)
+void Rule_RecordPowerChange(void)
 {
-    return POLICY_MIN_INTERVAL(r);
+    Dev.lastPowerChange = LocalTimestamp;
+    power_change_ms = CurTick;
 }
 
 static bool Rule_Execute(DEV_RULE_T *r, uint8_t action)
 {
-    uint16_t minimum = rule_minimum_interval(r);
+    uint16_t minimum = POLICY_MIN_INTERVAL(r);
     uint8_t requested = action == RULE_ACTION_POWER_OFF ? PowerOff : PowerOn;
     bool changesPower = requested != Dev.onOff;
     bool executed;
-    if(changesPower && Dev.lastPowerChange != 0u &&
-       (uint32_t)(LocalTimestamp - Dev.lastPowerChange) < (uint32_t)minimum * 60u) {
+    if(changesPower && (uint32_t)(CurTick - power_change_ms) < (uint32_t)minimum * 60000u) {
         PRINT("[Rule] defer power change, minimum=%u min\r\n", minimum);
         return false;
     }
@@ -155,7 +152,7 @@ static bool Rule_Execute(DEV_RULE_T *r, uint8_t action)
     if(!executed) return false;
 
     if(changesPower || action >= RULE_ACTION_COOL) {
-        Dev.lastPowerChange = LocalTimestamp;
+        Rule_RecordPowerChange();
         /* 与计量共用运行日志；同一秒内的多个状态变化会合并成一次追加。 */
         SaveDevInfo(50u);
     }
@@ -166,13 +163,10 @@ static bool Rule_Execute(DEV_RULE_T *r, uint8_t action)
     return true;
 }
 
-static bool policy_window_matches(const DEV_RULE_T *r)
+static bool policy_window_matches(const DEV_RULE_T *r, uint16_t hour, uint16_t min,
+                                  uint16_t weekday)
 {
-    uint16_t hour, min, weekday, month;
     uint16_t now_min;
-    if(!RTC_IsTimeValid()) return false;
-    rule_get_time(&hour, &min, &weekday, &month);
-    (void)month;
     now_min = (uint16_t)(hour * 60u + min);
 
     /* 跨午夜时，结束段仍归属于前一天的计划。 */
@@ -183,6 +177,30 @@ static bool policy_window_matches(const DEV_RULE_T *r)
     if (r->trig_val == r->trig_val2) return true; /* 全天 */
     if (r->trig_val < r->trig_val2) return now_min >= r->trig_val && now_min < r->trig_val2;
     return now_min >= r->trig_val || now_min < r->trig_val2;
+}
+
+/* 只在保存时使用：按完整周展开窗口，检查跨日及周六到周日的重叠。 */
+uint8_t Rule_WindowsOverlap(const DEV_RULE_T *a, const DEV_RULE_T *b)
+{
+    uint8_t day_a, day_b;
+    for(day_a = 0u; day_a < 7u; day_a++) {
+        int32_t start_a, end_a;
+        if(!BITGET(a->flags, day_a)) continue;
+        start_a = (int32_t)day_a * 1440 + (a->trig_val == a->trig_val2 ? 0 : a->trig_val);
+        end_a = (int32_t)day_a * 1440 + (a->trig_val == a->trig_val2 ? 1440 : a->trig_val2);
+        if(a->trig_val > a->trig_val2) end_a += 1440;
+        for(day_b = 0u; day_b < 7u; day_b++) {
+            int32_t start_b, end_b;
+            if(!BITGET(b->flags, day_b)) continue;
+            start_b = (int32_t)day_b * 1440 + (b->trig_val == b->trig_val2 ? 0 : b->trig_val);
+            end_b = (int32_t)day_b * 1440 + (b->trig_val == b->trig_val2 ? 1440 : b->trig_val2);
+            if(b->trig_val > b->trig_val2) end_b += 1440;
+            if((start_a < end_b && start_b < end_a) ||
+               (start_a < end_b + 10080 && start_b + 10080 < end_a) ||
+               (start_a < end_b - 10080 && start_b - 10080 < end_a)) return 1u;
+        }
+    }
+    return 0u;
 }
 
 /* ------------------------------------------------------------------ */
@@ -200,6 +218,7 @@ void Rule_Pro(void)
     uint8_t i;
     int8_t selected = -1;
     int16_t temp;
+    uint16_t hour, minute, weekday;
     DEV_RULE_T *r;
 
     /* 仅远程控制模式不执行本地规则；混合模式不依赖网络状态。 */
@@ -209,10 +228,11 @@ void Rule_Pro(void)
         return;
     }
 
-    if(!RTC_IsTimeValid()) return;
+    /* 时间不可用时不执行进入、退出或温控动作，也不使用虚构的默认日期。 */
+    if(!RTC_IsTimeValid() || !rule_get_time(&hour, &minute, &weekday, NULL)) return;
     for(i = 0u; i < MAX_POLICY_GROUPS; ++i) {
         r = &Dev.rules[i];
-        if(r->ctrl.enable && r->ctrl.trig_type == TRIG_COMBINED && policy_window_matches(r)) {
+        if(r->ctrl.enable && r->ctrl.trig_type == TRIG_COMBINED && policy_window_matches(r, hour, minute, weekday)) {
             selected = (int8_t)i;
             break;
         }
@@ -260,9 +280,9 @@ void Rule_Pro(void)
 }
 
 /**
- * @brief 清除所有规则的 executed 标志 (每天0点调用)
+ * @brief 成功修改策略或工作模式后重新选择活动组；跨午夜不能清理运行锁存。
  */
-void Rule_DailyReset(void)
+void Rule_Reset(void)
 {
     uint8_t i;
     for (i = 0; i < MAX_RULES; i++) {
