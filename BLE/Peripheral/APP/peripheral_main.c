@@ -145,8 +145,11 @@ int main(void)
     PRINT("BLE cfg: heap=%u packet=%u count=%u links=%u/%u\r\n",
           BLE_MEMHEAP_SIZE, BLE_BUFF_MAX_LEN, BLE_BUFF_NUM,
           PERIPHERAL_MAX_CONNECTION, CENTRAL_MAX_CONNECTION);
+    WWDG_Init(); /* 启动错误也必须由看门狗恢复。 */
     CH58X_BLEInit();
+    WWDG_Refresh();
     HAL_Init();
+    WWDG_Refresh();
 #if(CLK_OSC32K == 0)
     PRINT("BLE RTC clock: external 32.768 kHz LSE\r\n");
 #elif(CLK_OSC32K == 1)
@@ -162,10 +165,14 @@ int main(void)
      * fallback visible until the next power cycle.
      */
     LoadDevInfo();
+    WWDG_Refresh();
     RTC_ProductInit();
+    WWDG_Refresh();
     GAPRole_PeripheralInit();
     Peripheral_Init();
+    WWDG_Refresh();
     Ota_Init();
+    WWDG_Refresh();
     ADC_Init();
     HLW8110_Init();
     /*
@@ -181,7 +188,7 @@ int main(void)
        (Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED) == 0U) {
         Dev.errorCode.bit.flash = 0;
     }
-    WWDG_Init();
+    WWDG_Refresh();
     PRINT("IR catalog brands: %u\r\n", IR_BRAND_COUNT);
     //lora test    
     Main_Circulation();

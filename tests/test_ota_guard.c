@@ -12,6 +12,7 @@
 
 static uint8_t dataflash[0x8000];
 static uint8_t codeflash[480 * 1024];
+static uint8_t fail_metadata;
 
 static uint32_t crc32(const uint8_t *data, uint16_t length)
 {
@@ -26,9 +27,9 @@ static uint32_t crc32(const uint8_t *data, uint16_t length)
 }
 
 uint32_t Config_Crc32(const uint8_t *data, uint16_t length) { return crc32(data, length); }
-uint32_t Test_EepromRead(uint32_t address, void *buffer, uint32_t length) { memcpy(buffer, dataflash + address, length); return 0; }
-uint32_t Test_EepromErase(uint32_t address, uint32_t length) { memset(dataflash + address, 0xFF, length); return 0; }
-uint32_t Test_EepromWrite(uint32_t address, const void *buffer, uint32_t length) { memcpy(dataflash + address, buffer, length); return 0; }
+uint32_t Test_EepromRead(uint32_t address, void *buffer, uint32_t length) { if(fail_metadata==3)return 1; memcpy(buffer, dataflash + address, length); return 0; }
+uint32_t Test_EepromErase(uint32_t address, uint32_t length) { if(fail_metadata==1)return 1; memset(dataflash + address, 0xFF, length); return 0; }
+uint32_t Test_EepromWrite(uint32_t address, const void *buffer, uint32_t length) { if(fail_metadata==2)return 1; memcpy(dataflash + address, buffer, length); return 0; }
 uint32_t Test_FlashErase(uint32_t address, uint32_t length) { memset(codeflash + address, 0xFF, length); return 0; }
 uint32_t Test_FlashWrite(uint32_t address, const void *buffer, uint32_t length) { memcpy(codeflash + address, buffer, length); return 0; }
 uint32_t Test_FlashVerify(uint32_t address, const void *buffer, uint32_t length) { return memcmp(codeflash + address, buffer, length) != 0; }
@@ -120,6 +121,10 @@ static void test_remote_download_install_and_cancel(void)
     assert(Ota_MarkInstall() == DEVICE_STATUS_OK);
     assert(Ota_Get()->state == OTA_STATE_INSTALLING);
     assert(Ota_Cancel() == DEVICE_STATUS_CONFLICT);
+    /* Updater 已返回应用但上一启动的元数据提交失败，可在应用启动时清理。 */
+    Ota_Init();
+    assert(Ota_Get()->state == OTA_STATE_IDLE);
+    assert(Ota_Get()->current_version == FIRMWARE_BUILD_VERSION);
 }
 
 static void test_interrupted_local_update_is_discarded(void)
@@ -213,6 +218,32 @@ int main(void)
     test_same_or_older_version_is_allowed();
     test_local_update_accepts_a_partial_final_dword();
     test_remote_progress_uses_live_offset_and_aligned_checkpoint();
+    /* 每个元数据 IO 阶段失败都应恢复完整状态，取消和重试不需要重启。 */
+    for(uint8_t stage=1;stage<=3;stage++) {
+        uint8_t image[16]={1,2,3};
+        memset(dataflash,0xFF,sizeof(dataflash)); Ota_Init();
+        assert(Ota_BeginLocal(1,sizeof(image),crc32(image,sizeof(image)))==DEVICE_STATUS_OK);
+        assert(Ota_Write(0,image,sizeof(image))==DEVICE_STATUS_OK);
+        assert(Ota_FinishLocal()==DEVICE_STATUS_OK);
+        while(Ota_VerifyStep()==DEVICE_STATUS_BUSY) {}
+        assert(Ota_Get()->state==OTA_STATE_READY);
+        ota_metadata_t before=*Ota_Get();
+        fail_metadata=stage;
+        assert(Ota_MarkInstall()==DEVICE_STATUS_IO_ERROR);
+        assert(!memcmp(&before,Ota_Get(),sizeof(before)));
+        fail_metadata=0;
+        assert(Ota_Cancel()==DEVICE_STATUS_OK);
+        assert(Ota_BeginLocal(2,sizeof(image),0)==DEVICE_STATUS_OK);
+        fail_metadata=stage;
+        assert(Ota_Cancel()==DEVICE_STATUS_IO_ERROR);
+        assert(Ota_Get()->state==OTA_STATE_DOWNLOADING);
+        fail_metadata=0;
+        assert(Ota_Cancel()==DEVICE_STATUS_OK);
+    }
+    /* 错误本地请求不能先取消一个有效远程会话。 */
+    assert(Ota_BeginRemote(1,4096,0,"http://fw/bin",13)==DEVICE_STATUS_OK);
+    assert(Ota_BeginLocal(1,0,0)==DEVICE_STATUS_INVALID_ARG);
+    assert(Ota_Get()->state==OTA_STATE_ERASING && Ota_Get()->url_length==13);
     puts("OTA partition/session and staging metadata: PASS");
     return 0;
 }

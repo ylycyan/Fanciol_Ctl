@@ -157,6 +157,26 @@ uint8_t RTC_IsTimeValid(void)
     return rtcTimeValid;
 }
 
+/* Network clocks may carry a wrong timezone or stale calendar. Keep a valid
+ * battery-backed clock authoritative; explicit BLE synchronisation can still
+ * correct any date via RTC_SetTimestamp. All timestamps remain Unix UTC. */
+uint8_t RTC_SyncTimestamp(uint32_t timestamp)
+{
+    uint32_t current = Rtc_GetTimestamp();
+    uint32_t difference;
+    if(timestamp < 1672531200U || timestamp > 2147483000U) return 0U;
+    if(rtcTimeValid) {
+        difference = timestamp > current ? timestamp - current : current - timestamp;
+        if(difference > 300U) {
+            PRINT("Network RTC sync rejected: current=%lu received=%lu\r\n",
+                  (unsigned long)current, (unsigned long)timestamp);
+            return 0U;
+        }
+        if(difference <= 3U) return 1U;
+    }
+    return RTC_SetTimestamp(timestamp);
+}
+
 //获取RTC时间戳
 uint32_t Rtc_GetTimestamp(void){
     uint32_t timestamp;

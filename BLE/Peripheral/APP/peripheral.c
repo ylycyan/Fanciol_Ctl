@@ -32,6 +32,7 @@
 #include "ota_guard.h"
 #include "ota_update.h"
 #include "config_store.h"
+#include "ml307r.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -1137,7 +1138,8 @@ static void ProcessOtaCommand(const uint8_t *command)
             uint32_t version = ota_u32(command + 2);
             uint32_t size = ota_u32(command + 6);
             uint32_t crc = ota_u32(command + 10);
-            status = Ota_BeginLocal(version, size, crc);
+            status = Ml307_HttpBusy() ? DEVICE_STATUS_BUSY :
+                     Ota_BeginLocal(version, size, crc);
             if(status == DEVICE_STATUS_OK) {
                 localOtaActive = 1U;
                 OtaGuard_Reset(&otaGuard);

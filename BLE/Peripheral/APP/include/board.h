@@ -340,7 +340,7 @@ typedef struct{
 extern t_dev Dev;
 extern uint32_t LocalTimestamp;
 //led
-/* 当前实物板 LED1~LED4 从左到右：绿、白、蓝、红；阳极接 3.3V，低电平点亮。
+/* LED1~LED4 从左到右：绿、白、蓝、红；阳极接 3.3V，低电平点亮。
  * 绿=系统心跳/红外发送，白=LoRa/4G通信，蓝=BLE连接/设备定位，红=硬件故障。 */
 #define LED_RED_PIN     GPIO_Pin_6
 #define LED_GREEN_PIN   GPIO_Pin_14
@@ -417,6 +417,7 @@ extern void LED_NotifyIrTx(void);
 extern void Rule_Pro(void);
 extern void Rule_Reset(void);
 extern void Rule_RecordPowerChange(void);
+extern void Rule_IrCompleted(uint8_t success);
 extern uint8_t Rule_WindowsOverlap(const DEV_RULE_T *a, const DEV_RULE_T *b);
 extern void Meter_Update(uint32_t dt_sec);
 extern uint8_t Meter_ClearEnergy(void);

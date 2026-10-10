@@ -16,6 +16,7 @@ static volatile uint16_t irTxLength = 0;
 static volatile uint16_t irTxOffset = 0;
 static volatile uint8_t irTxActive = 0;
 static volatile uint8_t irTxWaitResponse = 0;
+static uint8_t irCompletionPending;
 static uint32_t irOperationDeadline = 0;
 static uint32_t irTxDeadline;
 static uint8_t Ir_SubmitInternalCommand(IR_CMD_t cmd);
@@ -26,7 +27,7 @@ static uint8_t irProfileOffset = 0U;
 
 static uint8_t Ir_IsControlPathIdle(void)
 {
-    return !irTxActive &&
+    return !irTxActive && !irCompletionPending &&
            IrBuf.isFinish &&
            irProfileOffset >= irProfileCount;
 }
@@ -49,6 +50,7 @@ static uint8_t Ir_TxStartCopy(const uint8_t *data,
     irTxLength = len;
     irTxOffset = 0U;
     irTxWaitResponse = waitResponse ? 1U : 0U;
+    if(!waitResponse) irCompletionPending = 1U;
     irTxActive = 1U;
     irTxDeadline = CurTick + 2000U; /* 最大 256 字节，2 秒远大于正常 UART 发送时间。 */
     IrBuf.isFinish = 0U;
@@ -111,6 +113,10 @@ void Ir_Pro(void)
     if(irProfileCount != 0U) {
         irProfileCount = 0U;
         irProfileOffset = 0U;
+    }
+    if(irCompletionPending) {
+        irCompletionPending = 0U;
+        Rule_IrCompleted(1U);
     }
 
 }
@@ -210,6 +216,10 @@ void Check_IrBuf(void){ //
 }
 
 void IR_Init(void){ //uart3
+    if(irCompletionPending) {
+        irCompletionPending = 0U;
+        Rule_IrCompleted(0U);
+    }
     IrBuf.isFinish = 1U;
     IrBuf.type = IR_TYPE_NORMAL;
     IrBuf.rxlen = 0U;

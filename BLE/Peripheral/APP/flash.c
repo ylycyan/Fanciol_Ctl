@@ -5,6 +5,7 @@
 
 static volatile uint16_t Flash_Delay;
 static volatile uint8_t Ir_Save_Pending;
+static uint8_t failed_parts; /* bit0: 主配置/运行日志；bit1: 红外 */
 
 /*
  * Callers express delay in 10 ms ticks; Flash_Poll runs once per second.
@@ -32,6 +33,8 @@ void Flash_Poll(void)
         attempted = 1;
         status = Config_CommitIfChanged();
         if(status == DEVICE_STATUS_OK) status = Runtime_Append();
+        if(status == DEVICE_STATUS_OK) failed_parts &= (uint8_t)~1U;
+        else failed_parts |= 1U;
     }
     if(Ir_Save_Pending) {
         uint8_t ir_status;
@@ -40,6 +43,8 @@ void Flash_Poll(void)
          * A later user change schedules a fresh save. */
         Ir_Save_Pending = 0U;
         ir_status = IrStore_SaveIfChanged();
+        if(ir_status == DEVICE_STATUS_OK) failed_parts &= (uint8_t)~2U;
+        else failed_parts |= 2U;
         if(ir_status != DEVICE_STATUS_OK) status = ir_status;
     }
     if(!attempted) return;
@@ -47,7 +52,8 @@ void Flash_Poll(void)
         Dev.errorCode.bit.flash = 1;
         PRINT("Flash save failed: %u\r\n", status);
     } else {
-        Dev.errorCode.bit.flash = 0;
+        Dev.errorCode.bit.flash = failed_parts != 0U ||
+            (Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED) != 0U;
         PRINT("Flash save complete, revision=%lu\r\n", Config_GetRevision());
     }
 }

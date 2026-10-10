@@ -29,6 +29,118 @@ def no_includes(source):
 
 
 class RuntimeRecoveryTests(unittest.TestCase):
+    def test_startup_watchdog_precedes_ble_initialization(self):
+        source = (APP / 'peripheral_main.c').read_text(encoding='utf-8')
+        main = source[source.rindex('int main(void)'):]
+        self.assertLess(main.index('WWDG_Init()'), main.index('CH58X_BLEInit()'))
+        self.assertIn('LoadDevInfo();\n    WWDG_Refresh();', main)
+
+    def test_flash_faults_clear_only_after_the_same_source_recovers(self):
+        source = no_includes((APP / 'flash.c').read_text(encoding='utf-8'))
+        source = source[:source.index('void LoadDevInfo')]
+        self.compile_run(r'''
+#include <assert.h>
+#include "board.h"
+#include "device_protocol.h"
+#include "config_store.h"
+t_dev Dev;
+static uint8_t runtime_status,ir_status,startup_flags;
+uint8_t Config_CommitIfChanged(void) {return 0;}
+uint8_t Runtime_Append(void) {return runtime_status;}
+uint8_t IrStore_SaveIfChanged(void) {return ir_status;}
+uint32_t Config_GetRevision(void) {return 1;}
+uint8_t Storage_GetStartupFlags(void) {return startup_flags;}
+''' + source + r'''
+int main(void) {
+ runtime_status=DEVICE_STATUS_IO_ERROR;SaveDevInfo(0);Flash_Poll();
+ assert(Dev.errorCode.bit.flash);
+ SaveIrInfo();Flash_Poll();assert(Dev.errorCode.bit.flash);
+ runtime_status=0;SaveDevInfo(0);Flash_Poll();assert(!Dev.errorCode.bit.flash);
+ ir_status=DEVICE_STATUS_IO_ERROR;SaveIrInfo();Flash_Poll();
+ SaveDevInfo(0);Flash_Poll();assert(Dev.errorCode.bit.flash);
+ ir_status=0;SaveIrInfo();Flash_Poll();assert(!Dev.errorCode.bit.flash);
+ startup_flags=STORAGE_STARTUP_DEGRADED;SaveIrInfo();Flash_Poll();
+ assert(Dev.errorCode.bit.flash);
+ return 0;
+}
+''')
+
+    def test_ble_ota_manifest_rejects_inflight_http_before_changing_session(self):
+        source = (APP / 'peripheral.c').read_text(encoding='utf-8')
+        case = source[source.index('case CMD_IAP_MANIFEST:'):source.index('case CMD_IAP_INFO:')]
+        modem = (APP / 'ml307r.c').read_text(encoding='utf-8')
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+#define CMD_IAP_MANIFEST 1
+#define DEVICE_STATUS_BUSY 3
+#define DEVICE_STATUS_OK 0
+#define ML307_HTTP_IDLE 0
+static struct {uint8_t http_step,http_raw_state;} modem;
+static uint8_t localOtaActive,otaGuard,reply;
+static unsigned started;
+static uint32_t ota_u32(const uint8_t *p){return p[0];}
+static uint8_t Ota_BeginLocal(uint32_t v,uint32_t s,uint32_t c){(void)v;(void)s;(void)c;started++;return 0;}
+static void OtaGuard_Reset(uint8_t *p){*p=0;}
+static void OTA_IAP_SendCMDDealSta(uint8_t s){reply=s;}
+''' + function(modem, 'Ml307_HttpBusy') + '\nstatic void manifest(const uint8_t *command) {switch(command[0]) {\n' + case + r'''
+}}
+int main(void) {
+ uint8_t command[14]={1};
+ modem.http_step=1;manifest(command);assert(!started && reply==0xFF && !localOtaActive);
+ modem.http_step=0;modem.http_raw_state=2;
+ manifest(command);assert(!started && reply==0xFF);
+ modem.http_raw_state=0;manifest(command);assert(started==1 && reply==0 && localOtaActive);
+ return 0;
+}
+''')
+        self.assertIn('Ota_Get()->url_length == 0U ||', modem)
+
+    def test_gateway_frame_loop_rejects_invalid_lengths_and_stops_at_buffer_end(self):
+        gateway = Path('F:/learn_code/GWH743/GWH743')
+        source = (gateway / 'Core/Src/main.c').read_text(encoding='utf-8')
+        util = (gateway / 'Core/Src/util.c').read_text(encoding='utf-8')
+        start = source.index('while (result >= 2)')
+        loop = source[start:source.index('Gateway.lastSvrTimestamp', start)] + '}\n'
+        loop = loop.replace('rxPtr = RxBuf + offset;', 'assert(++iterations < 4);rxPtr = RxBuf + offset;')
+        check_start = source.index('if (cmd == (uint8_t)eCmdOperate &&')
+        check = source[check_start:source.index('tmpCfgTimestamp =', check_start)]
+        check = check.replace('continue;', 'return 0;')
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+#include <string.h>
+#define PRINTF(...) ((void)0)
+#define THEKEY 0
+''' + function(util, 'AddCrc32') + function(util, 'ChkCrc32') + r'''
+static unsigned parse(uint8_t *RxBuf,int result) {
+ unsigned iterations=0;
+ uint16_t offset=0,rxLen;
+ uint8_t *rxPtr;
+''' + loop + r'''
+ return offset;
+}
+static uint8_t valid_operation(uint8_t *rxPtr,uint16_t rxLen) {
+ const uint8_t cmd=9,eCmdOperate=9;
+ #define SERVER_OPERATE_DATA_LENGTH 18U
+''' + check + r'''
+ return 1;
+}
+int main(void) {
+ uint8_t data[13]={0};
+ assert(parse(data,0)==0 && parse(data,1)==0 && parse(data,2)==0);
+ data[0]=1;assert(parse(data,2)==0);
+ data[0]=11;assert(parse(data,13)==0);
+ data[0]=14;assert(parse(data,13)==0);
+ data[0]=12;AddCrc32(data,8,0);
+ assert(parse(data,12)==12 && parse(data,13)==12);
+ data[3]=1;assert(!valid_operation(data,12) && valid_operation(data,14));
+ data[3]=0;data[8]=1;
+ assert(!valid_operation(data,13) && !valid_operation(data,30) && valid_operation(data,31));
+ return 0;
+}
+''')
+
     def compile_run(self, source):
         gcc = os.environ.get('CC') or shutil.which('gcc')
         if not gcc and Path('D:/w64devkit/w64devkit/bin/gcc.exe').exists():
@@ -55,13 +167,19 @@ class RuntimeRecoveryTests(unittest.TestCase):
         prefix = no_includes(source[:source.index('//主频60M')])
         clock = '\n'.join(function(source, n) for n in (
             'RTC_SetTimestamp', 'Rtc_GetTimestamp', 'RTC_ProductInit',
-            'RTC_IsTimeValid', 'RTC_GetWallTime'))
+            'RTC_IsTimeValid', 'RTC_GetWallTime', 'RTC_SyncTimestamp'))
         conversion = no_includes((APP / 'time_utils.c').read_text(encoding='utf-8'))
+        modem_codec = no_includes((APP / 'ml307r_codec.c').read_text(encoding='utf-8'))
+        network_clock = function((APP / 'ml307r.c').read_text(encoding='utf-8'), 'parse_network_clock')
+        policy_clock = function((APP / 'rule.c').read_text(encoding='utf-8'), 'rule_get_time')
         self.compile_run(r'''
 #include <assert.h>
 #include <string.h>
 #include "board.h"
 #include "time_utils.h"
+#include "ml307r_codec.h"
+#define ML307_CLOCK_INTERVAL_MS 21600000U
+static struct {uint8_t time_synced; uint32_t next_clock_ms;} modem;
 #define GPIO_Pin_2 (1U<<2)
 #define GPIO_Pin_18 (1U<<18)
 #define GPIO_Pin_19 (1U<<19)
@@ -106,7 +224,7 @@ static uint32_t GPIOB_ReadPortPin(uint32_t mask) {
     return present && ((regs[(bits-8)/8]>>((bits-8)%8))&1);
 }
 uint32_t Rtc_GetTimestamp(void);
-''' + conversion + prefix + clock + r'''
+''' + conversion + prefix + clock + modem_codec + network_clock + policy_clock + r'''
 int main(void) {
     RTC_ProductInit(); /* responding chip, calendar not initialised */
     assert(!RTC_IsTimeValid() && !Dev.errorCode.bit.rtc && LocalTimestamp==0);
@@ -142,6 +260,44 @@ int main(void) {
     CurTick=0xfffffff0;assert(RTC_SetTimestamp(1709164800U));
     CurTick+=1000;regs[0]=1;assert(Rtc_GetTimestamp()==1709164801U);
     assert(!RTC_SetTimestamp(1U) && !RTC_SetTimestamp(2147483001U));
+    /* Sunday UTC becomes Monday in Beijing: policies must use local weekday. */
+    assert(RTC_SetTimestamp(1791734400U)); /* 2026-10-12 00:00 Beijing */
+    uint16_t weekday;
+    assert(RTC_GetWallTime(&y,&m,&d,&h,&mi,&s));
+    assert(y==2026 && m==10 && d==12 && h==0 && mi==0);
+    assert(rule_get_time(&h,&mi,&weekday,&m) && weekday==1 && h==0);
+    assert(!RTC_SyncTimestamp(1791734400U-28800U));
+    assert(!RTC_SyncTimestamp(1791734400U+28800U));
+    assert(Rtc_GetTimestamp()==1791734400U && RTC_IsTimeValid() && !Dev.errorCode.bit.rtc);
+    before=delays;assert(RTC_SyncTimestamp(1791734403U));assert(before==delays);
+    assert(!RTC_SyncTimestamp(1791734701U)); /* >5 min: stale/wrong network clock */
+    assert(!RTC_SyncTimestamp(1U) && !RTC_SyncTimestamp(2147483001U));
+    assert(RTC_SyncTimestamp(1791734700U)); /* bounded drift may be corrected */
+    assert(Rtc_GetTimestamp()==1791734700U);
+    /* Explicit phone sync remains unrestricted, including correcting old time. */
+    assert(RTC_SetTimestamp(1791735870U)); /* 2026-10-12 00:24:30 Beijing */
+    const char network[]="+CCLK: \"26/10/11,16:24:30+32\"";
+    parse_network_clock(network,sizeof(network)-1);
+    assert(Rtc_GetTimestamp()==1791735870U && modem.time_synced);
+    const char utc[]="+CCLK: \"26/10/11,16:24:30+00\"";
+    parse_network_clock(utc,sizeof(utc)-1);assert(Rtc_GetTimestamp()==1791735870U);
+    const char west[]="+CCLK: \"26/10/11,16:24:30-20\"";
+    parse_network_clock(west,sizeof(west)-1);assert(Rtc_GetTimestamp()==1791735870U);
+    const char no_zone[]="+CCLK: \"26/10/11,16:24:30\"";
+    parse_network_clock(no_zone,sizeof(no_zone)-1);assert(Rtc_GetTimestamp()==1791735870U);
+    /* A genuinely wrong network calendar must not overwrite phone sync. */
+    const char wrong[]="+CCLK: \"26/10/11,08:24:30+32\"";
+    parse_network_clock(wrong,sizeof(wrong)-1);
+    assert(Rtc_GetTimestamp()==1791735870U && modem.time_synced && !Dev.errorCode.bit.rtc);
+    RTC_ProductInit();assert(Rtc_GetTimestamp()==1791735870U); /* battery retention */
+    assert(RTC_SetTimestamp(1798732800U)); /* year boundary */
+    assert(RTC_GetWallTime(&y,&m,&d,&h,&mi,&s) && y==2027 && m==1 && d==1 && h==0);
+    regs[0]|=0x80;rtcPolled=0;Rtc_GetTimestamp();assert(!RTC_IsTimeValid());
+    parse_network_clock(network,sizeof(network)-1); /* unset clock: network may initialise */
+    assert(Rtc_GetTimestamp()==1791735870U && RTC_IsTimeValid());
+    assert(RTC_GetWallTime(&y,&m,&d,&h,&mi,&s));
+    assert(y==2026 && m==10 && d==12 && h==0 && mi==24 && s==30);
+    assert(rule_get_time(&h,&mi,&weekday,&m) && weekday==1 && h==0 && mi==24);
     return 0;
 }
 ''')
@@ -335,13 +491,18 @@ typedef struct {uint8_t isFinish,type,matchError,learnError,rxlen,txbuf[256];} I
 static uint32_t CurTick;
 static uint8_t R8_UART3_TFC=8,R8_UART3_THR;
 static unsigned init_calls;
+static unsigned completed, failed;
+static void Rule_IrCompleted(uint8_t ok) {if(ok) completed++; else failed++;}
 static void UART3_INTCfg(uint8_t e,uint8_t m) {(void)e;(void)m;}
 static void LED_NotifyIrTx(void) {}
 static void PFIC_DisableIRQ(uint8_t irq) {(void)irq;}
 static void IR_Init(void);
-''' + prefix + '\n'.join(function(source, n) for n in ('Ir_TxFillFifo', 'Ir_TxStartCopy', 'Ir_TxAbort')) + r'''
-static uint8_t Ir_SubmitInternalCommand(IR_CMD_t c) {(void)c;return 1;}
-static void IR_Init(void) {init_calls++;IrBuf.isFinish=1;irTxActive=0;irProfileCount=irProfileOffset=0;}
+''' + prefix + '\n'.join(function(source, n) for n in ('Ir_IsControlPathIdle', 'Ir_TxFillFifo', 'Ir_TxStartCopy', 'Ir_TxAbort', 'Ir_HandleTxFifoEmpty')) + r'''
+static uint8_t Ir_SubmitInternalCommand(IR_CMD_t c) {return Ir_TxStartCopy(&c,1,0);}
+static void IR_Init(void) {
+    init_calls++;IrBuf.isFinish=1;irTxActive=0;irProfileCount=irProfileOffset=0;
+    if(irCompletionPending){irCompletionPending=0;Rule_IrCompleted(0);}
+}
 ''' + function(source, 'Ir_Pro') + r'''
 int main(void) {
     uint8_t data[16]={0};
@@ -352,6 +513,15 @@ int main(void) {
     CurTick++;Ir_Pro();assert(!irTxActive && IrBuf.isFinish && init_calls==1);
     assert(IrBuf.matchError);
     assert(Ir_TxStartCopy(data,16,0));
+    CurTick+=2000;Ir_Pro();assert(failed==1 && !completed);
+    /* 场景全部发完才回调；FIFO 完成后也不能被另一个请求插队。 */
+    R8_UART3_TFC=0;
+    assert(Ir_TxStartCopy(data,1,0));
+    irProfileCount=2;irProfileOffset=1;irProfileCommands[1]=0x81;
+    Ir_HandleTxFifoEmpty();assert(!Ir_IsControlPathIdle() && !completed);
+    Ir_Pro();assert(irTxActive && irProfileOffset==2 && !completed);
+    Ir_HandleTxFifoEmpty();Ir_Pro();
+    assert(completed==1 && Ir_IsControlPathIdle());
     return 0;
 }
 ''')
@@ -436,6 +606,8 @@ int main(void) {
         fail_at=-1;
         assert(install_image());
         assert(!memcmp(flash+OTA_APP_ADDRESS,flash+OTA_STAGING_ADDRESS,sizes[i]));
+        int before=write_count;
+        assert(install_image() && write_count==before); /* 完成复制后的重启不能再次擦写 */
         for(uint32_t n=sizes[i];n<((sizes[i]+3)&~3U);n++)assert(flash[OTA_APP_ADDRESS+n]==0xFF);
         flash[OTA_STAGING_ADDRESS]^=1;
         assert(!install_image());

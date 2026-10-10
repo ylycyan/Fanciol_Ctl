@@ -9,6 +9,7 @@ uint32_t LocalTimestamp;
 volatile uint32_t CurTick;
 
 static uint8_t ir_accept;
+static uint8_t ir_complete = 1U;
 static uint8_t ir_calls;
 static uint8_t save_calls;
 static IR_CMD_t last_ir_cmd;
@@ -33,6 +34,7 @@ uint8_t Ir_ExecuteVerified(IR_CMD_t cmd)
 {
     ir_calls++;
     last_ir_cmd = cmd;
+    if(ir_accept && ir_complete) Rule_IrCompleted(1U);
     return ir_accept;
 }
 
@@ -47,6 +49,7 @@ uint8_t Ir_ExecuteConfiguredProfileVerified(uint8_t mode, uint8_t temperature, u
     (void)wind;
     ir_calls++;
     last_ir_cmd = (IR_CMD_t)(IR_CMD_MODE_AUTO + mode);
+    if(ir_accept && ir_complete) Rule_IrCompleted(1U);
     return ir_accept;
 }
 
@@ -398,6 +401,47 @@ int main(void)
     assert(meter_clear_calls == 1U);
     assert(runtime_append_calls == 1U);
 
+    /* 提交不是发送完成；失败后五秒重试，且不提前计数、保存或锁存。 */
+    setup_policy(0,0,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    CurTick+=60000;ir_accept=1;ir_complete=0;ir_calls=save_calls=0;
+    Rule_Pro(); assert(ir_calls==1 && Dev.onOff==PowerOff && save_calls==0);
+    assert(!(Dev.rules[0].ctrl.reserved & POLICY_LATCH_HIGH));
+    Rule_Pro();assert(ir_calls==1);
+    Rule_IrCompleted(0);CurTick+=4999;Rule_Pro();assert(ir_calls==1);
+    CurTick++;Rule_Pro();assert(ir_calls==2 && Dev.onOff==PowerOff);
+    Rule_IrCompleted(1);
+    assert(Dev.onOff==PowerOn && save_calls==1 && Dev.meter.onoff_count==1);
+    assert(Dev.rules[0].ctrl.reserved & POLICY_LATCH_HIGH);
+    Rule_Pro();assert(ir_calls==2);
+    /* 配置重置后的迟到完成不能修改新的策略或设备状态。 */
+    setup_policy(0,0,RULE_ACTION_POWER_ON,0,0,0);
+    CurTick+=60000;ir_calls=0;Rule_Pro();assert(ir_calls==1);
+    Rule_Reset();Rule_IrCompleted(1);assert(Dev.onOff==PowerOff);
+    /* 窗口退出的关机失败不能丢掉旧组的待关机操作。 */
+    ir_complete=1;
+    setup_policy(8*60,10*60,RULE_ACTION_POWER_ON,1,0,0);
+    CurTick+=60000;rtc_hour=9;ir_calls=0;Rule_Pro();assert(Dev.onOff==PowerOn);
+    CurTick+=60000;rtc_hour=10;ir_complete=0;Rule_Pro();assert(ir_calls==2);
+    Rule_IrCompleted(0);CurTick+=5000;Rule_Pro();assert(ir_calls==3);
+    Rule_IrCompleted(1);assert(Dev.onOff==PowerOff);
+    /* 进入场景部分失败后窗口过期，不能因软件仍为关闭而漏掉关机。 */
+    setup_policy(8*60,10*60,RULE_ACTION_COOL,1,0,0);
+    CurTick+=60000;rtc_hour=9;ir_calls=0;Rule_Pro();assert(ir_calls==1);
+    Rule_IrCompleted(0);CurTick+=5000;rtc_hour=10;Rule_Pro();
+    assert(ir_calls==2 && last_ir_cmd==IR_CMD_POWER_OFF);
+    Rule_IrCompleted(1);
+    /* 重试退避使用单调时间，跨 uint32 回绕也不能提前重发。 */
+    setup_policy(0,0,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    rtc_hour=12;CurTick=0xFFFFFFF0U;ir_calls=0;
+    Rule_Pro();assert(ir_calls==1);Rule_IrCompleted(0);
+    CurTick+=4999;Rule_Pro();assert(ir_calls==1);
+    CurTick++;Rule_Pro();assert(ir_calls==2);Rule_IrCompleted(1);
+    /* 学习码不能盲目重复执行可能的切换/增减键。 */
+    setup_policy(0,0,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    Dev.irActType=ACT_TYPE_LEARN;CurTick+=60000;ir_calls=0;
+    Rule_Pro();assert(ir_calls==1);Rule_IrCompleted(0);
+    CurTick+=30000;Rule_Pro();assert(ir_calls==1 && Dev.onOff==PowerOff);
+    ir_complete=1;
     puts("rule IR submission reliability: PASS");
     return 0;
 }

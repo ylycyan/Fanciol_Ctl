@@ -6,6 +6,8 @@
 #include <string.h>
 
 static ota_metadata_t metadata;
+/* 一份已提交快照，失败时整体回退；不增加 Flash 记录或状态。 */
+static ota_metadata_t committed_metadata;
 static uint32_t metadata_slot;
 static uint32_t write_offset;
 static uint32_t verify_offset;
@@ -54,13 +56,18 @@ static uint8_t metadata_save(void)
     if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
        EEPROM_WRITE(target, &metadata, sizeof(metadata)) != 0U ||
        EEPROM_READ(target, &readback, sizeof(readback)) != 0U ||
-       !metadata_valid(&readback) || readback.generation != metadata.generation) {
-        /* 保存失败时回退内存中的代数，避免下一次保存跳过未落盘的序号。 */
-        metadata.generation = previous_generation;
+       !metadata_valid(&readback) || memcmp(&readback, &metadata, sizeof(metadata)) != 0) {
+        metadata = committed_metadata;
+        write_offset = metadata.downloaded_bytes;
+        verify_offset = 0U;
+        verify_crc = 0xFFFFFFFFUL;
+        resume_erase_required = metadata.url_length != 0U &&
+                                metadata.state == OTA_STATE_DOWNLOADING;
         return DEVICE_STATUS_IO_ERROR;
     }
 
     metadata_slot = target;
+    committed_metadata = metadata;
     return DEVICE_STATUS_OK;
 }
 
@@ -88,15 +95,17 @@ void Ota_Init(void)
         memset(&metadata, 0, sizeof(metadata));
         metadata.current_version = FIRMWARE_BUILD_VERSION;
         metadata_slot = OTA_METADATA_B;
+        committed_metadata = metadata;
         (void)metadata_save();
-    }
+    } else committed_metadata = metadata;
 
     /* The running image is the authoritative version.  This also keeps the
      * metadata correct after a wired factory/recovery flash. */
-    if(metadata.current_version != FIRMWARE_BUILD_VERSION) {
+    if(metadata.current_version != FIRMWARE_BUILD_VERSION ||
+       metadata.state == OTA_STATE_INSTALLING) {
         metadata.current_version = FIRMWARE_BUILD_VERSION;
-        if(metadata.state != OTA_STATE_IDLE &&
-           metadata.state != OTA_STATE_INSTALLING) {
+        /* 能进入应用说明 Updater 已验证复制完成，或拒绝了损坏暂存区。 */
+        if(metadata.state != OTA_STATE_IDLE) {
             metadata.state = OTA_STATE_IDLE;
             metadata.url_length = 0U;
             metadata.erased_bytes = 0U;
@@ -194,6 +203,8 @@ uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_cr
 
 uint8_t Ota_BeginLocal(uint32_t version, uint32_t image_size, uint32_t image_crc32)
 {
+    if(image_size == 0U || image_size > OTA_MAX_IMAGE_SIZE)
+        return DEVICE_STATUS_INVALID_ARG;
     if(metadata.state != OTA_STATE_IDLE) {
         /*
          * BLE 本地升级可接管任何“尚未进入安装”的残留会话，包括卡住的 4G
@@ -204,9 +215,6 @@ uint8_t Ota_BeginLocal(uint32_t version, uint32_t image_size, uint32_t image_crc
         if(metadata.state == OTA_STATE_INSTALLING) return DEVICE_STATUS_BUSY;
         if(Ota_Cancel() != DEVICE_STATUS_OK) return DEVICE_STATUS_IO_ERROR;
     }
-    if(image_size == 0U || image_size > OTA_MAX_IMAGE_SIZE)
-        return DEVICE_STATUS_INVALID_ARG;
-
     metadata.url_length = 0U;
     metadata.update_version = version;
     metadata.image_size = image_size;

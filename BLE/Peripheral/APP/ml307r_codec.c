@@ -108,7 +108,6 @@ uint8_t Ml307Codec_ParseClock(const char *line, uint16_t length,
     const char *end;
     uint8_t year;
     uint8_t timezone;
-    int16_t sign;
     if(!line || !clock || length < sizeof(prefix)) return 0U;
     cursor = line;
     end = line + length;
@@ -121,13 +120,14 @@ uint8_t Ml307Codec_ParseClock(const char *line, uint16_t length,
        !two_digits(&cursor, end, &clock->hour) || !consume(&cursor, end, ':') ||
        !two_digits(&cursor, end, &clock->minute) || !consume(&cursor, end, ':') ||
        !two_digits(&cursor, end, &clock->second)) return 0U;
-    if(cursor >= end || (*cursor != '+' && *cursor != '-')) return 0U;
-    sign = *cursor++ == '+' ? 1 : -1;
-    if(!two_digits(&cursor, end, &timezone) || timezone > 96U ||
-       cursor >= end || *cursor++ != '"' || skip_space(cursor, end) != end)
+    /* UTC fields may be followed by optional network timezone metadata. */
+    if(cursor < end && (*cursor == '+' || *cursor == '-')) {
+        cursor++;
+        if(!two_digits(&cursor, end, &timezone) || timezone > 96U) return 0U;
+    }
+    if(cursor >= end || *cursor++ != '"' || skip_space(cursor, end) != end)
         return 0U;
     clock->year = (uint16_t)(2000U + year);
-    clock->timezone_quarters = (int16_t)(sign * timezone);
     if(clock->month < 1U || clock->month > 12U || clock->day < 1U || clock->day > 31U ||
        clock->hour > 23U || clock->minute > 59U || clock->second > 59U)
         return 0U;

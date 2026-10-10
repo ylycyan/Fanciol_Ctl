@@ -27,6 +27,11 @@ static int8_t policy_active_index = -1;
 static uint8_t policy_active_known;
 /* 上电后保守等待一次保护间隔；运行中的保护不受任何对时影响。 */
 static uint32_t power_change_ms;
+static uint8_t pending_action, pending_index, pending_latch;
+static uint8_t retry_pending;
+static uint8_t retry_start;
+static uint32_t retry_after_ms;
+#define POLICY_EXIT_ACTION 4U
 
 /* ------------------------------------------------------------------ */
 /*  内部工具函数                                                       */
@@ -90,28 +95,30 @@ static IR_CMD_t rule_action_command(uint8_t action)
 }
 
 /**
- * @brief 提交一个本地智控动作。内部码可执行完整场景；学习模式只执行已学习的模式键。
+ * @brief UART 整组发送完成后发布状态；不是空调物理执行回执。
  */
-static bool rule_exec_action(const DEV_RULE_T *r, uint8_t action)
+void Rule_IrCompleted(uint8_t success)
 {
+    DEV_RULE_T *r;
+    uint8_t action = pending_action;
     uint8_t previous = Dev.onOff;
     uint8_t mode;
-    bool accepted;
-
-    if(action < RULE_ACTION_POWER_ON || action > RULE_ACTION_MAX) return false;
-    mode = rule_action_mode(action);
-
-    if(action >= RULE_ACTION_COOL && Dev.irActType == ACT_TYPE_IR) {
-        accepted = Ir_ExecuteConfiguredProfileVerified(mode, POLICY_TARGET_TEMP(r), POLICY_FAN(r)) != 0u;
-    } else if(Dev.irActType == ACT_TYPE_IR) {
-        accepted = Ir_ExecuteVerified(rule_action_command(action)) != 0u;
-    } else if(Dev.irActType == ACT_TYPE_LEARN) {
-        accepted = Ir_ExecuteConfiguredVerified(rule_action_command(action)) != 0u;
-    } else {
-        return false;
+    if(action == RULE_ACTION_NONE) return;
+    pending_action = RULE_ACTION_NONE;
+    r = &Dev.rules[pending_index];
+    if(!success) {
+        /* 学习码可能是增减/切换键，发送结果不确定时不能自动重发。 */
+        if(Dev.irActType == ACT_TYPE_LEARN) {
+            if(pending_latch != POLICY_EXIT_ACTION) r->ctrl.reserved |= pending_latch;
+            return;
+        }
+        if(pending_latch == 0U) retry_start = 1U;
+        if(pending_latch == POLICY_EXIT_ACTION) policy_active_index = (int8_t)pending_index;
+        retry_after_ms = CurTick + 5000U;
+        retry_pending = 1U;
+        return;
     }
-    if(!accepted) return false;
-
+    mode = rule_action_mode(action);
     Dev.onOff = action == RULE_ACTION_POWER_OFF ? PowerOff : PowerOn;
     if(action >= RULE_ACTION_COOL) {
         Dev.ctlMode = (Mode_t)mode;
@@ -124,7 +131,12 @@ static bool rule_exec_action(const DEV_RULE_T *r, uint8_t action)
         if(Dev.meter.onoff_count != 0xFFFFu) Dev.meter.onoff_count++;
         if(Dev.onOff == PowerOn) Dev.lastOnTime = LocalTimestamp;
     }
-    return true;
+    if(pending_latch != POLICY_EXIT_ACTION) r->ctrl.reserved |= pending_latch;
+    if(previous != Dev.onOff || action >= RULE_ACTION_COOL) {
+        Rule_RecordPowerChange();
+        SaveDevInfo(50u);
+    }
+    Ml307_RequestReport();
 }
 
 /**
@@ -136,30 +148,34 @@ void Rule_RecordPowerChange(void)
     power_change_ms = CurTick;
 }
 
-static bool Rule_Execute(DEV_RULE_T *r, uint8_t action)
+static bool Rule_Execute(DEV_RULE_T *r, uint8_t action, uint8_t latch)
 {
     uint16_t minimum = POLICY_MIN_INTERVAL(r);
     uint8_t requested = action == RULE_ACTION_POWER_OFF ? PowerOff : PowerOn;
     bool changesPower = requested != Dev.onOff;
-    bool executed;
+    bool accepted;
+    if(pending_action != RULE_ACTION_NONE || action < RULE_ACTION_POWER_ON ||
+       action > RULE_ACTION_MAX) return false;
     if(changesPower && (uint32_t)(CurTick - power_change_ms) < (uint32_t)minimum * 60000u) {
         PRINT("[Rule] defer power change, minimum=%u min\r\n", minimum);
         return false;
     }
 
-    executed = rule_exec_action(r, action);
-
-    if(!executed) return false;
-
-    if(changesPower || action >= RULE_ACTION_COOL) {
-        Rule_RecordPowerChange();
-        /* 与计量共用运行日志；同一秒内的多个状态变化会合并成一次追加。 */
-        SaveDevInfo(50u);
+    pending_index = (uint8_t)(r - Dev.rules);
+    pending_action = action;
+    pending_latch = latch;
+    if(action >= RULE_ACTION_COOL && Dev.irActType == ACT_TYPE_IR) {
+        accepted = Ir_ExecuteConfiguredProfileVerified(rule_action_mode(action),
+                         POLICY_TARGET_TEMP(r), POLICY_FAN(r)) != 0U;
+    } else if(Dev.irActType == ACT_TYPE_IR) {
+        accepted = Ir_ExecuteVerified(rule_action_command(action)) != 0U;
+    } else if(Dev.irActType == ACT_TYPE_LEARN) {
+        accepted = Ir_ExecuteConfiguredVerified(rule_action_command(action)) != 0U;
+    } else accepted = false;
+    if(!accepted) {
+        pending_action = RULE_ACTION_NONE;
+        return false;
     }
-
-    PRINT("[Rule] exec trig=%d action=%d\r\n", r->ctrl.trig_type, action);
-    /* 本地智控改变了物理状态，4G 在线时立即上报；离线时由重连流程补报。 */
-    Ml307_RequestReport();
     return true;
 }
 
@@ -230,6 +246,11 @@ void Rule_Pro(void)
 
     /* 时间不可用时不执行进入、退出或温控动作，也不使用虚构的默认日期。 */
     if(!RTC_IsTimeValid() || !rule_get_time(&hour, &minute, &weekday, NULL)) return;
+    if(pending_action != RULE_ACTION_NONE) return;
+    if(retry_pending) {
+        if((int32_t)(CurTick - retry_after_ms) < 0) return;
+        retry_pending = 0U;
+    }
     for(i = 0u; i < MAX_POLICY_GROUPS; ++i) {
         r = &Dev.rules[i];
         if(r->ctrl.enable && r->ctrl.trig_type == TRIG_COMBINED && policy_window_matches(r, hour, minute, weekday)) {
@@ -238,11 +259,17 @@ void Rule_Pro(void)
         }
     }
 
+    if(retry_start) {
+        /* 同一窗口重试进入动作；窗口已结束则先执行原组的退出动作。 */
+        if(selected == policy_active_index) policy_active_index = -1;
+        retry_start = 0U;
+    }
     if(!policy_active_known || selected != policy_active_index) {
         if(policy_active_known && policy_active_index >= 0) {
             r = &Dev.rules[(uint8_t)policy_active_index];
-            if(POLICY_END_OFF(r) && Dev.onOff != PowerOff) {
-                if(!Rule_Execute(r, RULE_ACTION_POWER_OFF)) return;
+            /* 即使场景部分发送失败、软件仍显示关闭，退出也发送绝对关机。 */
+            if(POLICY_END_OFF(r)) {
+                if(!Rule_Execute(r, RULE_ACTION_POWER_OFF, POLICY_EXIT_ACTION)) return;
                 policy_active_index = -1;
                 return;
             }
@@ -254,7 +281,7 @@ void Rule_Pro(void)
         r = &Dev.rules[(uint8_t)selected];
         r->ctrl.reserved = 0u;
         if(POLICY_START_ACTION(r) != RULE_ACTION_NONE) {
-            if(!Rule_Execute(r, POLICY_START_ACTION(r))) policy_active_index = -1;
+            if(!Rule_Execute(r, POLICY_START_ACTION(r), 0U)) policy_active_index = -1;
             return;
         }
     }
@@ -269,14 +296,12 @@ void Rule_Pro(void)
         r->ctrl.reserved &= (uint8_t)~POLICY_LATCH_LOW;
 
     if(temp > (int16_t)POLICY_UPPER_X10(r) && POLICY_HIGH_ACTION(r) != RULE_ACTION_NONE &&
-       !(r->ctrl.reserved & POLICY_LATCH_HIGH) && Rule_Execute(r, POLICY_HIGH_ACTION(r))) {
-        r->ctrl.reserved |= POLICY_LATCH_HIGH;
+       !(r->ctrl.reserved & POLICY_LATCH_HIGH) && Rule_Execute(r, POLICY_HIGH_ACTION(r), POLICY_LATCH_HIGH)) {
         return;
     }
     if(temp < (int16_t)r->sched && POLICY_LOW_ACTION(r) != RULE_ACTION_NONE &&
-       !(r->ctrl.reserved & POLICY_LATCH_LOW) && Rule_Execute(r, POLICY_LOW_ACTION(r))) {
-        r->ctrl.reserved |= POLICY_LATCH_LOW;
-    }
+       !(r->ctrl.reserved & POLICY_LATCH_LOW))
+        (void)Rule_Execute(r, POLICY_LOW_ACTION(r), POLICY_LATCH_LOW);
 }
 
 /**
@@ -285,6 +310,9 @@ void Rule_Pro(void)
 void Rule_Reset(void)
 {
     uint8_t i;
+    pending_action = RULE_ACTION_NONE;
+    retry_pending = 0U;
+    retry_start = 0U;
     for (i = 0; i < MAX_RULES; i++) {
         Dev.rules[i].ctrl.executed = 0;
         Dev.rules[i].ctrl.reserved = 0;

@@ -1040,9 +1040,7 @@ static void parse_network_clock(const char *line, uint16_t length)
 {
     ml307_clock_t clock;
     time_fields_t fields;
-    uint32_t local_timestamp;
     uint32_t utc_timestamp;
-    int32_t offset;
     if(!Ml307Codec_ParseClock(line, length, &clock)) return;
     fields.year = clock.year;
     fields.month = clock.month;
@@ -1050,18 +1048,11 @@ static void parse_network_clock(const char *line, uint16_t length)
     fields.hour = clock.hour;
     fields.minute = clock.minute;
     fields.second = clock.second;
-    if(!TimeUtil_ToUnix(&fields, &local_timestamp)) return;
-    offset = (int32_t)clock.timezone_quarters * 900L;
-    if(offset >= 0) {
-        if(local_timestamp < (uint32_t)offset) return;
-        utc_timestamp = local_timestamp - (uint32_t)offset;
-    } else {
-        uint32_t magnitude = (uint32_t)(-offset);
-        if(local_timestamp > 0xFFFFFFFFUL - magnitude) return;
-        utc_timestamp = local_timestamp + magnitude;
-    }
+    /* The deployed ML307R returns UTC calendar fields, even with a +32
+     * network-zone suffix. Beijing conversion belongs only to UI/policies. */
+    if(!TimeUtil_ToUnix(&fields, &utc_timestamp)) return;
     if(utc_timestamp < 1672531200UL || utc_timestamp > 2147483000UL) return;
-    RTC_SetTimestamp(utc_timestamp);
+    RTC_SyncTimestamp(utc_timestamp);
     modem.time_synced = RTC_IsTimeValid();
     if(modem.time_synced) {
         LocalTimestamp = Rtc_GetTimestamp();
@@ -1672,7 +1663,8 @@ static void consume_uart(void)
                                                               modem.http_raw_length);
                     modem.http_raw_state = 3U;
                     modem.line_length = 0U;
-                } else if(Ota_Write(modem.ota_write_offset + modem.http_range_received,
+                } else if(Ota_Get()->url_length == 0U ||
+                          Ota_Write(modem.ota_write_offset + modem.http_range_received,
                                     http_raw_data, modem.http_raw_length) != DEVICE_STATUS_OK) {
                     http_fail(ML307_ERROR_OTA);
                 } else {
@@ -1761,6 +1753,11 @@ void Ml307_EarlyPowerOff(void)
 {
     /* 新版硬件 PB5 外部默认会开启 4G，尽早建立确定的关断状态。 */
     power_off();
+}
+
+uint8_t Ml307_HttpBusy(void)
+{
+    return modem.http_step != ML307_HTTP_IDLE || modem.http_raw_state != 0U;
 }
 
 void Ml307_ApplyConfiguration(void)

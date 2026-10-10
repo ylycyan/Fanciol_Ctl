@@ -16,7 +16,6 @@ typedef struct {
     uint8_t hour;
     uint8_t minute;
     uint8_t second;
-    int16_t timezone_quarters;
 } ml307_clock_t;
 
 enum {

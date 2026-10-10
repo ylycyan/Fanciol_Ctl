@@ -859,13 +859,7 @@ void Lora_Pro(void)
             }
 
             if(cmd == LORA_CMD_TIME_SYNC) {
-                uint32_t gatewayTimestamp = len >= 9 ? Lora_GetU32Le(LoraBuf + 4) : LocalTimestamp;
-                if(len >= 9 &&
-                   (!RTC_IsTimeValid() || (gatewayTimestamp > LocalTimestamp + 3) ||
-                    (LocalTimestamp > gatewayTimestamp + 3))) {
-                    PRINT("RTC update %ld -> %ld\n", LocalTimestamp, gatewayTimestamp);
-                    RTC_SetTimestamp(gatewayTimestamp);
-                }
+                if(len >= 9) RTC_SyncTimestamp(Lora_GetU32Le(LoraBuf + 4));
                 if(Dev.linkRole == LINK_RELAY) Relay_ForwardBroadcast(LoraBuf, len);
                 else Lora_Listening();
                 return;

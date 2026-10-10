@@ -220,5 +220,7 @@ uint8_t Ir_ExecuteConfiguredProfileVerified(uint8_t mode, uint8_t temperature, u
 uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t cmd);
 uint8_t Ir_SendLearnedVerified(uint8_t channel);
 void SaveDevInfo(uint16_t delay);
+void Rule_RecordPowerChange(void);
+void Rule_IrCompleted(uint8_t success);
 
 #endif

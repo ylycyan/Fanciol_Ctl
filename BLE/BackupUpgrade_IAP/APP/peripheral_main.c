@@ -99,6 +99,9 @@ static uint8_t install_image(void)
     if(metadata.image_size == 0U || metadata.image_size > OTA_MAX_IMAGE_SIZE ||
        image_crc(OTA_STAGING_ADDRESS, metadata.image_size) != metadata.image_crc32)
         return 0U;
+    /* 上次复制已完成但元数据提交失败时，不再擦写相同应用。 */
+    if(image_crc(OTA_APP_ADDRESS, metadata.image_size) == metadata.image_crc32)
+        return 1U;
 
     erase_size = (metadata.image_size + EEPROM_BLOCK_SIZE - 1U) &
                  ~(EEPROM_BLOCK_SIZE - 1U);

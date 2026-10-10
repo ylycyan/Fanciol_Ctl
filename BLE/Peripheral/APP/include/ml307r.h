@@ -89,6 +89,7 @@ void Ml307_ApplyConfiguration(void);
 void Ml307_RequestReport(void);
 void Ml307_Restart(void);
 uint8_t Ml307_IsOnline(void);
+uint8_t Ml307_HttpBusy(void);
 const ml307_status_t *Ml307_GetStatus(void);
 uint8_t Ml307_AtStart(const uint8_t *command, uint8_t length);
 uint8_t Ml307_AtCancel(void);
