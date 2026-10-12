@@ -309,6 +309,9 @@ static void uart_enable(void)
 
 static void reset_runtime_flags(void)
 {
+    modem.status.signal_rssi = -127;
+    modem.status.rsrp_dbm = -127;
+    modem.status.rsrq_db_x10 = -32768;
     modem.status.sim_ready = 0U;
     modem.status.network_registered = 0U;
     modem.status.mqtt_online = 0U;
@@ -366,6 +369,13 @@ static void start_power_cycle(void)
 static void enter_backoff(ml307_error_t error)
 {
     uint32_t delay;
+    /* MQTT 失联时终止当前 HTTP 事务，保留固件检查点；先清实例再重连接。 */
+    if(modem.http_step != ML307_HTTP_IDLE) {
+        modem.http_step = ML307_HTTP_TERM;
+        modem.http_raw_state = 0U;
+        modem.http_raw_comma_count = 0U;
+        modem.line_length = 0U;
+    }
     /*
      * 指令已经执行、但结果正在发布时若链路断开，保留结果到重连后再发。
      * 这里只重发执行结果，不会再次执行空调控制。
@@ -381,7 +391,10 @@ static void enter_backoff(ml307_error_t error)
        error == ML307_ERROR_TIMEOUT) {
         if(modem.recovery_level < 3U) modem.recovery_level++;
     } else modem.recovery_level = 3U;
-    if(modem.recovery_level >= 3U) uart_disable();
+    if(modem.recovery_level >= 3U) {
+        uart_disable();
+        modem.http_step = ML307_HTTP_IDLE; /* 电源重启会清理实例，不向已关闭的 UART 排队。 */
+    }
     modem.status.mqtt_online = 0U;
     modem.status.last_error = (uint8_t)error;
     if(error == ML307_ERROR_TIMEOUT && modem.status.timeout_count != 0xFFFFU)
@@ -607,9 +620,7 @@ static uint8_t send_http_read(void)
        !tx_append_char(&length, ',') ||
        !tx_append_u32(&length, amount) ||
        !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
-    /* MHTTPREAD returns an ASCII prefix followed immediately by binary data.
-     * Switch the UART consumer before the response can arrive so 0x00/CR/LF
-     * bytes from the firmware are never treated as line delimiters. */
+    /* 等待 MHTTPREAD 头时仍分流 MQTT URC；识别完整头后才按长度读取二进制。 */
     modem.http_raw_state = 1U;
     modem.http_raw_comma_count = 0U;
     modem.http_raw_length = 0U;
@@ -1028,8 +1039,7 @@ static void parse_extended_signal(const char *line)
         }
         if(!digits || (index < 5U && *cursor++ != ',')) return;
     }
-    modem.status.signal_rssi = values[0] <= 63U ?
-        (int8_t)(-111 + (int16_t)values[0]) : -127;
+    /* RSSI 只采用 CSQ；CESQ 的 RXLEV 不能覆盖刚取得的蜂窝 RSSI。 */
     modem.status.rsrq_db_x10 = values[4] <= 34U ?
         (int16_t)(-195 + (int16_t)values[4] * 5) : -32768;
     modem.status.rsrp_dbm = values[5] <= 97U ?
@@ -1161,7 +1171,6 @@ static void http_fail_status(ml307_error_t error, uint8_t operation_status)
     modem.http_raw_length = 0U;
     modem.http_raw_received = 0U;
     modem.line_length = 0U;
-    rx_tail = rx_head;
     modem.status.last_error = (uint8_t)error;
 
     /* A cleanup command may itself time out on older module firmware.  Move
@@ -1401,7 +1410,6 @@ static void process_line(char *line, uint16_t length)
 {
     uint8_t phase = modem.status.phase;
     if(at_process_line(line, length)) return;
-    if(http_process_line(line, length)) return;
     if(mqtt_urc_is(line, "conn")) {
         uint16_t result = 0xFFFFU;
         if(mqtt_urc_number(line, 1U, &result) && result == 0U) {
@@ -1411,6 +1419,10 @@ static void process_line(char *line, uint16_t length)
                     complete_mqtt_connection();
             }
         } else if(result == 1U) {
+            if(modem.http_step != ML307_HTTP_IDLE) {
+                enter_backoff(ML307_ERROR_MQTT);
+                return;
+            }
             /* State 1 means that the module is already reconnecting. Give its
              * internal MQTT client one bounded window before escalating to a
              * hardware reset; immediate resets can otherwise form a loop on
@@ -1434,6 +1446,7 @@ static void process_line(char *line, uint16_t length)
     }
     if(mqtt_urc_is(line, "suback")) {
         uint16_t result;
+        if(phase != ML307_PHASE_MQTT_SUBSCRIBE) return;
         /* SUBACK code 0/1/2 is the granted QoS; 128 means rejected. */
         if(!mqtt_urc_number(line, 2U, &result) || result > 2U) {
             enter_backoff(ML307_ERROR_SUBSCRIBE);
@@ -1448,6 +1461,7 @@ static void process_line(char *line, uint16_t length)
         queue_registration();
         modem.report_requested = 1U;
         modem.next_action_ms = CurTick + device_jitter_ms;
+        modem.last_signal_ms = CurTick - ML307_SIGNAL_INTERVAL_MS;
         status_phase(ML307_PHASE_ONLINE);
         return;
     }
@@ -1474,6 +1488,7 @@ static void process_line(char *line, uint16_t length)
     if(strstr(line, "+CSQ:") != 0) parse_signal(line);
     if(strstr(line, "+CESQ:") != 0) parse_extended_signal(line);
     if(strstr(line, "+CCLK:") != 0) parse_network_clock(line, length);
+    if(http_process_line(line, length)) return;
     if(strcmp(line, "ERROR") == 0 || strstr(line, "+CME ERROR:") != 0) {
         if(phase == ML307_PHASE_SIM && modem.status.sim_ready &&
            (modem.identity_step == 1U || modem.identity_step == 3U)) {
@@ -1489,7 +1504,9 @@ static void process_line(char *line, uint16_t length)
         }
         else if(phase == ML307_PHASE_NETWORK) enter_backoff(ML307_ERROR_NETWORK);
         else if(phase == ML307_PHASE_SIGNAL_QUERY) {
-            if(modem.network_command == 2U) modem.last_signal_ms = CurTick;
+            if(modem.network_command == 2U) modem.status.signal_rssi = -127;
+            if(modem.network_command == 2U || modem.network_command == 6U)
+                modem.last_signal_ms = CurTick;
             modem.waiting = 0U;
             status_phase(ML307_PHASE_ONLINE);
         }
@@ -1565,6 +1582,11 @@ static void process_line(char *line, uint16_t length)
         }
         break;
     case ML307_PHASE_SIGNAL_QUERY:
+        if(modem.network_command == 2U && tx_command("AT+CESQ\r\n")) {
+            modem.network_command = 6U;
+            transition_wait(ML307_PHASE_SIGNAL_QUERY, ML307_COMMAND_TIMEOUT_MS);
+            break;
+        }
         if(modem.network_command == 2U || modem.network_command == 6U)
             modem.last_signal_ms = CurTick;
         status_phase(ML307_PHASE_ONLINE);
@@ -1615,42 +1637,6 @@ static void consume_uart(void)
         uint8_t raw_value = rx_ring[rx_tail];
         char value = (char)raw_value;
         rx_tail = (uint16_t)((rx_tail + 1U) % ML307_RX_RING_SIZE);
-        if(modem.http_raw_state == 1U) {
-            /* Collect only the printable MHTTPREAD prefix.  The fourth comma
-             * is the delimiter immediately before the binary payload. */
-            if((value == '\r' || value == '\n') && modem.line_length == 0U) continue;
-            if(value == '\n') {
-                http_fail(ML307_ERROR_OTA);
-                continue;
-            }
-            if(modem.line_length + 1U >= sizeof(rx_line)) {
-                http_fail(ML307_ERROR_RX_OVERFLOW);
-                continue;
-            }
-            rx_line[modem.line_length++] = value;
-            if(value == ',') {
-                modem.http_raw_comma_count++;
-                if(modem.http_raw_comma_count == 4U) {
-                    uint16_t data_length = 0U;
-                    uint16_t remaining = modem.http_read_type == 0U ?
-                                         modem.http_header_remaining :
-                                         (uint16_t)(modem.http_range_size -
-                                                    modem.http_range_received);
-                    if(!parse_http_read_header(rx_line, modem.line_length,
-                                               &data_length) ||
-                       data_length == 0U || data_length > sizeof(http_raw_data) ||
-                       data_length > remaining) {
-                        http_fail(ML307_ERROR_OTA);
-                    } else {
-                        modem.http_raw_length = data_length;
-                        modem.http_raw_received = 0U;
-                        modem.http_raw_state = 2U;
-                        modem.line_length = 0U;
-                    }
-                }
-            }
-            continue;
-        }
         if(modem.http_raw_state == 2U) {
             if(modem.http_raw_received >= sizeof(http_raw_data)) {
                 http_fail(ML307_ERROR_OTA);
@@ -1718,7 +1704,23 @@ static void consume_uart(void)
             modem.status.last_error = ML307_ERROR_RX_OVERFLOW;
         } else {
             rx_line[modem.line_length++] = value;
-            if(value == ',' && mqtt_header_complete()) mqtt_begin_payload();
+            if(value == ',' && modem.http_raw_state == 1U &&
+               modem.line_length >= 11U && memcmp(rx_line, "+MHTTPREAD:", 11U) == 0) {
+                if(++modem.http_raw_comma_count == 4U) {
+                    uint16_t data_length = 0U;
+                    uint16_t remaining = modem.http_read_type == 0U ? modem.http_header_remaining :
+                        (uint16_t)(modem.http_range_size - modem.http_range_received);
+                    if(!parse_http_read_header(rx_line, modem.line_length, &data_length) ||
+                       !data_length || data_length > sizeof(http_raw_data) || data_length > remaining) {
+                        http_fail(ML307_ERROR_OTA);
+                    } else {
+                        modem.http_raw_length = data_length;
+                        modem.http_raw_received = 0U;
+                        modem.http_raw_state = 2U;
+                        modem.line_length = 0U;
+                    }
+                }
+            } else if(value == ',' && mqtt_header_complete()) mqtt_begin_payload();
         }
     }
 }
@@ -2011,7 +2013,9 @@ void Ml307_Process(void)
             return;
         }
         if(modem.status.phase == ML307_PHASE_SIGNAL_QUERY) {
-            if(modem.network_command == 2U) modem.last_signal_ms = now;
+            if(modem.network_command == 2U) modem.status.signal_rssi = -127;
+            if(modem.network_command == 2U || modem.network_command == 6U)
+                modem.last_signal_ms = now;
             modem.waiting = 0U;
             status_phase(ML307_PHASE_ONLINE);
             return;
@@ -2115,8 +2119,8 @@ void Ml307_Process(void)
             modem.next_clock_ms = now + ML307_CLOCK_RETRY_MS;
             transition_wait(ML307_PHASE_SIGNAL_QUERY, ML307_COMMAND_TIMEOUT_MS);
         } else if((uint32_t)(now - modem.last_signal_ms) >= ML307_SIGNAL_INTERVAL_MS &&
-                  tx_command("AT+CESQ\r\n")) {
-            modem.network_command = 6U;
+                  tx_command("AT+CSQ\r\n")) {
+            modem.network_command = 2U;
             transition_wait(ML307_PHASE_SIGNAL_QUERY, ML307_COMMAND_TIMEOUT_MS);
         }
         break;

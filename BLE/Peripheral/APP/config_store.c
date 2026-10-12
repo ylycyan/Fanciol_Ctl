@@ -146,6 +146,7 @@ static uint32_t runtime_generation;
 static uint16_t runtime_next_slot;
 static uint8_t runtime_backup_active;
 static uint8_t runtime_write_locked;
+static uint8_t runtime_maintenance_failed;
 static uint32_t config_fingerprint;
 static config_load_state_t config_load_state;
 static uint32_t ir_fingerprint;
@@ -166,6 +167,32 @@ static uint32_t connectivity_slot;
 static void storage_kick_watchdog(void)
 {
     WWDG_SetCounter(0);
+}
+
+/* 复用记录首字 magic 作为提交点，不改变落盘格式。候选数据先核对，
+ * 最后写有效 magic；回读失败或中途掉电均不会发布未经确认的新记录。 */
+static uint8_t storage_write_verified(uint32_t address, void *record, uint16_t length)
+{
+    uint8_t *bytes = (uint8_t *)record;
+    uint8_t readback[64] __attribute__((aligned(4)));
+    uint32_t marker;
+    uint16_t offset, chunk;
+    if(EEPROM_READ(address, &marker, sizeof(marker)) || marker != 0xFFFFFFFFUL)
+        return DEVICE_STATUS_VERIFY_FAILED;
+    if(EEPROM_WRITE(address + 4U, bytes + 4U, length - 4U))
+        return DEVICE_STATUS_IO_ERROR;
+    for(offset = 4U; offset < length; offset = (uint16_t)(offset + chunk)) {
+        chunk = (uint16_t)(length - offset);
+        if(chunk > sizeof(readback)) chunk = sizeof(readback);
+        if(EEPROM_READ(address + offset, readback, chunk) ||
+           memcmp(readback, bytes + offset, chunk)) return DEVICE_STATUS_VERIFY_FAILED;
+    }
+    if(EEPROM_WRITE(address, record, 4U)) {
+        marker = 0U;
+        (void)EEPROM_WRITE(address, &marker, sizeof(marker));
+        return DEVICE_STATUS_IO_ERROR;
+    }
+    return DEVICE_STATUS_OK;
 }
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint16_t len)
@@ -354,39 +381,24 @@ uint8_t Config_Commit(void)
 {
     config_record_t r;
     uint32_t target;
-    uint32_t committed_generation;
-    uint32_t committed_crc;
+    uint8_t status;
     if(config_load_state == CONFIG_LOAD_IO_ERROR) return DEVICE_STATUS_IO_ERROR;
     if(Config_ValidateCurrent() != DEVICE_STATUS_OK) return DEVICE_STATUS_INVALID_ARG;
     memset(&r, 0, sizeof(r)); capture_config(&r.payload);
     r.magic = CFG_MAGIC; r.schema_version = CONFIG_SCHEMA_VERSION; r.generation = config_revision + 1u;
     r.payload_length = sizeof(r.payload);
     r.crc32 = config_record_crc(&r);
-    committed_generation = r.generation;
-    committed_crc = r.crc32;
     target = (config_slot == CONFIG_SLOT_A) ? CONFIG_SLOT_B : CONFIG_SLOT_A;
     storage_kick_watchdog();
-    if(EEPROM_ERASE(target, CONFIG_ERASE_BYTES) || EEPROM_WRITE(target, &r, sizeof(r))) {
-        /* 擦写失败：置降级，下一次轮询会用同一份 RAM 状态重试。 */
+    status = EEPROM_ERASE(target, CONFIG_ERASE_BYTES) ? DEVICE_STATUS_IO_ERROR :
+             storage_write_verified(target, &r, sizeof(r));
+    if(status != DEVICE_STATUS_OK) {
         config_load_state = CONFIG_LOAD_DEGRADED;
         storage_startup_flags |= STORAGE_STARTUP_DEGRADED;
-        return DEVICE_STATUS_IO_ERROR;
+        Dev.errorCode.bit.flash = 1U;
+        return status;
     }
-    if(EEPROM_READ(target, &r, sizeof(r)) ||
-       !valid_config_record(&r) ||
-       r.generation != committed_generation ||
-       r.crc32 != committed_crc) {
-        /*
-         * 写入可能已经落盘、只是回读失败。此时若沿用旧 revision/fingerprint，
-         * 调用方回滚 RAM 后会认为“无变化”，重启却加载到这条记录，造成
-         * RAM/Flash 分叉。这里置降级，迫使 Config_CommitIfChanged 用当前
-         * RAM 状态再提交一次，从而让两侧重新一致。
-         */
-        config_load_state = CONFIG_LOAD_DEGRADED;
-        storage_startup_flags |= STORAGE_STARTUP_DEGRADED;
-        return DEVICE_STATUS_VERIFY_FAILED;
-    }
-    config_revision = committed_generation;
+    config_revision = r.generation;
     config_slot = target;
     config_fingerprint = Config_Crc32((const uint8_t *)&r.payload,
                                         sizeof(r.payload));
@@ -459,6 +471,7 @@ uint8_t Runtime_Load(void)
     uint16_t i;
     runtime_next_slot = 0; runtime_generation = 0; runtime_backup_active = 0;
     runtime_write_locked = 0U;
+    runtime_maintenance_failed = 0U;
     for(i = 0; i < RUNTIME_SLOTS; ++i) {
         memset(&r, 0xFF, sizeof(r));
         if(EEPROM_READ(RUNTIME_PAGE + (uint32_t)i * sizeof(r),
@@ -467,7 +480,13 @@ uint8_t Runtime_Load(void)
             runtime_next_slot = (uint16_t)(i + 1U);
             continue;
         }
-        if(r.magic == 0xFFFFFFFFUL) { runtime_next_slot = i; break; }
+        if(r.magic == 0xFFFFFFFFUL) {
+            uint16_t j;
+            const uint8_t *bytes = (const uint8_t *)&r;
+            for(j = 0U; j < sizeof(r) && bytes[j] == 0xFFU; j++) {}
+            if(j == sizeof(r)) continue; /* 写失败可能留下空槽，后续仍可能有有效记录。 */
+            /* magic 未提交但已有候选数据：跳过该槽，继续寻找后续有效记录。 */
+        }
         if(valid_runtime_record(&r)) {
             if(!found || (int32_t)(r.generation - best.generation) > 0) { best = r; found = 1; }
         } else invalid_record = 1U;
@@ -518,12 +537,8 @@ uint8_t Runtime_Load(void)
 
 static uint8_t runtime_write_backup(runtime_record_t *record)
 {
-    runtime_record_t verify;
     if(EEPROM_ERASE(RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE) ||
-       EEPROM_WRITE(RUNTIME_BACKUP_PAGE, record, sizeof(*record)) ||
-       EEPROM_READ(RUNTIME_BACKUP_PAGE, &verify, sizeof(verify)) ||
-       memcmp(record, &verify, sizeof(verify)) != 0 ||
-       !valid_runtime_record(&verify)) {
+       storage_write_verified(RUNTIME_BACKUP_PAGE, record, sizeof(*record)) != DEVICE_STATUS_OK) {
         return DEVICE_STATUS_VERIFY_FAILED;
     }
     runtime_backup_active = 1;
@@ -533,9 +548,10 @@ static uint8_t runtime_write_backup(runtime_record_t *record)
 uint8_t Runtime_Append(void)
 {
     runtime_record_t r;
-    runtime_record_t verify;
     uint32_t address;
     uint8_t rolling_over;
+    uint8_t backup_committed = 0U;
+    uint8_t status;
 
     if(runtime_write_locked) return DEVICE_STATUS_IO_ERROR;
 
@@ -553,31 +569,39 @@ uint8_t Runtime_Append(void)
         (uint16_t)offsetof(runtime_record_t, crc32));
 
     rolling_over = runtime_next_slot >= RUNTIME_SLOTS;
-    if(rolling_over) {
+    if(rolling_over && !runtime_backup_active) {
         storage_kick_watchdog();
-        if(runtime_write_backup(&r) != DEVICE_STATUS_OK) return DEVICE_STATUS_VERIFY_FAILED;
+        if(runtime_write_backup(&r) != DEVICE_STATUS_OK) {
+            status = DEVICE_STATUS_VERIFY_FAILED;
+            goto failed;
+        }
+        /* 检查点已提交即已持久化本次值；后续日志整理失败不撤销该提交。 */
+        runtime_generation = r.generation;
+        backup_committed = 1U;
     }
     if(runtime_next_slot >= RUNTIME_SLOTS) {
         storage_kick_watchdog();
-        if(EEPROM_ERASE(RUNTIME_PAGE, RUNTIME_ERASE_BYTES)) return DEVICE_STATUS_IO_ERROR;
+        if(EEPROM_ERASE(RUNTIME_PAGE, RUNTIME_ERASE_BYTES)) {
+            status = DEVICE_STATUS_IO_ERROR;
+            goto failed;
+        }
         runtime_next_slot = 0;
     }
     address = RUNTIME_PAGE + (uint32_t)runtime_next_slot * sizeof(r);
-    if(EEPROM_WRITE(address, &r, sizeof(r))) { runtime_next_slot++; return DEVICE_STATUS_IO_ERROR; }
+    status = storage_write_verified(address, &r, sizeof(r));
     runtime_next_slot++;
-    if(EEPROM_READ(address, &verify, sizeof(verify)) || memcmp(&r, &verify, sizeof(r)) != 0 ||
-       verify.magic != RUNTIME_MAGIC ||
-       verify.crc32 != Config_Crc32(
-           (const uint8_t *)&verify,
-           (uint16_t)offsetof(runtime_record_t, crc32))) {
-        return DEVICE_STATUS_VERIFY_FAILED;
-    }
+    if(status != DEVICE_STATUS_OK) goto failed;
     runtime_generation = r.generation;
+    runtime_maintenance_failed = 0U;
     if(runtime_backup_active &&
        EEPROM_ERASE(RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE) == 0) {
         runtime_backup_active = 0;
     }
     return DEVICE_STATUS_OK;
+failed:
+    runtime_maintenance_failed = 1U;
+    Dev.errorCode.bit.flash = 1U;
+    return backup_committed ? DEVICE_STATUS_OK : status;
 }
 
 static uint32_t ir_fingerprint_current(uint8_t learn_num)
@@ -978,7 +1002,6 @@ static uint8_t connectivity_write_record(uint32_t target, uint8_t state,
                                          const connectivity_config_t *config)
 {
     connectivity_record_t record;
-    uint32_t expected_crc;
     memset(&record, 0, sizeof(record));
     record.magic = CONNECTIVITY_MAGIC;
     record.schema_version = CONNECTIVITY_SCHEMA;
@@ -987,15 +1010,9 @@ static uint8_t connectivity_write_record(uint32_t target, uint8_t state,
     record.payload_length = sizeof(record.payload);
     memcpy(&record.payload, config, sizeof(record.payload));
     record.crc32 = connectivity_crc(&record);
-    expected_crc = record.crc32;
-    if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
-       EEPROM_WRITE(target, &record, sizeof(record)) != 0U ||
-       EEPROM_READ(target, &record, sizeof(record)) != 0U)
+    if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U)
         return DEVICE_STATUS_IO_ERROR;
-    if(!connectivity_record_valid(&record) || record.state != state ||
-       record.generation != generation || record.crc32 != expected_crc)
-        return DEVICE_STATUS_VERIFY_FAILED;
-    return DEVICE_STATUS_OK;
+    return storage_write_verified(target, &record, sizeof(record));
 }
 
 uint8_t Connectivity_Load(void)
@@ -1308,6 +1325,7 @@ uint8_t Storage_FactoryReset(void)
     runtime_next_slot = 0;
     runtime_backup_active = 0;
     runtime_write_locked = 0U;
+    runtime_maintenance_failed = 0U;
     ir_fingerprint = 0;
     ir_generation = 0;
     ir_slot = IR_STORAGE_SLOT_B;
@@ -1325,5 +1343,5 @@ uint8_t Storage_FactoryReset(void)
 
 uint8_t Storage_GetStartupFlags(void)
 {
-    return storage_startup_flags;
+    return storage_startup_flags | (runtime_maintenance_failed ? STORAGE_STARTUP_DEGRADED : 0U);
 }

@@ -17,6 +17,7 @@ static HLW8110_Status_t meter_status;
 static uint64_t meter_energy_delta;
 static uint8_t meter_clear_calls;
 static uint8_t runtime_append_calls;
+static uint8_t runtime_append_status;
 static uint16_t rtc_hour = 12u;
 static uint16_t rtc_minute;
 static uint16_t rtc_day = 31u;
@@ -104,7 +105,7 @@ void HLW8110_ClearEnergyAccumulator(void)
 uint8_t Runtime_Append(void)
 {
     runtime_append_calls++;
-    return 0U;
+    return runtime_append_status;
 }
 
 void Rule_Pro(void);
@@ -400,6 +401,17 @@ int main(void)
     assert(Dev.meter.onoff_count == 17U);
     assert(meter_clear_calls == 1U);
     assert(runtime_append_calls == 1U);
+
+    Dev.meter.energy_wh = 1234U;
+    Dev.meter.energy_watt_tenth_seconds = 5678U;
+    Dev.meter.last_save_ts = 42U;
+    meter_energy_delta = 900U;
+    runtime_append_status = 6U;
+    assert(Meter_ClearEnergy() == 6U);
+    assert(Dev.meter.energy_wh == 1234U && Dev.meter.energy_watt_tenth_seconds == 5678U);
+    assert(Dev.meter.last_save_ts == 42U && meter_energy_delta == 900U);
+    assert(meter_clear_calls == 1U && Dev.errorCode.bit.flash);
+    runtime_append_status = 0U;
 
     /* 提交不是发送完成；失败后五秒重试，且不提前计数、保存或锁存。 */
     setup_policy(0,0,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);

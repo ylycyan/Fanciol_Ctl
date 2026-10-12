@@ -376,14 +376,20 @@ void Meter_Update(uint32_t dt_sec)
 uint8_t Meter_ClearEnergy(void)
 {
     uint8_t status;
+    DEV_METER_T previous = Dev.meter;
 
-    HLW8110_ClearEnergyAccumulator();
     Dev.meter.energy_wh = 0U;
     Dev.meter.energy_watt_tenth_seconds = 0U;
     if(RTC_IsTimeValid()) Dev.meter.last_save_ts = LocalTimestamp;
 
     /* 清零是低频维护操作，立即追加一条记录后再向调用端返回结果。 */
     status = Runtime_Append();
-    if(status == 0U) Ml307_RequestReport();
+    if(status != 0U) {
+        Dev.meter = previous;
+        Dev.errorCode.bit.flash = 1U;
+        return status;
+    }
+    HLW8110_ClearEnergyAccumulator();
+    Ml307_RequestReport();
     return status;
 }

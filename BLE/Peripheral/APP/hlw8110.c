@@ -278,17 +278,8 @@ static hlw_rx_result_t poll_response(uint32_t now)
     }
 
     if(response_count == response_expected) {
-        uint8_t i;
-        uint8_t all_ff = 1;
-        for(i = 0; i < (uint8_t)(response_expected - 1U); ++i) {
-            if(response[i] != 0xFFU) all_ff = 0;
-        }
         request_active = 0;
-        if(all_ff) {
-            rx_failure_reason = HLW8110_ERROR_ALL_FF;
-            rx_failure_detail = response_expected;
-            return HLW_RX_FAILED;
-        }
+        /* 0xFFFF 是合法出厂系数；是否损坏由长度、线路状态及校验和判断。 */
         {
             uint8_t expected_checksum = HLW8110_UartChecksum(
                 pending_command, response, (uint8_t)(response_expected - 1U));

@@ -161,18 +161,21 @@ static void test_config_slot_recovery(void)
     assert(Config_Commit() == DEVICE_STATUS_VERIFY_FAILED);
     clear_failure();
     assert(Config_Load() == DEVICE_STATUS_OK);
-    assert(Dev.nodeId == 0x2345u);
+    assert(Dev.nodeId == Default_DevId);
     assert(Config_GetRevision() == 3u);
-    assert(Config_GetLoadState() == CONFIG_LOAD_HEALTHY);
+    assert(Config_GetLoadState() == CONFIG_LOAD_REPAIRED);
+
+    Dev.nodeId = 0x2345u;
+    assert(Config_Commit() == DEVICE_STATUS_OK);
 
     /*
      * generation 也受 CRC 保护；最新槽头损坏时回退上一代并立即重建冗余，
      * 不能只校验 payload 后误选一个被翻转成“大版本”的记录。
      */
-    dataflash[CONFIG_SLOT_A + 6u] ^= 0x40u;
+    dataflash[CONFIG_SLOT_B + 6u] ^= 0x40u;
     assert(Config_Load() == DEVICE_STATUS_OK);
     assert(Dev.nodeId == Default_DevId);
-    assert(Config_GetRevision() == 3u);
+    assert(Config_GetRevision() == 4u);
     assert(Config_GetLoadState() == CONFIG_LOAD_REPAIRED);
     assert(Config_Load() == DEVICE_STATUS_OK);
     assert(Config_GetLoadState() == CONFIG_LOAD_HEALTHY);
@@ -222,6 +225,44 @@ static void test_config_read_error_never_overwrites_flash(void)
     assert(memcmp(snapshot, dataflash, sizeof(snapshot)) == 0);
 }
 
+static void test_verified_commit_keeps_rejected_values_out_of_flash(void)
+{
+    uint8_t snapshot[DATAFLASH_SIZE];
+    connectivity_config_t next;
+    uint32_t stage;
+    reset_flash(); create_initial_config();
+    memcpy(snapshot, dataflash, sizeof(snapshot));
+    for(stage = 1U; stage <= 4U; stage++) {
+        memcpy(dataflash, snapshot, sizeof(snapshot)); clear_failure();
+        assert(Config_Load() == DEVICE_STATUS_OK);
+        Dev.nodeId = 0x4321U;
+        fail_on(FAIL_READ, stage, 0U);
+        assert(Config_Commit() == DEVICE_STATUS_VERIFY_FAILED);
+        clear_failure(); assert(Config_Load() == DEVICE_STATUS_OK);
+        assert(Dev.nodeId == Default_DevId);
+    }
+    memcpy(dataflash, snapshot, sizeof(snapshot)); clear_failure();
+    assert(Config_Load() == DEVICE_STATUS_OK); Dev.nodeId = 0x4321U;
+    fail_on(FAIL_WRITE, 2U, 1U); /* 有效标记写一半不能发布新值。 */
+    assert(Config_Commit() == DEVICE_STATUS_IO_ERROR);
+    clear_failure(); assert(Config_Load() == DEVICE_STATUS_OK);
+    assert(Dev.nodeId == Default_DevId);
+
+    reset_flash(); assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    next = *Connectivity_Get(); assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
+    assert(Connectivity_Load() == DEVICE_STATUS_OK);
+    memcpy(snapshot, dataflash, sizeof(snapshot));
+    for(stage = 1U; stage <= 5U; stage++) {
+        memcpy(dataflash, snapshot, sizeof(snapshot)); clear_failure();
+        assert(Connectivity_Load() == DEVICE_STATUS_OK);
+        next = *Connectivity_Get(); next.report_interval_sec = 600U;
+        fail_on(FAIL_READ, stage, 0U);
+        assert(Connectivity_Save(&next) == DEVICE_STATUS_VERIFY_FAILED);
+        clear_failure(); assert(Connectivity_Load() == DEVICE_STATUS_OK);
+        assert(Connectivity_Get()->report_interval_sec == 60U);
+    }
+}
+
 static void fill_runtime_page(uint8_t *snapshot)
 {
     uint32_t i;
@@ -262,7 +303,7 @@ static void test_runtime_read_error_is_visible_and_non_destructive(void)
     Dev.ctlMode = Mode_Auto;
     Dev.temSet = 25U;
     Dev.wind = Wind_Auto;
-    /* 读取主日志有效记录、随后空槽成功，第三次读取检查点失败。 */
+    /* 有效记录及下一空槽可读，随后读取失败也必须锁定写入。 */
     fail_on(FAIL_READ, 3U, 0U);
     assert(Runtime_Load() == DEVICE_STATUS_IO_ERROR);
     assert(Dev.meter.fault_count == 17U);
@@ -324,18 +365,45 @@ static void test_runtime_rollover_power_loss(void)
 
     restore_runtime_snapshot(snapshot);
     fail_on(FAIL_ERASE, 2, 1); /* 检查点完成，主日志擦除中掉电。 */
-    assert(Runtime_Append() == DEVICE_STATUS_IO_ERROR);
+    assert(Runtime_Append() == DEVICE_STATUS_OK); /* 本次值已持久化到检查点。 */
+    assert(Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED);
     assert_runtime_recovers_64_or_65(65u);
 
     restore_runtime_snapshot(snapshot);
-    fail_on(FAIL_WRITE, 2, 1); /* 主日志首条写一半，检查点仍完整。 */
-    assert(Runtime_Append() == DEVICE_STATUS_IO_ERROR);
+    fail_on(FAIL_WRITE, 3, 1); /* 主日志首条候选写一半，检查点仍完整。 */
+    assert(Runtime_Append() == DEVICE_STATUS_OK);
+    assert(Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED);
     assert_runtime_recovers_64_or_65(65u);
 
     restore_runtime_snapshot(snapshot);
     assert(Runtime_Append() == DEVICE_STATUS_OK);
     assert_runtime_recovers_64_or_65(65u);
     assert(dataflash[RUNTIME_BACKUP_PAGE] == 0xFFu);
+
+    restore_runtime_snapshot(snapshot);
+    fail_on(FAIL_ERASE, 2U, 1U);
+    assert(Runtime_Append() == DEVICE_STATUS_OK);
+    memcpy(snapshot, dataflash + RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE);
+    Dev.meter.fault_count = 66U;
+    fail_on(FAIL_WRITE, 1U, 1U); /* 重试主日志，不能先擦掉唯一有效检查点。 */
+    assert(Runtime_Append() == DEVICE_STATUS_IO_ERROR);
+    assert(!memcmp(snapshot, dataflash + RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE));
+    assert_runtime_recovers_64_or_65(65U);
+}
+
+static void test_runtime_uncommitted_slot_does_not_hide_later_records(void)
+{
+    for(uint32_t stage = 0U; stage <= 2U; stage++) {
+        reset_flash(); assert(Runtime_Load() == DEVICE_STATUS_VERIFY_FAILED);
+        Dev.onOff = PowerOff; Dev.temSet = 25U; Dev.meter.energy_wh = 123U;
+        /* 不写入任何字节、仅空标记读取失败、候选写完后读回失败。 */
+        fail_on(stage ? FAIL_READ : FAIL_WRITE, stage ? stage : 1U, 0U);
+        assert(Runtime_Append() != DEVICE_STATUS_OK);
+        clear_failure(); Dev.meter.energy_wh = 456U;
+        assert(Runtime_Append() == DEVICE_STATUS_OK);
+        assert(Runtime_Load() == DEVICE_STATUS_OK);
+        assert(Dev.meter.energy_wh == 456U);
+    }
 }
 
 static void test_ir_double_slot_recovery(void)
@@ -618,6 +686,8 @@ static void test_custom_device_uid_prefix_recovery(void)
 
 int main(void)
 {
+    test_verified_commit_keeps_rejected_values_out_of_flash();
+    test_runtime_uncommitted_slot_does_not_hide_later_records();
     test_config_slot_recovery();
     test_config_read_error_never_overwrites_flash();
     test_runtime_rollover_power_loss();

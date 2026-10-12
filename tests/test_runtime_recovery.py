@@ -29,6 +29,68 @@ def no_includes(source):
 
 
 class RuntimeRecoveryTests(unittest.TestCase):
+    def test_led_running_and_network_indicators_do_not_blink(self):
+        source = no_includes((APP / 'led.c').read_text(encoding='utf-8'))
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+#define LED_GREEN_PIN 1U
+#define LED_WHITE_PIN 2U
+#define LED_BLUE_PIN 4U
+#define LED_RED_PIN 8U
+#define Status_Connected 4U
+#define GAPROLE_STATE 0U
+#define GAPROLE_STATE_ADV_MASK 15U
+#define GAPROLE_CONNECTED 2U
+#define GAPROLE_CONNECTED_ADV 3U
+#define ML307_ERROR_MODEM 1U
+#define ML307_ERROR_RX_OVERFLOW 2U
+#define ML307_ERROR_UART 3U
+typedef struct { uint8_t mqtt_online, last_error; } ml307_status_t;
+static ml307_status_t cell;
+static struct {
+    uint8_t loraStatus;
+    struct { struct { uint8_t flash, ad, power, rtc, lora; } bit; } errorCode;
+} Dev;
+static uint32_t CurTick, lights;
+static uint8_t lora, cellular, identify, ble;
+static void GPIOB_ResetBits(uint32_t pins) { lights |= pins; }
+static void GPIOB_SetBits(uint32_t pins) { lights &= ~pins; }
+static const ml307_status_t *Ml307_GetStatus(void) { return &cell; }
+static uint8_t Connectivity_LoraEnabled(void) { return lora; }
+static uint8_t Connectivity_CellularEnabled(void) { return cellular; }
+static uint8_t DeviceService_IdentifyActive(void) { return identify; }
+static void GAPRole_GetParameter(unsigned p, uint8_t *s) { (void)p; *s=ble; }
+''' + source + r'''
+int main(void) {
+    for(CurTick=0; CurTick<4000; CurTick+=100) {
+        lora=1; cellular=0; Dev.loraStatus=0; LED_Pro();
+        assert(lights==LED_GREEN_PIN);
+        Dev.loraStatus=Status_Connected; LED_Pro();
+        assert(lights==(LED_GREEN_PIN|LED_WHITE_PIN));
+        lora=0; cellular=1; cell.mqtt_online=0; LED_Pro();
+        assert(lights==LED_GREEN_PIN);
+        cell.mqtt_online=1; ble=GAPROLE_CONNECTED; LED_Pro();
+        assert(lights==(LED_GREEN_PIN|LED_WHITE_PIN|LED_BLUE_PIN));
+        identify=1; LED_Pro();
+        assert((lights & (LED_GREEN_PIN|LED_WHITE_PIN))==(LED_GREEN_PIN|LED_WHITE_PIN));
+        assert(!!(lights & LED_BLUE_PIN)==((CurTick/100U)&1U));
+        identify=0; ble=0;
+        cellular=0; LED_Pro(); assert(lights==LED_GREEN_PIN);
+        Dev.errorCode.bit.flash=1; LED_Pro();
+        assert(lights==(LED_GREEN_PIN|LED_RED_PIN));
+        Dev.errorCode.bit.flash=0;
+    }
+    CurTick=UINT32_MAX-199U; LED_NotifyIrTx();
+    for(unsigned offset=0; offset<=500; offset+=100) {
+        CurTick=(UINT32_MAX-199U)+offset; LED_Pro();
+        assert(!!(lights & LED_GREEN_PIN)==(offset>=400 || (offset/100U)%2U==0));
+        assert(!(lights & LED_WHITE_PIN));
+    }
+    return 0;
+}
+''')
+
     def test_startup_watchdog_precedes_ble_initialization(self):
         source = (APP / 'peripheral_main.c').read_text(encoding='utf-8')
         main = source[source.rindex('int main(void)'):]
@@ -405,6 +467,110 @@ int main(void) {
 }
 ''')
 
+    def test_meter_response_accepts_ff_coefficients_only_with_valid_checksum(self):
+        source = (APP / 'hlw8110.c').read_text(encoding='utf-8')
+        prefix = no_includes(source[:source.index('static void uart_configure')])
+        math = (APP / 'hlw8110_math.c').read_text(encoding='utf-8')
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+#include "board.h"
+#include "BLE/Peripheral/APP/include/hlw8110.h"
+#define STA_ERR_BREAK 1U
+#define STA_ERR_FRAME 2U
+#define STA_ERR_PAR 4U
+#define STA_ERR_FIFOOV 8U
+static uint8_t R8_UART0_RFC;
+static uint8_t UART0_GetLinSTA(void) {return 0;}
+static uint8_t UART0_RecvByte(void) {return 0;}
+#define UART0_CLR_RXFIFO() ((void)0)
+''' + prefix + function(math, 'HLW8110_UartChecksum') + function(source, 'poll_response') + r'''
+int main(void) {
+    uint8_t data[2]={0xFF,0xFF};
+    const uint8_t registers[]={HLW_REG_ENERGY_AC,HLW_REG_RMS_IAC,HLW_REG_RMS_UC,HLW_REG_POWER_PAC};
+    for(unsigned i=0;i<sizeof(registers);i++) {
+        pending_command=registers[i];response_expected=response_count=3;request_active=1;
+        response[0]=response[1]=0xFF;
+        response[2]=HLW8110_UartChecksum(pending_command,data,2);
+        assert(poll_response(0)==HLW_RX_OK);
+        response[2]^=1;
+        assert(poll_response(0)==HLW_RX_FAILED && rx_failure_reason==HLW8110_ERROR_CHECKSUM);
+    }
+    return 0;
+}
+''')
+
+    def test_http_and_mqtt_binary_receive_are_demultiplexed(self):
+        source = (APP / 'ml307r.c').read_text(encoding='utf-8')
+        context = re.search(r'typedef struct \{.*?\} ml307_context_t;', source, re.S).group()
+        codec = no_includes((APP / 'ml307r_codec.c').read_text(encoding='utf-8'))
+        self.compile_run(r'''
+#include <assert.h>
+#include <string.h>
+#include "ml307r.h"
+#include "ml307r_codec.h"
+#include "device_protocol.h"
+#include "ota_update.h"
+#define ML307_RX_RING_SIZE 512U
+#define ML307_MGMT_MAX_FRAME 160U
+#define ML307_COMMAND_TIMEOUT_MS 3000U
+#define ML307_HTTP_IDLE 0U
+#define ML307_HTTP_READ 6U
+#define ML307_HTTP_TERM 7U
+#define ML307_HTTP_DELETE 8U
+#define ML307_HTTP_RETRY_LIMIT 3U
+''' + context + r'''
+static ml307_context_t modem;
+static uint32_t CurTick;
+static uint16_t rx_head,rx_tail;
+static uint8_t rx_ring[512],http_raw_data[240];
+static char rx_line[512];
+static unsigned commands,writes,statuses;
+static ota_metadata_t ota={.state=OTA_STATE_DOWNLOADING,.url_length=1};
+static uint8_t command[18]={0,13,10,',','>',0xFF,1,2,3,4,5,6,7,8,9,0,0,0};
+static uint8_t body[8]={0,13,10,',','>',0xFF,9,0};
+const ota_metadata_t *Ota_Get(void) {return &ota;}
+uint8_t Ota_Write(uint32_t o,const uint8_t *d,uint16_t n) {assert(o==0 && n==8 && !memcmp(d,body,8));writes++;return 0;}
+static uint8_t topic_matches(const char *t,uint8_t n) {return n==11 && !memcmp(t,"sub/ac/1234",11);}
+static void queue_ota_status(uint16_t t,uint8_t s) {(void)t;(void)s;statuses++;}
+static uint32_t http_retry_delay(uint8_t n) {(void)n;return 2000;}
+static void handle_mqtt_payload(const uint8_t *p,uint16_t n) {assert(n==18 && !memcmp(p,command,18));commands++;}
+static uint8_t send_publish_payload(void) {return 1;}
+static void enter_backoff(uint8_t e) {(void)e;assert(0);}
+static void process_line(char *l,uint16_t n) {(void)n;if(!strcmp(l,"OK"))modem.http_raw_state=0;}
+''' + codec + '\n'.join(function(source,n) for n in (
+    'http_fail_status','http_fail','parse_http_read_header','mqtt_header_complete','mqtt_begin_payload','consume_uart')) + r'''
+static void feed(const uint8_t *p,unsigned n) {
+    for(unsigned i=0;i<n;i++) {
+        rx_ring[rx_head]=p[i];rx_head=(uint16_t)((rx_head+1)%512);
+        consume_uart(); /* 每次只来一个字节，覆盖任意 UART 分段。 */
+    }
+}
+static void mqtt(void) {
+    const char *header="+MQTTURC: \"publish\",0,0,\"sub/ac/1234\",18,18,";
+    feed((const uint8_t *)header,strlen(header));feed(command,sizeof(command));
+    feed((const uint8_t *)"\r\n",2);
+}
+int main(void) {
+    const char *header="+MHTTPREAD: 0,1,0,8,";
+    modem.http_step=ML307_HTTP_READ;modem.http_raw_state=1;
+    modem.http_read_type=1;modem.http_range_size=4096;
+    mqtt();assert(commands==1 && !writes && modem.http_raw_state==1);
+    feed((const uint8_t *)header,strlen(header));feed(body,sizeof(body));
+    assert(writes==1 && modem.http_raw_state==3);
+    mqtt();assert(commands==2 && modem.http_raw_state==3);
+    feed((const uint8_t *)"\r\nOK\r\n",6);assert(!modem.http_raw_state);
+    /* HTTP 头失败不得清掉环形缓存里随后到达的合法 MQTT 下行。 */
+    modem.http_raw_state=1;modem.http_step=ML307_HTTP_READ;modem.http_raw_comma_count=0;
+    const char *bad="+MHTTPREAD: 0,1,0,0,\r\n+MQTTURC: \"publish\",0,0,\"sub/ac/1234\",18,18,";
+    memcpy(rx_ring,bad,strlen(bad));memcpy(rx_ring+strlen(bad),command,18);
+    rx_tail=0;rx_head=(uint16_t)(strlen(bad)+18);consume_uart();
+    assert(commands==3 && modem.status.last_error==ML307_ERROR_OTA);
+    assert(modem.http_step==ML307_HTTP_TERM && !modem.http_raw_state);
+    return 0;
+}
+''')
+
     def test_mqtt_inflight_snapshot_survives_new_response_and_retry(self):
         source = (APP / 'ml307r.c').read_text(encoding='utf-8')
         context = re.search(r'typedef struct \{.*?\} ml307_context_t;', source, re.S).group()
@@ -415,6 +581,8 @@ int main(void) {
 #include "ml307r.h"
 #include "device_protocol.h"
 #define ML307_MQTT_FRAME_SIZE 38U
+#define ML307_HTTP_IDLE 0U
+#define ML307_HTTP_TERM 7U
 #define ML307_MGMT_RESULT 4U
 #define ML307_MGMT_OTA_ACTIVATE 6U
 #define ML307_MGMT_MAGIC 0xC7U
@@ -470,6 +638,69 @@ int main(void) {
 }
 ''')
 
+    def test_mqtt_http_connection_events_and_signal_queries(self):
+        source = (APP / 'ml307r.c').read_text(encoding='utf-8')
+        context = re.search(r'typedef struct \{.*?\} ml307_context_t;', source, re.S).group()
+        self.compile_run(r'''
+#include <assert.h>
+#include <string.h>
+#include "ml307r.h"
+#define ML307_HTTP_IDLE 0U
+#define ML307_HTTP_TERM 7U
+#define ML307_MQTT_TIMEOUT_MS 15000U
+#define ML307_COMMAND_TIMEOUT_MS 3000U
+#define ML307_SIGNAL_INTERVAL_MS 60000U
+''' + context + r'''
+static ml307_context_t modem;
+static uint32_t CurTick;
+static uint16_t device_jitter_ms;
+static unsigned http_calls;
+typedef struct {uint8_t mqtt_qos;} connectivity_config_t;
+static connectivity_config_t config={1};
+static const connectivity_config_t *Connectivity_Get(void) {return &config;}
+static void uart_disable(void) {}
+static uint8_t at_process_line(const char *l,uint16_t n) {(void)l;(void)n;return 0;}
+static uint8_t http_process_line(char *l,uint16_t n) {(void)l;(void)n;if(!modem.http_step)return 0;http_calls++;return 1;}
+static void complete_mqtt_connection(void) {}
+static void queue_registration(void) {}
+static void complete_publish(void) {}
+static uint8_t copy_numeric_identity(char *o,uint8_t c,const char *l,uint8_t n,uint8_t m) {(void)o;(void)c;(void)l;(void)n;(void)m;return 1;}
+static void parse_network_clock(const char *l,uint16_t n) {(void)l;(void)n;}
+static uint8_t tx_command(const char *l) {(void)l;return 1;}
+''' + '\n'.join(function(source,n) for n in (
+    'mqtt_urc_is','mqtt_urc_number','parse_cereg','parse_signal','parse_extended_signal',
+    'status_phase','transition_wait','enter_backoff','process_line')) + r'''
+static void online_http(void) {
+    memset(&modem,0,sizeof(modem));http_calls=0;
+    modem.status.phase=ML307_PHASE_ONLINE;modem.status.mqtt_online=1;
+    modem.http_step=5;modem.http_raw_state=1;modem.waiting=1;
+}
+int main(void) {
+    char down[]="+MQTTURC: \"conn\",0,2";
+    char reconnect[]="+MQTTURC: \"conn\",0,1";
+    char network[]="+CEREG: 0,0";
+    char stale_suback[]="+MQTTURC: \"suback\",0,12,1";
+    online_http();process_line(down,strlen(down));
+    assert(!http_calls && !modem.status.mqtt_online && modem.status.phase==ML307_PHASE_BACKOFF);
+    assert(modem.http_step==ML307_HTTP_TERM && !modem.http_raw_state);
+    online_http();process_line(reconnect,strlen(reconnect));
+    assert(!http_calls && modem.status.phase==ML307_PHASE_BACKOFF);
+    online_http();process_line(network,strlen(network));
+    assert(!http_calls && !modem.status.mqtt_online && modem.status.last_error==ML307_ERROR_NETWORK);
+    assert(modem.http_step==ML307_HTTP_IDLE && modem.status.phase==ML307_PHASE_BACKOFF);
+    online_http();process_line(stale_suback,strlen(stale_suback));
+    assert(!http_calls && modem.status.phase==ML307_PHASE_ONLINE && modem.waiting);
+    memset(&modem,0,sizeof(modem));
+    char csq[]="+CSQ: 14,99", cesq[]="+CESQ: 99,99,255,255,25,40", ok[]="OK", error[]="ERROR";
+    modem.status.phase=ML307_PHASE_SIGNAL_QUERY;modem.network_command=2;
+    parse_signal(csq);assert(modem.status.signal_rssi==-85);
+    process_line(ok,2);assert(modem.network_command==6 && modem.waiting);
+    parse_extended_signal(cesq);assert(modem.status.signal_rssi==-85 && modem.status.rsrp_dbm==-100);
+    process_line(error,5);assert(modem.status.phase==ML307_PHASE_ONLINE && modem.status.signal_rssi==-85);
+    return 0;
+}
+''')
+
     def test_ir_transmit_timeout_releases_busy_path_even_across_tick_wrap(self):
         source = (APP / 'ir.c').read_text(encoding='utf-8')
         prefix = no_includes(source[:source.index('static uint8_t Ir_IsControlPathIdle')])
@@ -492,9 +723,9 @@ static uint32_t CurTick;
 static uint8_t R8_UART3_TFC=8,R8_UART3_THR;
 static unsigned init_calls;
 static unsigned completed, failed;
+static void LED_NotifyIrTx(void) {}
 static void Rule_IrCompleted(uint8_t ok) {if(ok) completed++; else failed++;}
 static void UART3_INTCfg(uint8_t e,uint8_t m) {(void)e;(void)m;}
-static void LED_NotifyIrTx(void) {}
 static void PFIC_DisableIRQ(uint8_t irq) {(void)irq;}
 static void IR_Init(void);
 ''' + prefix + '\n'.join(function(source, n) for n in ('Ir_IsControlPathIdle', 'Ir_TxFillFifo', 'Ir_TxStartCopy', 'Ir_TxAbort', 'Ir_HandleTxFifoEmpty')) + r'''

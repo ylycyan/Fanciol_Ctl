@@ -1,6 +1,6 @@
 /**
  * @file led.c
- * @brief 产品状态灯（从左到右：绿=系统/红外、白=通信、蓝=BLE、红=硬件故障）
+ * @brief 产品状态灯（从左到右：绿=运行/红外、白=通信、蓝=BLE、红=硬件故障）
  */
 #include "board.h"
 #include "CONFIG.h"
@@ -8,13 +8,9 @@
 #include "device_service.h"
 #include "ml307r.h"
 
-#define LED_HEARTBEAT_PERIOD_MS 2000U
-#define LED_HEARTBEAT_ON_MS      100U
-#define LED_LINK_BLINK_HALF_MS   500U
-#define LED_IR_FLASH_MS          400U
-
+#define LED_IR_FLASH_MS 400U
 static uint32_t irFlashStart;
-static uint32_t irFlashUntil;
+static uint8_t irFlashing;
 
 static void led_write(uint32_t pin, uint8_t on)
 {
@@ -23,15 +19,10 @@ static void led_write(uint32_t pin, uint8_t on)
     else GPIOB_SetBits(pin);
 }
 
-static uint8_t heartbeat_pulse(void)
-{
-    return (CurTick % LED_HEARTBEAT_PERIOD_MS) < LED_HEARTBEAT_ON_MS;
-}
-
 void LED_NotifyIrTx(void)
 {
     irFlashStart = CurTick;
-    irFlashUntil = CurTick + LED_IR_FLASH_MS;
+    irFlashing = 1U;
 }
 
 void LED_Pro(void)
@@ -39,35 +30,28 @@ void LED_Pro(void)
     const ml307_status_t *cell = Ml307_GetStatus();
     uint8_t loraEnabled = Connectivity_LoraEnabled();
     uint8_t cellularEnabled = Connectivity_CellularEnabled();
-    uint8_t networkEnabled = loraEnabled || cellularEnabled;
     uint8_t networkOnline = (loraEnabled && Dev.loraStatus >= Status_Connected) ||
                             (cellularEnabled && cell->mqtt_online);
     uint8_t bleState = 0U;
-    uint8_t irFlashing = (int32_t)(irFlashUntil - CurTick) > 0;
     uint8_t hardwareFault;
 
     GAPRole_GetParameter(GAPROLE_STATE, &bleState);
 
-    /* BLE设备定位期间只快闪蓝灯。 */
+    /* 运行时常亮；红外发送短闪两次后恢复。无符号差值兼容计时回绕。 */
+    if(irFlashing && (uint32_t)(CurTick - irFlashStart) >= LED_IR_FLASH_MS)
+        irFlashing = 0U;
+    led_write(LED_GREEN_PIN,
+              (!irFlashing || DeviceService_IdentifyActive()) ? 1U :
+              (uint8_t)((((CurTick - irFlashStart) / 100U) & 1U) == 0U));
+    /* 白灯只在启用的 LoRa/MQTT 至少一条在线时亮，离线不闪。 */
+    led_write(LED_WHITE_PIN, networkOnline);
+
+    /* BLE设备定位期间仅蓝灯快闪，保留运行与联网指示。 */
     if(DeviceService_IdentifyActive()) {
-        led_write(LED_GREEN_PIN, 0U);
-        led_write(LED_WHITE_PIN, 0U);
         led_write(LED_BLUE_PIN, (uint8_t)((CurTick / 100U) & 1U));
         led_write(LED_RED_PIN, 0U);
         return;
     }
-
-    /* 绿灯正常每 2 秒短亮一次；红外发送时以 100 ms 节奏闪两次。 */
-    led_write(LED_GREEN_PIN,
-              irFlashing ?
-              (uint8_t)((((CurTick - irFlashStart) / 100U) & 1U) == 0U) :
-              heartbeat_pulse());
-
-    /* LoRa/MQTT 共用白灯：在线常亮，重连时 500 ms 明灭，未启用时熄灭。 */
-    led_write(LED_WHITE_PIN,
-              networkEnabled ?
-              (networkOnline ? 1U : (uint8_t)((CurTick / LED_LINK_BLINK_HALF_MS) & 1U)) :
-              0U);
 
     /*
      * 蓝灯用于 BLE：未连接熄灭；连接成功常亮；设备定位（Identify）时快闪，
@@ -78,7 +62,7 @@ void LED_Pro(void)
               (bleState == GAPROLE_CONNECTED || bleState == GAPROLE_CONNECTED_ADV) ?
               1U : 0U);
 
-    /* 普通网络重连由白灯表示；红灯只表示需要排查的硬件级故障。 */
+    /* 红灯只表示需要排查的硬件级故障，不表示普通网络重连。 */
     hardwareFault = Dev.errorCode.bit.flash || Dev.errorCode.bit.ad ||
                     Dev.errorCode.bit.power || Dev.errorCode.bit.rtc ||
                     (loraEnabled && Dev.errorCode.bit.lora) ||
