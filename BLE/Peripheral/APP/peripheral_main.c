@@ -167,6 +167,8 @@ int main(void)
     LoadDevInfo();
     WWDG_Refresh();
     RTC_ProductInit();
+    /* Capture the RTC once, before network/BLE time synchronisation. */
+    Health_Init(retainedResetReason, RTC_IsTimeValid() ? LocalTimestamp : 0U);
     WWDG_Refresh();
     GAPRole_PeripheralInit();
     Peripheral_Init();
@@ -176,13 +178,8 @@ int main(void)
     ADC_Init();
     HLW8110_Init();
     /*
-     * 复位状态必须使用时钟初始化后的第一份快照。BLE/HAL 初始化可能读取
-     * 或清理相关寄存器，不能在健康模块内延迟重新读取。
-     */
-    Health_Init(retainedResetReason, Dev.errorCode.u16Val);
-    /*
      * 单槽自愈或双槽损坏后成功重建属于“已恢复历史事件”：
-     * 先写入启动健康快照，再清除当前故障；仍退化/读失败则保持告警。
+     * 清除当前故障；仍退化/读失败则保持告警。
      */
     if((Storage_GetStartupFlags() & STORAGE_STARTUP_RECOVERED) != 0U &&
        (Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED) == 0U) {

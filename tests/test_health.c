@@ -6,11 +6,14 @@
 
 static void test_reset_snapshot_is_ram_only(void)
 {
-    Health_Init(0x37U, 0x1234U);
+    Health_Init(0x37U, 1700000000U);
     assert(Health_LastResetReason() == 0x37U);
     assert(Health_ConsecutiveResets() == 0U);
     assert(Health_LastUnhealthyMask() == 0U);
     assert(Health_StorageError() == 0U);
+    assert(Health_BootTimestamp() == 1700000000U);
+    /* Reading diagnostics later must not replace the startup snapshot. */
+    assert(Health_BootTimestamp() == 1700000000U);
 }
 
 static void test_watchdog_reset_is_reported_without_journaling(void)
@@ -18,6 +21,7 @@ static void test_watchdog_reset_is_reported_without_journaling(void)
     Health_Init(RST_STATUS_WTR, 0U);
     assert(Health_LastResetReason() == RST_STATUS_WTR);
     assert(Health_ConsecutiveResets() == 1U);
+    assert(Health_BootTimestamp() == 0U);
 
     /* Re-initializing does not increment a persistent counter or touch Flash. */
     Health_Init(RST_STATUS_WTR, 0U);

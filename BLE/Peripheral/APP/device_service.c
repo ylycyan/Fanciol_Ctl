@@ -248,7 +248,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         payload[10]=(Dev.mode==0u)?1u:0u;put32(payload+11,0u);put32(payload+15,Config_GetRevision());
         payload[19]=meter->valid;put16(payload+20,meter->voltage_dv);put16(payload+22,meter->current_ma);put16(payload+24,meter->power_w_x10);
         put32(payload+26,Dev.meter.energy_wh);put16(payload+30,meter->communication_errors);
-        payload[32]=ADC_GetSensorStatus();put16(payload+33,ADC_GetHumidityX10());put16(payload+35,ADC_GetSht40Errors());
+        payload[32]=ADC_GetSensorStatus();put16(payload+33,ADC_GetHumidityX10());put16(payload+35,ADC_GetSht30Errors());
         put32(payload+37,energy_centi);*payload_len=41;break;}
     case DEVICE_OP_GET_CONFIG:
         put16(payload,Dev.nodeId);payload[2]=(uint8_t)Dev.channel;payload[3]=Dev.linkRole;put16(payload+4,Dev.parentRelayId);payload[6]=Dev.mode;
@@ -344,7 +344,8 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         put32(payload+8,LocalTimestamp);put32(payload+12,Dev.lastReportTime);put16(payload+16,Dev.loadPower);
         put16(payload+18,meter->voltage_dv);put16(payload+20,meter->current_ma);payload[22]=meter->valid;payload[23]=meter->consecutive_errors;
         put16(payload+24,meter->communication_errors);put32(payload+26,Dev.meter.energy_wh);
-        *payload_len=30;break;}
+        put32(payload+30,Health_BootTimestamp());
+        *payload_len=34;break;}
     case DEVICE_OP_GET_LORA_PARAMS:
         payload[0]=Dev.loraRegisterSf;payload[1]=Dev.loraRegisterBw;
         payload[2]=Dev.loraListenSf;payload[3]=Dev.loraListenBw;*payload_len=4;break;

@@ -283,7 +283,7 @@ void Period_1s(void){
                       meter->last_error_state,
                       meter->last_error_register,
                       ADC_GetSensorStatus(),
-                      ADC_GetSht40Errors());
+                      ADC_GetSht30Errors());
             }
         }
 #endif

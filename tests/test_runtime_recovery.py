@@ -96,6 +96,9 @@ int main(void) {
         main = source[source.rindex('int main(void)'):]
         self.assertLess(main.index('WWDG_Init()'), main.index('CH58X_BLEInit()'))
         self.assertIn('LoadDevInfo();\n    WWDG_Refresh();', main)
+        self.assertLess(main.index('RTC_ProductInit()'), main.index('Health_Init('))
+        self.assertLess(main.index('Health_Init('), main.index('Peripheral_Init()'))
+        self.assertIn('Health_Init(retainedResetReason, RTC_IsTimeValid() ? LocalTimestamp : 0U)', main)
 
     def test_flash_faults_clear_only_after_the_same_source_recovers(self):
         source = no_includes((APP / 'flash.c').read_text(encoding='utf-8'))
@@ -395,28 +398,28 @@ int main(void) {
 #include <assert.h>
 #include "board.h"
 #define AD_INTERVAL 10U
-#define SHT40_MEASURE_TIME_MS 10U
+#define SHT30_MEASURE_TIME_MS 15U
 #define TEMP_SENSOR_TEMP_VALID 1
 #define TEMP_SENSOR_HUMIDITY_VALID 2
-#define TEMP_SENSOR_SHT40_ACTIVE 4
+#define TEMP_SENSOR_SHT30_ACTIVE 4
 #define TEMP_SENSOR_NTC_FALLBACK 8
-#define TEMP_SENSOR_SHT40_FAULT 16
+#define TEMP_SENSOR_SHT30_FAULT 16
 t_dev Dev;
 volatile uint32_t CurTick;
-static uint8_t adcValid,sensorStatus,sht40Pending;
-static uint16_t humidityX10,sht40Errors;
-static uint32_t sht40StartedMs;
-static uint8_t sht40_begin(void) {return 0;}
-static uint8_t sht40_read(int16_t *t,uint16_t *h) {(void)t;(void)h;return 0;}
+static uint8_t adcValid,sensorStatus,sht30Pending;
+static uint16_t humidityX10,sht30Errors;
+static uint32_t sht30StartedMs;
+static uint8_t sht30_begin(void) {return 0;}
+static uint8_t sht30_read(int16_t *t,uint16_t *h) {(void)t;(void)h;return 0;}
 static uint8_t ntc_sample(int16_t *t) {*t=260;return 1;}
 ''' + function(source, 'ADC_Pro') + r'''
 int main(void) {
-    ADC_Pro();assert(sht40Errors==1 && adcValid);
-    CurTick=9999;ADC_Pro();assert(sht40Errors==1);
-    CurTick=10000;ADC_Pro();assert(sht40Errors==2);
-    CurTick=0xfffffff0;ADC_Pro();assert(sht40Errors==3);
-    CurTick+=9999;ADC_Pro();assert(sht40Errors==3);
-    CurTick++;ADC_Pro();assert(sht40Errors==4 && Dev.roomTempX10==260);
+    ADC_Pro();assert(sht30Errors==1 && adcValid);
+    CurTick=9999;ADC_Pro();assert(sht30Errors==1);
+    CurTick=10000;ADC_Pro();assert(sht30Errors==2);
+    CurTick=0xfffffff0;ADC_Pro();assert(sht30Errors==3);
+    CurTick+=9999;ADC_Pro();assert(sht30Errors==3);
+    CurTick++;ADC_Pro();assert(sht30Errors==4 && Dev.roomTempX10==260);
     return 0;
 }
 ''')

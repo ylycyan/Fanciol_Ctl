@@ -8,10 +8,11 @@
  */
 static uint8_t last_reset_reason;
 static uint8_t watchdog_reset;
+static uint32_t boot_timestamp;
 
-void Health_Init(uint8_t boot_reset_reason, uint16_t fault_snapshot)
+void Health_Init(uint8_t boot_reset_reason, uint32_t startup_timestamp)
 {
-    (void)fault_snapshot;
+    boot_timestamp = startup_timestamp;
     last_reset_reason = boot_reset_reason;
     watchdog_reset = (boot_reset_reason == RST_STATUS_WTR ||
                       boot_reset_reason == RST_STATUS_LRM1) ? 1U : 0U;
@@ -21,5 +22,6 @@ void Health_Init(uint8_t boot_reset_reason, uint16_t fault_snapshot)
 
 uint8_t Health_ConsecutiveResets(void) { return watchdog_reset; }
 uint8_t Health_LastResetReason(void) { return last_reset_reason; }
+uint32_t Health_BootTimestamp(void) { return boot_timestamp; }
 uint8_t Health_LastUnhealthyMask(void) { return 0U; }
 uint8_t Health_StorageError(void) { return 0U; }
