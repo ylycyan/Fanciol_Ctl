@@ -616,8 +616,10 @@ static void uart_disable(void) {}
 ''' + '\n'.join(function(source, name) for name in names) + r'''
 int main(void) {
     uint8_t payload[12]={0};
+    modem.next_report_ms=62002;modem.periodic_report_pending=1;
     queue_management_frame(8,1,payload,12);
     assert(start_publish() && declared_length==21);
+    assert(modem.periodic_report_pending && modem.next_report_ms==62002);
     queue_management_frame(4,2,payload,2);
     queue_management_frame(4,3,payload,2); /* 满槽不能覆盖已接受的下一条响应 */
     assert(management_frame[4]==2);
@@ -637,6 +639,74 @@ int main(void) {
     queue_management_frame(4,4,payload,2);
     assert(start_publish());complete_publish();
     assert(resets==1);
+    modem.pending_command_valid=1;modem.pending_command_result=1;
+    assert(start_publish() && modem.periodic_report_pending);
+    complete_publish();assert(modem.periodic_report_pending && modem.next_report_ms==62002);
+    modem.report_requested=1;
+    assert(start_publish() && !modem.periodic_report_pending);
+    CurTick=9000;complete_publish();
+    assert(modem.status.last_report_ms==9000 && modem.next_report_ms==62002);
+    return 0;
+}
+''')
+
+    def test_mqtt_fixed_report_cadence_clock_changes_and_tick_wrap(self):
+        source = (APP / 'ml307r.c').read_text(encoding='utf-8')
+        context = re.search(r'typedef struct \{.*?\} ml307_context_t;', source, re.S).group()
+        process = function(source, 'Ml307_Process')
+        self.assertLess(process.index('poll_report_schedule(now)'), process.index('if(modem.http_step != ML307_HTTP_IDLE)'))
+        self.assertNotIn('now - modem.status.last_report_ms', process)
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+#include <string.h>
+#include "ml307r.h"
+''' + context + r'''
+static ml307_context_t modem;
+static struct {uint16_t report_interval_sec;} config={60};
+static struct {uint16_t nodeId;} Dev={2};
+static uint32_t CurTick, clock_tick, clock_sec;
+static uint8_t clock_valid;
+#define Connectivity_Get() (&config)
+static uint32_t Rtc_GetTimestamp(void) {return clock_sec+(uint32_t)(CurTick-clock_tick)/1000U;}
+static uint8_t RTC_IsTimeValid(void) {return clock_valid;}
+''' + '\n'.join(function(source, n) for n in ('reached', 'poll_report_schedule')) + r'''
+int main(void) {
+    poll_report_schedule(0);assert(modem.next_report_ms==2002 && !modem.periodic_report_pending);
+    CurTick=2001;poll_report_schedule(CurTick);assert(!modem.periodic_report_pending);
+    CurTick=2002;poll_report_schedule(CurTick);
+    assert(modem.periodic_report_pending && modem.next_report_ms==62002);
+    modem.periodic_report_pending=0;modem.status.last_report_ms=41000;modem.report_requested=1;
+    CurTick=62002;poll_report_schedule(CurTick);assert(modem.periodic_report_pending && modem.next_report_ms==122002);
+    CurTick=302002;poll_report_schedule(CurTick);assert(modem.periodic_report_pending && modem.next_report_ms==362002);
+    modem.periodic_report_pending=0;CurTick++;poll_report_schedule(CurTick);assert(!modem.periodic_report_pending);
+    /* No RTC: a monotonic deadline survives repeated uint32 tick wrap. */
+    memset(&modem,0,sizeof(modem));CurTick=UINT32_MAX-10000U;
+    poll_report_schedule(CurTick);
+    uint32_t deadline=modem.next_report_ms;
+    for(unsigned i=0;i<72000;i++) {
+        CurTick=deadline-1;poll_report_schedule(CurTick);assert(!modem.periodic_report_pending);
+        CurTick=deadline;poll_report_schedule(CurTick);assert(modem.periodic_report_pending);
+        deadline+=60000;assert(modem.next_report_ms==deadline);modem.periodic_report_pending=0;
+    }
+    /* RTC anchors the slot; reconnect/report completion cannot move it. */
+    memset(&modem,0,sizeof(modem));Dev.nodeId=0x1234;clock_valid=1;
+    clock_sec=1800000000U;clock_tick=CurTick=10000;
+    poll_report_schedule(CurTick);deadline=50660;assert(modem.next_report_ms==deadline);
+    for(CurTick=11000;CurTick<50660;CurTick+=1000) {
+        poll_report_schedule(CurTick);assert(modem.next_report_ms==deadline && !modem.periodic_report_pending);
+    }
+    CurTick=50660;poll_report_schedule(CurTick);assert(modem.periodic_report_pending && modem.next_report_ms==110660);
+    modem.periodic_report_pending=0;CurTick+=1000;
+    clock_sec=1800000300U;clock_tick=CurTick;poll_report_schedule(CurTick);
+    assert(modem.next_report_ms==CurTick+40660 && !modem.periodic_report_pending);
+    clock_sec-=3600;poll_report_schedule(CurTick);assert(!modem.periodic_report_pending);
+    clock_valid=0;poll_report_schedule(CurTick);
+    uint32_t wait=(40660U+60000U-CurTick%60000U)%60000U;
+    assert(modem.next_report_ms==CurTick+wait);
+    clock_valid=1;config.report_interval_sec=30;Dev.nodeId=0xffff;clock_tick=CurTick;
+    poll_report_schedule(CurTick);assert(modem.next_report_ms==CurTick+15535);
+    config.report_interval_sec=0;poll_report_schedule(CurTick); /* no division by zero */
     return 0;
 }
 ''')

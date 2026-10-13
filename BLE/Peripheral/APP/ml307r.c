@@ -90,6 +90,13 @@ typedef struct {
     uint32_t network_started_ms;
     uint32_t last_signal_ms;
     uint32_t next_clock_ms;
+    uint32_t next_report_ms;
+    uint32_t report_clock_ms;
+    uint32_t report_clock_sec;
+    uint16_t report_cycle_sec;
+    uint16_t report_node_id;
+    uint8_t report_clock_valid;
+    uint8_t periodic_report_pending;
     uint16_t tx_length;
     uint16_t tx_offset;
     uint16_t line_length;
@@ -167,6 +174,48 @@ static void queue_management_frame(uint8_t type, uint16_t transaction,
 static uint8_t reached(uint32_t now, uint32_t target)
 {
     return (int32_t)(now - target) >= 0;
+}
+
+/* Independent fixed cadence: neither publish completion nor manual control
+ * moves this deadline. RTC is seconds-resolution; UART scheduling is best effort. */
+static void poll_report_schedule(uint32_t now)
+{
+    uint16_t cycle = Connectivity_Get()->report_interval_sec;
+    uint32_t interval, elapsed, timestamp, phase, offset, wait;
+    uint8_t valid, realign;
+    if(cycle < 10U || cycle > 3600U) return;
+    interval = (uint32_t)cycle * 1000UL;
+    timestamp = Rtc_GetTimestamp(); /* Cached between the existing 1 s RTC polls. */
+    valid = RTC_IsTimeValid();
+    realign = modem.report_cycle_sec != cycle || modem.report_node_id != Dev.nodeId ||
+              modem.report_clock_valid != valid;
+    if(valid && !realign) {
+        int32_t drift;
+        elapsed = (uint32_t)(now - modem.report_clock_ms) / 1000UL;
+        drift = (int32_t)(timestamp - (modem.report_clock_sec + elapsed));
+        if(drift > 1 || drift < -1) realign = 1U;
+        else if(elapsed) {
+            modem.report_clock_ms += elapsed * 1000UL;
+            modem.report_clock_sec += elapsed;
+        }
+    }
+    if(realign) {
+        modem.report_cycle_sec = cycle;
+        modem.report_node_id = Dev.nodeId;
+        modem.report_clock_valid = valid;
+        modem.report_clock_sec = timestamp;
+        modem.report_clock_ms = now;
+        phase = valid ? (timestamp % cycle) * 1000UL : now % interval;
+        offset = (uint32_t)(Dev.nodeId % cycle) * 1000UL + Dev.nodeId % 1000U;
+        wait = (offset + interval - phase) % interval;
+        modem.next_report_ms = now + wait;
+        modem.periodic_report_pending = 0U;
+    }
+    if(reached(now, modem.next_report_ms)) {
+        modem.periodic_report_pending = 1U;
+        /* Missed cycles coalesce into one latest snapshot, never a backlog. */
+        modem.next_report_ms += ((uint32_t)(now - modem.next_report_ms) / interval + 1UL) * interval;
+    }
 }
 
 static uint8_t at_phase_available(uint8_t phase)
@@ -762,8 +811,11 @@ static uint8_t start_publish(void)
        !tx_append_text(&length, ",0,0,") ||
        !tx_append_u32(&length, payload_length) ||
        !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
-    if(!modem.publishing_management)
+    if(!modem.publishing_management) {
         modem.report_requested = 0U;
+        if(!modem.publishing_command_valid || !modem.publishing_command_result)
+            modem.periodic_report_pending = 0U;
+    }
     modem.prompt_seen = 0U;
     transition_wait(ML307_PHASE_PUBLISH, 5000U);
     return 1U;
@@ -1902,6 +1954,7 @@ void Ml307_Process(void)
         if(modem.status.phase != ML307_PHASE_DISABLED) Ml307_ApplyConfiguration();
         return;
     }
+    poll_report_schedule(now);
     if(modem.uart_enabled) {
         tx_pump();
         consume_uart();
@@ -2110,9 +2163,7 @@ void Ml307_Process(void)
         break;
     case ML307_PHASE_ONLINE:
         if(modem.publishing_management || modem.management_pending ||
-           (modem.report_requested && reached(now, modem.next_action_ms)) ||
-           ((uint32_t)(now - modem.status.last_report_ms) >=
-            (uint32_t)config->report_interval_sec * 1000UL)) {
+           ((modem.report_requested || modem.periodic_report_pending) && reached(now, modem.next_action_ms))) {
             if(!start_publish()) enter_backoff(ML307_ERROR_CONFIG);
         } else if(reached(now, modem.next_clock_ms) && tx_command("AT+CCLK?\r\n")) {
             modem.network_command = 1U;
