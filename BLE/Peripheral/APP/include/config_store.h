@@ -8,7 +8,7 @@
 #define CONFIG_SLOT_B         0x1000u
 #define STORAGE_RESERVED_PAGE         0x2000u
 #define CONNECTIVITY_SLOT_A   STORAGE_RESERVED_PAGE
-#define CONNECTIVITY_SLOT_B   (STORAGE_RESERVED_PAGE + 0x0100u)
+#define CONNECTIVITY_SLOT_B   (STORAGE_RESERVED_PAGE + 0x0200u)
 #define RUNTIME_PAGE          0x3000u
 #define IR_STORAGE_PAGE               0x4000u
 #define RUNTIME_BACKUP_PAGE   0x5E00u
@@ -34,7 +34,7 @@ typedef enum {
 
 #define CONNECTIVITY_LORA          0x01U
 #define CONNECTIVITY_CELLULAR      0x02U
-#define CONNECTIVITY_SCHEMA        5U
+#define CONNECTIVITY_SCHEMA        6U
 
 /* 数组长度包含结尾 NUL；上位机可写入的最大字符数需减一。 */
 #define CONNECTIVITY_HOST_SIZE        48U
@@ -68,6 +68,7 @@ typedef struct __attribute__((packed)) {
     char mqtt_password[CONNECTIVITY_PASSWORD_SIZE];
     char publish_topic[CONNECTIVITY_TOPIC_SIZE];
     char subscribe_topic[CONNECTIVITY_TOPIC_SIZE];
+    char management_topic[CONNECTIVITY_TOPIC_SIZE];
 } connectivity_config_t;
 
 uint32_t Config_Crc32(const uint8_t *data, uint16_t len);

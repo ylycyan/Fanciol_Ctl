@@ -381,12 +381,12 @@ const char *DeviceUid_Get(void) {return uid;}
 int main(void) {
     strcpy(config.subscribe_topic,"sub/ac/{uid}");
     strcpy(uid,"F1234");
-    assert(topic_matches("sub/ac/F1234",12));
-    assert(!topic_matches("sub/ac/F1235",12));
-    assert(!topic_matches("sub/ac/F1234x",13));
-    assert(!topic_matches("sub/ac/F123",11));
-    strcpy(uid,"1234");assert(topic_matches("sub/ac/1234",11));
-    strcpy(uid,"A26091421");assert(topic_matches("sub/ac/A26091421",16));
+    assert(topic_matches(config.subscribe_topic,"sub/ac/F1234",12));
+    assert(!topic_matches(config.subscribe_topic,"sub/ac/F1235",12));
+    assert(!topic_matches(config.subscribe_topic,"sub/ac/F1234x",13));
+    assert(!topic_matches(config.subscribe_topic,"sub/ac/F123",11));
+    strcpy(uid,"1234");assert(topic_matches(config.subscribe_topic,"sub/ac/1234",11));
+    strcpy(uid,"A26091421");assert(topic_matches(config.subscribe_topic,"sub/ac/A26091421",16));
     return 0;
 }
 ''')
@@ -534,7 +534,10 @@ static uint8_t command[18]={0,13,10,',','>',0xFF,1,2,3,4,5,6,7,8,9,0,0,0};
 static uint8_t body[8]={0,13,10,',','>',0xFF,9,0};
 const ota_metadata_t *Ota_Get(void) {return &ota;}
 uint8_t Ota_Write(uint32_t o,const uint8_t *d,uint16_t n) {assert(o==0 && n==8 && !memcmp(d,body,8));writes++;return 0;}
-static uint8_t topic_matches(const char *t,uint8_t n) {return n==11 && !memcmp(t,"sub/ac/1234",11);}
+typedef struct {const char *subscribe_topic,*management_topic;} connectivity_config_t;
+static connectivity_config_t config={"sub","manage"};
+static const connectivity_config_t *Connectivity_Get(void) {return &config;}
+static uint8_t topic_matches(const char *p,const char *t,uint8_t n) {return !strcmp(p,"sub") && n==11 && !memcmp(t,"sub/ac/1234",11);}
 static void queue_ota_status(uint16_t t,uint8_t s) {(void)t;(void)s;statuses++;}
 static uint32_t http_retry_delay(uint8_t n) {(void)n;return 2000;}
 static void handle_mqtt_payload(const uint8_t *p,uint16_t n) {assert(n==18 && !memcmp(p,command,18));commands++;}
@@ -597,12 +600,12 @@ static char tx_buffer[192];
 static uint32_t CurTick;
 static uint16_t device_jitter_ms;
 static unsigned declared_length,resets;
-typedef struct {uint8_t mqtt_qos;const char *publish_topic;} connectivity_config_t;
-static connectivity_config_t config={1,"pub/ac/test"};
+typedef struct {uint8_t mqtt_qos;const char *publish_topic,*management_topic;} connectivity_config_t;
+static connectivity_config_t config={1,"pub/ac/test","manage/ac/test"};
 static const connectivity_config_t *Connectivity_Get(void) {return &config;}
 static uint8_t build_publish_frame(uint8_t *f) {memset(f,0,38);return 38;}
 static uint8_t tx_append_text(uint16_t *l,const char *t) {(void)l;(void)t;return 1;}
-static uint8_t tx_append_topic(uint16_t *l,const char *t) {(void)l;(void)t;return 1;}
+static uint8_t tx_append_topic(uint16_t *l,const char *t) {(void)l;assert(!strcmp(t,modem.publishing_management?"manage/ac/test":"pub/ac/test"));return 1;}
 static uint8_t tx_append_u32(uint16_t *l,uint32_t v) {(void)l;declared_length=v;return 1;}
 static uint8_t tx_start(uint16_t l) {(void)l;return 1;}
 static void transition_wait(uint8_t p,uint32_t d) {(void)d;modem.status.phase=p;}
@@ -618,6 +621,7 @@ int main(void) {
     uint8_t payload[12]={0};
     modem.next_report_ms=62002;modem.periodic_report_pending=1;
     queue_management_frame(8,1,payload,12);
+    assert(management_frame[3]==1);
     assert(start_publish() && declared_length==21);
     assert(modem.periodic_report_pending && modem.next_report_ms==62002);
     queue_management_frame(4,2,payload,2);
@@ -711,6 +715,63 @@ int main(void) {
 }
 ''')
 
+    def test_mqtt_management_topic_isolation_and_response_echo(self):
+        source = (APP / 'ml307r.c').read_text(encoding='utf-8')
+        context = re.search(r'typedef struct \{.*?\} ml307_context_t;', source, re.S).group()
+        self.compile_run(r'''
+#include <assert.h>
+#include <string.h>
+#include "ml307r.h"
+#include "device_protocol.h"
+#include "ota_update.h"
+#define ML307_MGMT_MAGIC 0xC7U
+#define ML307_MGMT_VERSION 1U
+#define ML307_MGMT_MAX_FRAME 160U
+#define ML307_MGMT_REGISTRATION 1U
+#define ML307_MGMT_OTA_OFFER 5U
+#define ML307_MGMT_OTA_ACTIVATE 6U
+#define ML307_MGMT_OTA_CANCEL 7U
+#define ML307_MGMT_OTA_STATUS 8U
+#define ML307_HTTP_IDLE 0U
+#define ML307_HTTP_TERM 7U
+''' + context + r'''
+static ml307_context_t modem;
+static ota_metadata_t ota;
+static unsigned controls, registrations, statuses, results, cancellations;
+const ota_metadata_t *Ota_Get(void) {return &ota;}
+uint8_t Ota_BeginRemote(uint32_t v,uint32_t n,uint32_t c,const char *u,uint8_t l) {(void)v;(void)n;(void)c;(void)u;(void)l;return 0;}
+uint8_t Ota_MarkInstall(void) {return 0;}
+uint8_t Ota_Cancel(void) {cancellations++;return 0;}
+static void handle_downlink(const uint8_t *p,uint16_t n) {(void)p;(void)n;controls++;}
+static uint8_t GatewayLora_Checksum(const uint8_t *p,uint16_t n) {uint8_t c=0xec;while(n--)c+=*p++;return c;}
+static void queue_registration(uint16_t t) {assert(t==3);registrations++;}
+static void queue_ota_status(uint16_t t,uint8_t s) {assert(t==3 && s==0);statuses++;}
+static void queue_management_result(uint8_t type,uint16_t t,uint8_t s) {(void)type;(void)t;(void)s;results++;}
+''' + '\n'.join(function(source,n) for n in ('frame_u16','frame_u32','handle_management','handle_mqtt_payload')) + r'''
+static void request(uint8_t *f,uint8_t type,uint8_t flags) {
+    memset(f,0,9);f[0]=0xc7;f[1]=1;f[2]=type;f[3]=flags;f[4]=3;f[8]=GatewayLora_Checksum(f,8);
+}
+int main(void) {
+    uint8_t frame[9], control[18]={0x0d};
+    request(frame,7,0);modem.mqtt_raw_accept=1;handle_mqtt_payload(frame,9);
+    assert(!cancellations && !results); /* management forbidden on sub */
+    handle_mqtt_payload(control,18);assert(controls==1);
+    modem.mqtt_raw_accept=2;handle_mqtt_payload(control,18);assert(controls==1);
+    request(frame,1,0);handle_mqtt_payload(frame,9);assert(registrations==1);
+    request(frame,8,0);handle_mqtt_payload(frame,9);assert(statuses==1);
+    request(frame,7,0);handle_mqtt_payload(frame,9);assert(cancellations==1 && results==1);
+    for(unsigned i=0;i<1000;i++) {
+        request(frame,1,1);handle_mqtt_payload(frame,9);
+        request(frame,8,1);handle_mqtt_payload(frame,9);
+        request(frame,4,1);handle_mqtt_payload(frame,9);
+    }
+    assert(registrations==1 && statuses==1 && results==1);
+    modem.management_pending=1;request(frame,7,0);handle_mqtt_payload(frame,9);assert(cancellations==1);
+    modem.management_pending=0;frame[8]++;handle_mqtt_payload(frame,9);assert(cancellations==1);
+    return 0;
+}
+''')
+
     def test_mqtt_http_connection_events_and_signal_queries(self):
         source = (APP / 'ml307r.c').read_text(encoding='utf-8')
         context = re.search(r'typedef struct \{.*?\} ml307_context_t;', source, re.S).group()
@@ -727,22 +788,27 @@ int main(void) {
 static ml307_context_t modem;
 static uint32_t CurTick;
 static uint16_t device_jitter_ms;
-static unsigned http_calls;
-typedef struct {uint8_t mqtt_qos;} connectivity_config_t;
-static connectivity_config_t config={1};
+static unsigned http_calls, registrations;
+typedef struct {uint8_t mqtt_qos; const char *subscribe_topic,*management_topic;} connectivity_config_t;
+static connectivity_config_t config={1,"sub/ac/test","manage/ac/test"};
 static const connectivity_config_t *Connectivity_Get(void) {return &config;}
 static void uart_disable(void) {}
 static uint8_t at_process_line(const char *l,uint16_t n) {(void)l;(void)n;return 0;}
 static uint8_t http_process_line(char *l,uint16_t n) {(void)l;(void)n;if(!modem.http_step)return 0;http_calls++;return 1;}
 static void complete_mqtt_connection(void) {}
-static void queue_registration(void) {}
+static void queue_registration(uint16_t t) {(void)t;registrations++;}
 static void complete_publish(void) {}
 static uint8_t copy_numeric_identity(char *o,uint8_t c,const char *l,uint8_t n,uint8_t m) {(void)o;(void)c;(void)l;(void)n;(void)m;return 1;}
 static void parse_network_clock(const char *l,uint16_t n) {(void)l;(void)n;}
 static uint8_t tx_command(const char *l) {(void)l;return 1;}
+static char subscription[192];
+static uint8_t tx_append_text(uint16_t *n,const char *t) {strcpy(subscription+*n,t);*n+=(uint16_t)strlen(t);return 1;}
+static uint8_t tx_append_topic(uint16_t *n,const char *t) {return tx_append_text(n,t);}
+static uint8_t tx_start(uint16_t n) {(void)n;assert(!strcmp(subscription,modem.mqtt_subscribe_step?
+    "AT+MQTTSUB=0,\"manage/ac/test\",1\r\n":"AT+MQTTSUB=0,\"sub/ac/test\",0\r\n"));return 1;}
 ''' + '\n'.join(function(source,n) for n in (
     'mqtt_urc_is','mqtt_urc_number','parse_cereg','parse_signal','parse_extended_signal',
-    'status_phase','transition_wait','enter_backoff','process_line')) + r'''
+    'status_phase','transition_wait','send_mqtt_subscribe','enter_backoff','complete_mqtt_subscription','process_line')) + r'''
 static void online_http(void) {
     memset(&modem,0,sizeof(modem));http_calls=0;
     modem.status.phase=ML307_PHASE_ONLINE;modem.status.mqtt_online=1;
@@ -770,6 +836,15 @@ int main(void) {
     process_line(ok,2);assert(modem.network_command==6 && modem.waiting);
     parse_extended_signal(cesq);assert(modem.status.signal_rssi==-85 && modem.status.rsrp_dbm==-100);
     process_line(error,5);assert(modem.status.phase==ML307_PHASE_ONLINE && modem.status.signal_rssi==-85);
+    memset(&modem,0,sizeof(modem));assert(send_mqtt_subscribe());
+    char first_ack[]="+MQTTURC: \"suback\",0,1,0", second_ack[]="+MQTTURC: \"suback\",0,1,1";
+    process_line(ok,2);assert(!modem.status.mqtt_online && modem.waiting);
+    process_line(first_ack,strlen(first_ack));assert(modem.mqtt_subscribe_step==1 && !modem.waiting && !registrations);
+    process_line(first_ack,strlen(first_ack));assert(!modem.status.mqtt_online);
+    assert(send_mqtt_subscribe());
+    process_line(second_ack,strlen(second_ack));assert(!modem.status.mqtt_online && modem.waiting);
+    process_line(ok,2);assert(modem.status.mqtt_online && registrations==1);
+    process_line(second_ack,strlen(second_ack));assert(registrations==1);
     return 0;
 }
 ''')

@@ -118,6 +118,7 @@ typedef struct {
     uint8_t at_command_length;
     uint8_t at_retry_count;
     uint8_t mqtt_config_step;
+    uint8_t mqtt_subscribe_step;
     uint8_t identity_step;
     uint8_t recovery_level;
     uint8_t management_pending;
@@ -258,7 +259,7 @@ static uint8_t copy_numeric_identity(char *output, uint8_t capacity,
     return 1U;
 }
 
-static void queue_registration(void)
+static void queue_registration(uint16_t transaction)
 {
     const connectivity_config_t *config = Connectivity_Get();
     uint8_t payload[62];
@@ -289,7 +290,7 @@ static void queue_registration(void)
     payload[offset++] = iccid_length;
     memcpy(payload + offset, modem.iccid, iccid_length);
     offset = (uint8_t)(offset + iccid_length);
-    queue_management_frame(ML307_MGMT_REGISTRATION, 0U, payload, offset);
+    queue_management_frame(ML307_MGMT_REGISTRATION, transaction, payload, offset);
 }
 
 static void status_phase(ml307_phase_t phase)
@@ -603,8 +604,8 @@ static uint8_t send_mqtt_subscribe(void)
     const connectivity_config_t *config = Connectivity_Get();
     uint16_t length = 0U;
     if(!tx_append_text(&length, "AT+MQTTSUB=0,\"") ||
-       !tx_append_topic(&length, config->subscribe_topic) ||
-       !tx_append_text(&length, "\",1") ||
+       !tx_append_topic(&length, modem.mqtt_subscribe_step ? config->management_topic : config->subscribe_topic) ||
+       !tx_append_text(&length, modem.mqtt_subscribe_step ? "\",1" : "\",0") ||
        !tx_append_text(&length, "\r\n") || !tx_start(length)) return 0U;
     transition_wait(ML307_PHASE_MQTT_SUBSCRIBE, ML307_MQTT_TIMEOUT_MS);
     return 1U;
@@ -804,7 +805,7 @@ static uint8_t start_publish(void)
     }
     payload_length = frame_length;
     if(!tx_append_text(&length, "AT+MQTTPUB=0,\"") ||
-       !tx_append_topic(&length, Connectivity_Get()->publish_topic) ||
+       !tx_append_topic(&length, modem.publishing_management ? Connectivity_Get()->management_topic : Connectivity_Get()->publish_topic) ||
        !tx_append_text(&length, "\",") ||
        !tx_append_u32(&length, modem.publishing_management ? 1U :
                       Connectivity_Get()->mqtt_qos) ||
@@ -838,9 +839,8 @@ static uint8_t send_publish_payload(void)
     return 1U;
 }
 
-static uint8_t topic_matches(const char *topic, uint8_t topic_length)
+static uint8_t topic_matches(const char *pattern, const char *topic, uint8_t topic_length)
 {
-    const char *pattern = Connectivity_Get()->subscribe_topic;
     const char *uid = DeviceUid_Get();
     uint8_t uid_length = (uint8_t)strlen(uid);
     uint16_t offset = 0U;
@@ -890,7 +890,7 @@ static void queue_management_frame(uint8_t type, uint16_t transaction,
     management_frame[0] = ML307_MGMT_MAGIC;
     management_frame[1] = ML307_MGMT_VERSION;
     management_frame[2] = type;
-    management_frame[3] = 0U;
+    management_frame[3] = 1U; /* response/event; ignore our own MQTT echo */
     frame_put16(management_frame + 4, transaction);
     frame_put16(management_frame + 6, payload_length);
     if(payload_length) memcpy(management_frame + 8, payload, payload_length);
@@ -917,7 +917,7 @@ static void handle_management(const uint8_t *frame, uint16_t length)
     uint16_t payload_length;
 
     if(length < 9U || frame[0] != ML307_MGMT_MAGIC ||
-       frame[1] != ML307_MGMT_VERSION) return;
+       frame[1] != ML307_MGMT_VERSION || frame[3] != 0U) return;
     type = frame[2];
     transaction = frame_u16(frame + 4);
     payload_length = frame_u16(frame + 6);
@@ -928,6 +928,10 @@ static void handle_management(const uint8_t *frame, uint16_t length)
     /* 待发槽满时不执行新的管理操作；请求端必须串行等待结果再发送下一条。 */
     if(modem.management_pending) return;
     switch(type) {
+    case ML307_MGMT_REGISTRATION:
+        if(payload_length != 0U) break;
+        queue_registration(transaction);
+        return;
     case ML307_MGMT_OTA_OFFER:
         /* version:u32, size:u32, crc32:u32, urlLength:u8, URL */
         if(payload_length >= 13U && frame[20] == payload_length - 13U) {
@@ -1036,8 +1040,9 @@ static void handle_downlink(const uint8_t *frame, uint16_t frame_length)
 static void handle_mqtt_payload(const uint8_t *payload, uint16_t length)
 {
     if(!payload || !length) return;
-    if(payload[0] == ML307_MGMT_MAGIC) handle_management(payload, length);
-    else handle_downlink(payload, length);
+    if(modem.mqtt_raw_accept == 2U && payload[0] == ML307_MGMT_MAGIC) handle_management(payload, length);
+    else if(modem.mqtt_raw_accept == 1U && payload[0] != ML307_MGMT_MAGIC) handle_downlink(payload, length);
+    else modem.status.last_error = ML307_ERROR_COMMAND;
 }
 
 static uint8_t parse_cereg(const char *line)
@@ -1418,8 +1423,29 @@ static uint8_t http_process_line(char *line, uint16_t length)
 static void complete_mqtt_connection(void)
 {
     modem.waiting = 0U;
+    modem.mqtt_subscribe_step = 0U;
     modem.next_action_ms = CurTick;
     status_phase(ML307_PHASE_MQTT_SUBSCRIBE);
+}
+
+static void complete_mqtt_subscription(void)
+{
+    modem.waiting = 0U;
+    if(modem.mqtt_subscribe_step == 0U) {
+        modem.mqtt_subscribe_step = 1U;
+        modem.next_action_ms = CurTick;
+        return;
+    }
+    modem.status.mqtt_online = 1U;
+    modem.status.last_connected_ms = CurTick;
+    modem.status.consecutive_failures = 0U;
+    modem.status.last_error = ML307_ERROR_NONE;
+    modem.recovery_level = 0U;
+    queue_registration(0U);
+    modem.report_requested = 1U;
+    modem.next_action_ms = CurTick + device_jitter_ms;
+    modem.last_signal_ms = CurTick - ML307_SIGNAL_INTERVAL_MS;
+    status_phase(ML307_PHASE_ONLINE);
 }
 
 static void at_append_line(const char *line, uint16_t length)
@@ -1498,23 +1524,14 @@ static void process_line(char *line, uint16_t length)
     }
     if(mqtt_urc_is(line, "suback")) {
         uint16_t result;
-        if(phase != ML307_PHASE_MQTT_SUBSCRIBE) return;
+        if(phase != ML307_PHASE_MQTT_SUBSCRIBE || !modem.waiting) return;
         /* SUBACK code 0/1/2 is the granted QoS; 128 means rejected. */
         if(!mqtt_urc_number(line, 2U, &result) || result > 2U) {
             enter_backoff(ML307_ERROR_SUBSCRIBE);
             return;
         }
-        modem.waiting = 0U;
-        modem.status.mqtt_online = 1U;
-        modem.status.last_connected_ms = CurTick;
-        modem.status.consecutive_failures = 0U;
-        modem.status.last_error = ML307_ERROR_NONE;
-        modem.recovery_level = 0U;
-        queue_registration();
-        modem.report_requested = 1U;
-        modem.next_action_ms = CurTick + device_jitter_ms;
-        modem.last_signal_ms = CurTick - ML307_SIGNAL_INTERVAL_MS;
-        status_phase(ML307_PHASE_ONLINE);
+        modem.response_seen |= 2U;
+        if((modem.response_seen & 3U) == 3U) complete_mqtt_subscription();
         return;
     }
     if(mqtt_urc_is(line, "puback")) {
@@ -1585,8 +1602,9 @@ static void process_line(char *line, uint16_t length)
     }
     if(phase == ML307_PHASE_MQTT_SUBSCRIBE) {
         /* 命令 OK 只表示已受理，必须继续等待 conn/suback URC。 */
-        modem.response_seen = 1U;
-        modem.waiting = 1U;
+        modem.response_seen |= 1U;
+        if((modem.response_seen & 3U) == 3U) complete_mqtt_subscription();
+        else modem.waiting = 1U;
         return;
     }
     modem.waiting = 0U;
@@ -1670,9 +1688,12 @@ static void mqtt_begin_payload(void)
     int8_t status;
     memset(&header, 0, sizeof(header));
     status = Ml307Codec_ParsePublishHeader(rx_line, modem.line_length, &header);
-    modem.mqtt_raw_accept = (status == ML307_CODEC_OK &&
-                             topic_matches(header.topic, header.topic_length) &&
-                             header.payload_length <= ML307_MGMT_MAX_FRAME);
+    modem.mqtt_raw_accept = 0U;
+    if(status == ML307_CODEC_OK && header.payload_length <= ML307_MGMT_MAX_FRAME) {
+        const connectivity_config_t *config = Connectivity_Get();
+        if(topic_matches(config->subscribe_topic, header.topic, header.topic_length)) modem.mqtt_raw_accept = 1U;
+        else if(topic_matches(config->management_topic, header.topic, header.topic_length)) modem.mqtt_raw_accept = 2U;
+    }
     modem.mqtt_raw_length = header.payload_length;
     modem.mqtt_raw_received = 0U;
     modem.mqtt_raw_deadline_ms = CurTick + ML307_COMMAND_TIMEOUT_MS;

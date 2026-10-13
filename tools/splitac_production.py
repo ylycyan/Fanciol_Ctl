@@ -13,7 +13,7 @@ APP_ADDRESS = 0x00001000
 UPDATER_ADDRESS = 0x0006D000
 CONNECTIVITY_MAGIC = 0x3154454E
 CONNECTIVITY_STATE_ACTIVE = 0xA1
-CONNECTIVITY_SCHEMA = 5
+CONNECTIVITY_SCHEMA = 6
 CONFIG_MAGIC = 0x31474643
 CONFIG_SCHEMA = 4
 DATAFLASH_SIZE = 32 * 1024
@@ -113,7 +113,7 @@ def connectivity_record(row, args):
     if transport is None:
         raise ValueError('communication_mode is invalid')
     payload = struct.pack(
-        '<BBBBBBBBHHHH48s20s10s24s32s40s40s',
+        '<BBBBBBBBHHHH48s20s10s24s32s40s40s40s',
         transport, args.register_sf, args.register_bw,
         args.listen_sf, args.listen_bw, args.pdp_type, args.qos,
         1 if args.clean_session else 0, args.port, args.keepalive,
@@ -124,13 +124,21 @@ def connectivity_record(row, args):
         fixed_text(args.username, 24, 'username'),
         fixed_text(args.password, 32, 'password'),
         topic_text(args.publish_topic, 'publish_topic'),
-        topic_text(args.subscribe_topic, 'subscribe_topic')
+        topic_text(args.subscribe_topic, 'subscribe_topic'),
+        topic_text(getattr(args, 'management_topic', 'manage/ac/{uid}'), 'management_topic')
     )
     prefix = struct.pack('<IBBIH', CONNECTIVITY_MAGIC, CONNECTIVITY_SCHEMA,
                          CONNECTIVITY_STATE_ACTIVE, 1, len(payload))
     checksum = crc32(prefix + payload)
     record = prefix + struct.pack('<I', checksum) + payload
-    return record + b'\xFF' * (256 - len(record))
+    topics = (args.publish_topic, args.subscribe_topic, getattr(args, 'management_topic', 'manage/ac/{uid}'))
+    if len(set(topics)) != 3:
+        raise ValueError('business and management topics must be distinct')
+    strings = (row.get('mqtt_host') or args.broker, row.get('apn') or args.apn,
+               args.username, args.password, *topics)
+    if 24 + sum(len(value) for value in strings) > 240:
+        raise ValueError('connectivity configuration exceeds the BLE payload capacity')
+    return record + b'\xFF' * (512 - len(record))
 
 
 def device_config_record(node_id, channel):
@@ -238,6 +246,7 @@ def main():
     provision_cmd.add_argument('--password', default='ecac2026')
     provision_cmd.add_argument('--publish-topic', default='pub/ac/{uid}')
     provision_cmd.add_argument('--subscribe-topic', default='sub/ac/{uid}')
+    provision_cmd.add_argument('--management-topic', default='manage/ac/{uid}')
     provision_cmd.add_argument('--keepalive', type=int, default=60)
     provision_cmd.add_argument('--qos', type=int, choices=(0, 1), default=0)
     provision_cmd.add_argument('--clean-session', action=argparse.BooleanOptionalAction, default=True)

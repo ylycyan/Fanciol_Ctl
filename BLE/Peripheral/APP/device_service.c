@@ -217,6 +217,30 @@ static uint8_t transport_online(void)
 }
 
 /* Keep the large response scratch buffer out of this function's frame. */
+static __attribute__((noinline)) uint8_t update_connectivity(const device_frame_t *req)
+{
+    connectivity_config_t config;
+    const connectivity_config_t *current=Connectivity_Get();
+    uint8_t status=Connectivity_Decode(req->payload,req->payload_len,&config);
+    uint8_t lora_changed, cellular_changed;
+    if(status!=DEVICE_STATUS_OK)return status;
+    lora_changed=((current->transport_mask^config.transport_mask)&CONNECTIVITY_LORA)||
+                 (current->lora_register_sf!=config.lora_register_sf)||
+                 (current->lora_register_bw!=config.lora_register_bw)||
+                 (current->lora_listen_sf!=config.lora_listen_sf)||
+                 (current->lora_listen_bw!=config.lora_listen_bw);
+    cellular_changed=((current->transport_mask^config.transport_mask)&CONNECTIVITY_CELLULAR)||
+                     memcmp((const uint8_t *)current+offsetof(connectivity_config_t,cellular_pdp_type),
+                            (const uint8_t *)&config+offsetof(connectivity_config_t,cellular_pdp_type),
+                            sizeof(config)-offsetof(connectivity_config_t,cellular_pdp_type));
+    status=Connectivity_Save(&config);
+    if(status==DEVICE_STATUS_OK){
+        if(lora_changed){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
+        if(cellular_changed)Ml307_ApplyConfiguration();
+    }
+    return status;
+}
+
 static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint8_t *payload,uint16_t *payload_len)
 {
     uint8_t status=DEVICE_STATUS_OK;staged_config_t cfg;
@@ -362,34 +386,13 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         status=Connectivity_Encode(payload,DEVICE_MAX_PAYLOAD,payload_len);
         break;
     case DEVICE_OP_SET_CONNECTIVITY_CONFIG:
-    {
-        connectivity_config_t config;
-        const connectivity_config_t *current=Connectivity_Get();
-        uint8_t lora_changed;
-        uint8_t cellular_changed;
-        status=Connectivity_Decode(req->payload,req->payload_len,&config);
-        if(status!=DEVICE_STATUS_OK)break;
-        lora_changed=((current->transport_mask^config.transport_mask)&CONNECTIVITY_LORA)||
-                     (current->lora_register_sf!=config.lora_register_sf)||
-                     (current->lora_register_bw!=config.lora_register_bw)||
-                     (current->lora_listen_sf!=config.lora_listen_sf)||
-                     (current->lora_listen_bw!=config.lora_listen_bw);
-        cellular_changed=((current->transport_mask^config.transport_mask)&CONNECTIVITY_CELLULAR)||
-                         memcmp((const uint8_t *)current+offsetof(connectivity_config_t,cellular_pdp_type),
-                                (const uint8_t *)&config+offsetof(connectivity_config_t,cellular_pdp_type),
-                                sizeof(config)-offsetof(connectivity_config_t,cellular_pdp_type));
-        status=Connectivity_Save(&config);
-        if(status==DEVICE_STATUS_OK){
-            if(lora_changed){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
-            if(cellular_changed)Ml307_ApplyConfiguration();
-        }
+        status=update_connectivity(req);
         break;
-    }
     case DEVICE_OP_GET_CONNECTIVITY_STATUS:
     {
         const connectivity_config_t *config=Connectivity_Get();
         const ml307_status_t *cell= Ml307_GetStatus();
-        payload[0]=CONNECTIVITY_SCHEMA;payload[1]=config->transport_mask;payload[2]=cell->phase;
+        payload[0]=5u;payload[1]=config->transport_mask;payload[2]=cell->phase; /* status layout unchanged */
         payload[3]=cell->sim_ready;payload[4]=cell->network_registered;payload[5]=cell->mqtt_online;
         payload[6]=(uint8_t)cell->signal_rssi;payload[7]=cell->last_error;payload[8]=cell->consecutive_failures;
         put16(payload+9,cell->power_cycle_count);put16(payload+11,cell->publish_count);

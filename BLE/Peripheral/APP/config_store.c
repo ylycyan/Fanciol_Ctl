@@ -124,20 +124,11 @@ typedef struct __attribute__((packed)) {
     char device_id[DEVICE_UID_SIZE];
 } connectivity_config_v4_t;
 
-typedef struct __attribute__((packed, aligned(4))) {
-    uint32_t magic;
-    uint8_t schema_version;
-    uint8_t state;
-    uint32_t generation;
-    uint16_t payload_length;
-    uint32_t crc32;
-    connectivity_config_v4_t payload;
-} connectivity_record_v4_t;
-
 #define CONNECTIVITY_RECORD_ACTIVE    0xA1U
 
-typedef char connectivity_record_must_fit_page[
-    (sizeof(connectivity_record_t) <= EEPROM_PAGE_SIZE) ? 1 : -1
+#define CONNECTIVITY_ERASE_BYTES EEPROM_ERASE_PAGES(sizeof(connectivity_record_t))
+typedef char connectivity_record_must_fit_slot[
+    (CONNECTIVITY_ERASE_BYTES <= CONNECTIVITY_SLOT_B - CONNECTIVITY_SLOT_A) ? 1 : -1
 ];
 
 static uint32_t config_revision;
@@ -827,6 +818,7 @@ static void connectivity_defaults(connectivity_config_t *config)
     memcpy(config->mqtt_password, "ecac2026", sizeof("ecac2026"));
     memcpy(config->publish_topic, "pub/ac/{uid}", sizeof("pub/ac/{uid}"));
     memcpy(config->subscribe_topic, "sub/ac/{uid}", sizeof("sub/ac/{uid}"));
+    memcpy(config->management_topic, "manage/ac/{uid}", sizeof("manage/ac/{uid}"));
 }
 
 static uint8_t connectivity_string_valid(const char *value, uint16_t capacity)
@@ -915,21 +907,18 @@ static uint8_t connectivity_record_valid(const connectivity_record_t *record)
            Connectivity_Validate(&record->payload) == DEVICE_STATUS_OK;
 }
 
-static uint32_t connectivity_v4_crc(const connectivity_record_v4_t *record)
+static uint8_t connectivity_legacy_valid(const connectivity_record_t *record)
 {
-    uint32_t crc = crc32_update(0xFFFFFFFFUL, (const uint8_t *)record,
-                                (uint16_t)offsetof(connectivity_record_v4_t, crc32));
+    uint16_t length = record->schema_version == 4U ? sizeof(connectivity_config_v4_t) :
+                      record->schema_version == 5U ? offsetof(connectivity_config_t, management_topic) : 0U;
+    uint32_t crc;
+    if(!length || record->magic != CONNECTIVITY_MAGIC || record->state != CONNECTIVITY_RECORD_ACTIVE ||
+       record->payload_length != length) return 0U;
+    crc = crc32_update(0xFFFFFFFFUL, (const uint8_t *)record,
+                      (uint16_t)offsetof(connectivity_record_t, crc32));
     crc = crc32_update(crc, (const uint8_t *)&record->payload,
-                       sizeof(record->payload));
-    return crc ^ 0xFFFFFFFFUL;
-}
-
-static uint8_t connectivity_v4_valid(const connectivity_record_v4_t *record)
-{
-    return record->magic == CONNECTIVITY_MAGIC && record->schema_version == 4U &&
-           record->state == CONNECTIVITY_RECORD_ACTIVE &&
-           record->payload_length == sizeof(record->payload) &&
-           record->crc32 == connectivity_v4_crc(record);
+                      length);
+    return record->crc32 == (crc ^ 0xFFFFFFFFUL);
 }
 
 static void connectivity_migrate_v4(connectivity_config_t *target,
@@ -980,8 +969,15 @@ uint8_t Connectivity_Validate(const connectivity_config_t *config)
        !connectivity_string_valid(config->mqtt_username, sizeof(config->mqtt_username)) ||
        !connectivity_string_valid(config->mqtt_password, sizeof(config->mqtt_password)) ||
        !connectivity_topic_valid(config->publish_topic, sizeof(config->publish_topic)) ||
-       !connectivity_topic_valid(config->subscribe_topic, sizeof(config->subscribe_topic)))
+       !connectivity_topic_valid(config->subscribe_topic, sizeof(config->subscribe_topic)) ||
+       !connectivity_topic_valid(config->management_topic, sizeof(config->management_topic)))
         return DEVICE_STATUS_INVALID_ARG;
+    if(strcmp(config->publish_topic, config->subscribe_topic) == 0 ||
+       strcmp(config->management_topic, config->publish_topic) == 0 ||
+       strcmp(config->management_topic, config->subscribe_topic) == 0 ||
+       24U + strlen(config->mqtt_host) + strlen(config->apn) + strlen(config->mqtt_username) +
+       strlen(config->mqtt_password) + strlen(config->publish_topic) + strlen(config->subscribe_topic) +
+       strlen(config->management_topic) > DEVICE_MAX_PAYLOAD) return DEVICE_STATUS_INVALID_ARG;
     if((config->transport_mask & CONNECTIVITY_CELLULAR) != 0U &&
        (!DeviceUid_Valid(config->device_id) || config->mqtt_host[0] == '\0'))
         return DEVICE_STATUS_INVALID_ARG;
@@ -1010,25 +1006,22 @@ static uint8_t connectivity_write_record(uint32_t target, uint8_t state,
     record.payload_length = sizeof(record.payload);
     memcpy(&record.payload, config, sizeof(record.payload));
     record.crc32 = connectivity_crc(&record);
-    if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U)
+    if(EEPROM_ERASE(target, CONNECTIVITY_ERASE_BYTES) != 0U)
         return DEVICE_STATUS_IO_ERROR;
     return storage_write_verified(target, &record, sizeof(record));
 }
 
 uint8_t Connectivity_Load(void)
 {
-    union {
-        connectivity_record_t current;
-        connectivity_record_v4_t legacy;
-    } scratch;
-    connectivity_record_t *record = &scratch.current;
-    connectivity_record_v4_t *legacy = &scratch.legacy;
+    connectivity_record_t scratch;
+    connectivity_record_t *record = &scratch;
     uint8_t first_valid;
     uint8_t second_valid;
     uint8_t first_erased;
     uint8_t second_erased;
     uint8_t selected_valid = 0U;
     uint8_t legacy_valid = 0U;
+    uint8_t index;
     uint32_t legacy_generation = 0U;
     uint32_t legacy_slot = CONNECTIVITY_SLOT_B;
 
@@ -1074,8 +1067,8 @@ uint8_t Connectivity_Load(void)
             memcpy(&record->payload, &connectivity_config, sizeof(record->payload));
             record->crc32 = connectivity_crc(record);
             expected_crc = record->crc32;
-            if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
-               EEPROM_WRITE(target, record, sizeof(*record)) != 0U ||
+            if(EEPROM_ERASE(target, CONNECTIVITY_ERASE_BYTES) != 0U ||
+               storage_write_verified(target, record, sizeof(*record)) != DEVICE_STATUS_OK ||
                EEPROM_READ(target, record, sizeof(*record)) != 0U ||
                !connectivity_record_valid(record) || record->crc32 != expected_crc) {
                 lora_params_write_locked = 1U;
@@ -1093,28 +1086,27 @@ uint8_t Connectivity_Load(void)
         return DEVICE_STATUS_OK;
     }
 
-    /* Upgrade a deployed Schema-4 record once, keeping the old slot intact
-     * until the new record has been written and read back successfully. */
-    memset(legacy, 0xFF, sizeof(*legacy));
-    if(EEPROM_READ(CONNECTIVITY_SLOT_A, legacy, sizeof(*legacy)) == 0U &&
-       connectivity_v4_valid(legacy)) {
+    /* Old 4/5 slots are 0x2000 and 0x2100. Write new 0x2200 first,
+     * leaving both old pages intact through every migration failure. */
+    for(index = 0U; index < 2U; index++) {
+        uint32_t address = CONNECTIVITY_SLOT_A + (uint32_t)index * EEPROM_PAGE_SIZE;
+        if(EEPROM_READ(address, record, sizeof(*record)) != 0U) goto connectivity_read_error;
+        if(!connectivity_legacy_valid(record) ||
+           (legacy_valid && (int32_t)(record->generation - legacy_generation) <= 0)) continue;
         legacy_valid = 1U;
-        legacy_generation = legacy->generation;
-        legacy_slot = CONNECTIVITY_SLOT_A;
-        connectivity_migrate_v4(&connectivity_config, &legacy->payload);
-    }
-    memset(legacy, 0xFF, sizeof(*legacy));
-    if(EEPROM_READ(CONNECTIVITY_SLOT_B, legacy, sizeof(*legacy)) == 0U &&
-       connectivity_v4_valid(legacy) &&
-       (!legacy_valid || (int32_t)(legacy->generation - legacy_generation) > 0)) {
-        legacy_valid = 1U;
-        legacy_generation = legacy->generation;
-        legacy_slot = CONNECTIVITY_SLOT_B;
-        connectivity_migrate_v4(&connectivity_config, &legacy->payload);
+        legacy_generation = record->generation;
+        legacy_slot = address;
     }
     if(legacy_valid) {
-        uint32_t target = legacy_slot == CONNECTIVITY_SLOT_A ?
-                          CONNECTIVITY_SLOT_B : CONNECTIVITY_SLOT_A;
+        uint32_t target = CONNECTIVITY_SLOT_B;
+        if(EEPROM_READ(legacy_slot, record, sizeof(*record)) != 0U) goto connectivity_read_error;
+        if(record->schema_version == 4U)
+            connectivity_migrate_v4(&connectivity_config, (const connectivity_config_v4_t *)&record->payload);
+        else {
+            connectivity_defaults(&connectivity_config);
+            memcpy(&connectivity_config, &record->payload, offsetof(connectivity_config_t, management_topic));
+        }
+        if(Connectivity_Validate(&connectivity_config) != DEVICE_STATUS_OK) goto connectivity_defaults_recovered;
         connectivity_generation = legacy_generation;
         connectivity_slot = legacy_slot;
         connectivity_apply(&connectivity_config);
@@ -1131,6 +1123,7 @@ uint8_t Connectivity_Load(void)
         return DEVICE_STATUS_OK;
     }
 
+connectivity_defaults_recovered:
     connectivity_defaults(&connectivity_config);
     connectivity_generation = 0U;
     connectivity_slot = CONNECTIVITY_SLOT_B;
@@ -1223,7 +1216,8 @@ uint8_t Connectivity_Encode(uint8_t *payload, uint16_t capacity, uint16_t *lengt
        !wire_put_string(payload, capacity, &offset, config->mqtt_username, sizeof(config->mqtt_username)) ||
        !wire_put_string(payload, capacity, &offset, config->mqtt_password, sizeof(config->mqtt_password)) ||
        !wire_put_string(payload, capacity, &offset, config->publish_topic, sizeof(config->publish_topic)) ||
-       !wire_put_string(payload, capacity, &offset, config->subscribe_topic, sizeof(config->subscribe_topic)))
+       !wire_put_string(payload, capacity, &offset, config->subscribe_topic, sizeof(config->subscribe_topic)) ||
+       !wire_put_string(payload, capacity, &offset, config->management_topic, sizeof(config->management_topic)))
         return DEVICE_STATUS_INVALID_ARG;
     *length = offset;
     return DEVICE_STATUS_OK;
@@ -1246,7 +1240,7 @@ uint8_t Connectivity_Decode(const uint8_t *payload, uint16_t length,
                               connectivity_config_t *config)
 {
     uint16_t offset = 17U;
-    if(!payload || !config || length < offset || payload[0] != CONNECTIVITY_SCHEMA)
+    if(!payload || !config || length < offset || (payload[0] != CONNECTIVITY_SCHEMA && payload[0] != 5U))
         return DEVICE_STATUS_INVALID_ARG;
     (void)DeviceUid_Get();
     memcpy(config, &connectivity_config, sizeof(*config));
@@ -1267,8 +1261,12 @@ uint8_t Connectivity_Decode(const uint8_t *payload, uint16_t length,
        !wire_get_string(payload, length, &offset, config->mqtt_username, sizeof(config->mqtt_username)) ||
        !wire_get_string(payload, length, &offset, config->mqtt_password, sizeof(config->mqtt_password)) ||
        !wire_get_string(payload, length, &offset, config->publish_topic, sizeof(config->publish_topic)) ||
-       !wire_get_string(payload, length, &offset, config->subscribe_topic, sizeof(config->subscribe_topic)) ||
-       offset != length) return DEVICE_STATUS_INVALID_ARG;
+       !wire_get_string(payload, length, &offset, config->subscribe_topic, sizeof(config->subscribe_topic)))
+        return DEVICE_STATUS_INVALID_ARG;
+    if(payload[0] == CONNECTIVITY_SCHEMA &&
+       !wire_get_string(payload, length, &offset, config->management_topic, sizeof(config->management_topic)))
+        return DEVICE_STATUS_INVALID_ARG;
+    if(offset != length) return DEVICE_STATUS_INVALID_ARG;
     return Connectivity_Validate(config);
 }
 

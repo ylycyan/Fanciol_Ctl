@@ -52,6 +52,10 @@ class ProductionProvisioningTest(unittest.TestCase):
             self.assertEqual(int.from_bytes(dataflash[16:18], 'little'), 0x1001)
             self.assertEqual(dataflash[18], 9)
             self.assertEqual(dataflash[0x2010], 1)
+            self.assertEqual(dataflash[0x2004], 6)
+            self.assertEqual(int.from_bytes(dataflash[0x200A:0x200C], 'little'), 270)
+            self.assertEqual(dataflash[0x20F6:0x2105], b'manage/ac/{uid}')
+            self.assertEqual(dataflash[0x2200:0x2400], b'\xFF' * 512)
             self.assertEqual(dataflash[0x2020:0x202D], b'106.15.11.119')
             self.assertFalse((output / 'platform-import.csv').exists())
 

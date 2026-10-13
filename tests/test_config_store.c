@@ -252,7 +252,7 @@ static void test_verified_commit_keeps_rejected_values_out_of_flash(void)
     next = *Connectivity_Get(); assert(Connectivity_Save(&next) == DEVICE_STATUS_OK);
     assert(Connectivity_Load() == DEVICE_STATUS_OK);
     memcpy(snapshot, dataflash, sizeof(snapshot));
-    for(stage = 1U; stage <= 5U; stage++) {
+    for(stage = 1U; stage <= 6U; stage++) {
         memcpy(dataflash, snapshot, sizeof(snapshot)); clear_failure();
         assert(Connectivity_Load() == DEVICE_STATUS_OK);
         next = *Connectivity_Get(); next.report_interval_sec = 600U;
@@ -622,6 +622,57 @@ static void test_connectivity_v4_migrates_to_current_mqtt_defaults(void)
     assert(Connectivity_Load() == DEVICE_STATUS_OK);
 }
 
+static void test_connectivity_v5_migration_preserves_both_old_pages(void)
+{
+    connectivity_config_t config;
+    uint8_t old[256], pages[512], input[242];
+    uint32_t magic = 0x3154454EUL, generation = 9U, crc;
+    uint16_t length = offsetof(connectivity_config_t, management_topic);
+    unsigned stage;
+    reset_flash();
+    assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    config = *Connectivity_Get(); config.transport_mask = CONNECTIVITY_CELLULAR;
+    strcpy(config.device_id, "FE1234"); strcpy(config.mqtt_host, "private.broker");
+    strcpy(config.mqtt_username, "custom"); strcpy(config.mqtt_password, "secret");
+    strcpy(config.publish_topic, "custom/u/{uid}"); strcpy(config.subscribe_topic, "custom/d/{uid}");
+    memset(old, 0xFF, sizeof(old));
+    memcpy(old, &magic, 4); old[4] = 5; old[5] = 0xA1;
+    memcpy(old + 6, &generation, 4); memcpy(old + 10, &length, 2);
+    memcpy(old + 16, &config, length);
+    memcpy(input, old, 12); memcpy(input + 12, &config, length);
+    crc = Config_Crc32(input, sizeof(input)); memcpy(old + 12, &crc, 4);
+    memcpy(dataflash + 0x2100, old, sizeof(old));
+    memcpy(pages, dataflash + CONNECTIVITY_SLOT_A, sizeof(pages));
+    for(stage = 1; stage <= 2; stage++) {
+        memset(dataflash + CONNECTIVITY_SLOT_B, 0xFF, 512); clear_failure();
+        fail_on(FAIL_WRITE, stage, 1U);
+        assert(Connectivity_Load() == DEVICE_STATUS_OK);
+        assert(!memcmp(pages, dataflash + CONNECTIVITY_SLOT_A, sizeof(pages)));
+        assert(strcmp(Connectivity_Get()->mqtt_host, "private.broker") == 0);
+        assert(Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED);
+    }
+    for(stage = 1; stage <= 11; stage++) {
+        memset(dataflash + CONNECTIVITY_SLOT_B, 0xFF, 512); clear_failure();
+        fail_on(FAIL_READ, stage, 0U);
+        assert(Connectivity_Load() != DEVICE_STATUS_VERIFY_FAILED);
+        assert(!memcmp(pages, dataflash + CONNECTIVITY_SLOT_A, sizeof(pages)));
+    }
+    clear_failure();
+    assert(Connectivity_Load() == DEVICE_STATUS_OK);
+    assert(!memcmp(pages, dataflash + CONNECTIVITY_SLOT_A, sizeof(pages)));
+    assert(strcmp(Connectivity_Get()->mqtt_password, "secret") == 0);
+    assert(strcmp(Connectivity_Get()->management_topic, "manage/ac/{uid}") == 0);
+    assert(strcmp(Connectivity_Get()->publish_topic, "custom/u/{uid}") == 0);
+    assert(dataflash[CONNECTIVITY_SLOT_B + 4] == 6);
+    assert(Connectivity_Load() == DEVICE_STATUS_OK); /* now the new A peer may be rebuilt */
+    config = *Connectivity_Get(); strcpy(config.management_topic, config.subscribe_topic);
+    assert(Connectivity_Save(&config) == DEVICE_STATUS_INVALID_ARG);
+    config = *Connectivity_Get(); strcpy(config.management_topic, "custom/m/{uid}");
+    assert(Connectivity_Save(&config) == DEVICE_STATUS_OK);
+    assert(Connectivity_Load() == DEVICE_STATUS_OK);
+    assert(strcmp(Connectivity_Get()->management_topic, "custom/m/{uid}") == 0);
+}
+
 static void test_connectivity_power_loss_keeps_previous_slot(void)
 {
     connectivity_config_t next;
@@ -698,6 +749,7 @@ int main(void)
     test_factory_reset_reports_partial_failure();
     test_connectivity_round_trip();
     test_connectivity_v4_migrates_to_current_mqtt_defaults();
+    test_connectivity_v5_migration_preserves_both_old_pages();
     test_connectivity_power_loss_keeps_previous_slot();
     test_device_uid_bounds_are_required_for_cellular();
     test_custom_device_uid_prefix_recovery();
