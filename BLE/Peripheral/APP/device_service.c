@@ -76,16 +76,20 @@ static uint8_t parse_config(const uint8_t *p,uint16_t len,staged_config_t *cfg)
     return DEVICE_STATUS_OK;
 }
 
-static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules)
+static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules,RULE_SCHEDULE_T *schedules)
 {
-    uint8_t count, i;
+    uint8_t count, i, stride;
     uint16_t off = 1u;
     if (len < 1u) return DEVICE_STATUS_INVALID_ARG;
     count = p[0];
-    if (count > MAX_POLICY_GROUPS || len != (uint16_t)(1u + (uint16_t)count * 18u)) return DEVICE_STATUS_INVALID_ARG;
+    stride = len == (uint16_t)(1u + (uint16_t)count * 26u) ? 26u : 18u;
+    if (count > MAX_POLICY_GROUPS || len != (uint16_t)(1u + (uint16_t)count * stride)) return DEVICE_STATUS_INVALID_ARG;
     memset(rules, 0, sizeof(Dev.rules));
-    for (i = 0u; i < count; i++, off = (uint16_t)(off + 18u)) {
+    memset(schedules, 0, sizeof(Dev.ruleSchedules));
+    for (i = 0u; i < count; i++, off = (uint16_t)(off + stride)) {
         DEV_RULE_T *r = &rules[i];
+        RULE_SCHEDULE_T *s = &schedules[i];
+        uint8_t kind = stride == 26u ? p[off + 18u] : 0u;
         uint16_t start = get16(p + off + 2u), end = get16(p + off + 4u);
         uint16_t lower = get16(p + off + 6u), upper = get16(p + off + 8u);
         uint16_t minimum = get16(p + off + 10u);
@@ -99,12 +103,23 @@ static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules)
             end_off > 1u || low_action > RULE_ACTION_MAX || high_action > RULE_ACTION_MAX ||
             target < 16u || target > 31u || fan > Wind_High) return DEVICE_STATUS_INVALID_ARG;
         if (!start_action && !end_off && !low_action && !high_action) return DEVICE_STATUS_INVALID_ARG;
+        if(p[off] > 1u) return DEVICE_STATUS_INVALID_ARG;
+        if(stride == 26u) {
+            s->date_mode = p[off + 19u];
+            s->start_day = get16(p + off + 20u); s->end_day = get16(p + off + 22u);
+            s->hysteresis_x10 = p[off + 24u];
+            if(kind > 1u || s->date_mode > 3u || s->start_day > s->end_day || s->end_day > RULE_LAST_DAY ||
+               s->hysteresis_x10 < 5u || s->hysteresis_x10 > 50u || p[off + 25u] ||
+               (s->date_mode == 2u && s->start_day != s->end_day) ||
+               (kind && (!start_action || end_off || low_action || high_action || start != end))) return DEVICE_STATUS_INVALID_ARG;
+        }
         /* 未校时可保存停用策略，但不能启用任何本地指令组。 */
         if (p[off] && !RTC_IsTimeValid()) return DEVICE_STATUS_CONFLICT;
 
         r->ctrl.enable = p[off] ? 1u : 0u;
-        r->ctrl.trig_type = TRIG_COMBINED;
+        r->ctrl.trig_type = kind ? TRIG_TIME : TRIG_COMBINED;
         r->flags = p[off + 1u] & 0x7Fu;
+        if(stride == 26u && (s->date_mode == 0u || s->date_mode == 2u)) r->flags = 127u;
         r->trig_val = start;
         r->trig_val2 = end;
         r->sched = lower;
@@ -120,7 +135,7 @@ static uint8_t parse_rules(const uint8_t *p,uint16_t len,DEV_RULE_T *rules)
             uint8_t j;
             for(j = 0u; j < i; ++j) {
                 DEV_RULE_T *previous = &rules[j];
-                if(previous->ctrl.enable && Rule_WindowsOverlap(previous, r)) return DEVICE_STATUS_CONFLICT;
+                if(previous->ctrl.enable && Rule_SchedulesOverlap(previous, &schedules[j], r, s)) return DEVICE_STATUS_CONFLICT;
             }
         }
     }
@@ -169,6 +184,7 @@ uint8_t SplitAcControl_Execute(uint8_t control,uint16_t value)
         if(value>=MAX_IR_LEARNNUM)return DEVICE_STATUS_INVALID_ARG;
         if(Dev.irActType!=ACT_TYPE_LEARN||!Dev.learnCode[value].enable)return DEVICE_STATUS_NOT_SUPPORTED;
         if(!Ir_SendLearnedVerified((uint8_t)value))return DEVICE_STATUS_BUSY;
+        Rule_ManualOverride();
         update_learned_state((uint8_t)value);
         SaveDevInfo(50u);
         Ml307_RequestReport();
@@ -193,6 +209,7 @@ uint8_t SplitAcControl_Execute(uint8_t control,uint16_t value)
     }
     if(!Ir_ConfiguredCommandSupported(cmd))return DEVICE_STATUS_NOT_SUPPORTED;
     if(!Ir_ExecuteConfiguredVerified(cmd))return DEVICE_STATUS_BUSY;
+    Rule_ManualOverride();
     if(control==CONTROL_FIELD_POWER)update_power_state(value?1u:0u);
     else if(control==CONTROL_FIELD_MODE)Dev.ctlMode=(Mode_t)value;
     else if(control==CONTROL_FIELD_TEMPERATURE)Dev.temSet=value/10u;
@@ -217,13 +234,14 @@ static uint8_t transport_online(void)
 }
 
 /* Keep the large response scratch buffer out of this function's frame. */
-static __attribute__((noinline)) uint8_t update_connectivity(const device_frame_t *req)
+static __attribute__((noinline)) uint8_t update_connectivity(const device_frame_t *req,uint8_t *link_action)
 {
     connectivity_config_t config;
     const connectivity_config_t *current=Connectivity_Get();
     uint8_t status=Connectivity_Decode(req->payload,req->payload_len,&config);
     uint8_t lora_changed, cellular_changed;
     if(status!=DEVICE_STATUS_OK)return status;
+    if(link_action&&strcmp(current->management_topic,config.management_topic))return DEVICE_STATUS_CONFLICT;
     lora_changed=((current->transport_mask^config.transport_mask)&CONNECTIVITY_LORA)||
                  (current->lora_register_sf!=config.lora_register_sf)||
                  (current->lora_register_bw!=config.lora_register_bw)||
@@ -236,12 +254,12 @@ static __attribute__((noinline)) uint8_t update_connectivity(const device_frame_
     status=Connectivity_Save(&config);
     if(status==DEVICE_STATUS_OK){
         if(lora_changed){Dev.loraStatus=Status_Logining;Timer_Lora=LORA_SEC_TO_TICKS(300);}
-        if(cellular_changed)Ml307_ApplyConfiguration();
+        if(cellular_changed){if(link_action)*link_action=1u;else Ml307_ApplyConfiguration();}
     }
     return status;
 }
 
-static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint8_t *payload,uint16_t *payload_len)
+static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint8_t *payload,uint16_t *payload_len,uint8_t *link_action)
 {
     uint8_t status=DEVICE_STATUS_OK;staged_config_t cfg;
     *payload_len=0;
@@ -305,12 +323,13 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         uint8_t i, count = 0u;
         uint16_t off = 1u;
         for (i = 0u; i < MAX_POLICY_GROUPS; i++) {
-            if (Dev.rules[i].ctrl.trig_type == TRIG_COMBINED) count++;
+            if (Dev.rules[i].ctrl.trig_type == TRIG_COMBINED || Dev.rules[i].ctrl.trig_type == TRIG_TIME) count++;
         }
         payload[0] = count;
         for (i = 0u; i < MAX_POLICY_GROUPS; i++) {
             DEV_RULE_T *r = &Dev.rules[i];
-            if (r->ctrl.trig_type != TRIG_COMBINED) continue;
+            RULE_SCHEDULE_T *s = &Dev.ruleSchedules[i];
+            if (r->ctrl.trig_type != TRIG_COMBINED && r->ctrl.trig_type != TRIG_TIME) continue;
             payload[off] = r->ctrl.enable ? 1u : 0u;
             payload[off + 1u] = r->flags & 0x7Fu;
             put16(payload + off + 2u, r->trig_val);
@@ -324,17 +343,25 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
             payload[off + 15u] = POLICY_HIGH_ACTION(r);
             payload[off + 16u] = POLICY_TARGET_TEMP(r);
             payload[off + 17u] = POLICY_FAN(r);
-            off = (uint16_t)(off + 18u);
+            payload[off + 18u] = r->ctrl.trig_type == TRIG_TIME ? 1u : 0u;
+            payload[off + 19u] = s->date_mode == 0u && r->flags != 127u ? 1u : s->date_mode;
+            put16(payload + off + 20u, s->start_day); put16(payload + off + 22u, s->end_day);
+            payload[off + 24u] = s->hysteresis_x10 ? s->hysteresis_x10 : 5u;
+            payload[off + 25u] = 0u;
+            off = (uint16_t)(off + 26u);
         }
         *payload_len = off;
         break;}
     case DEVICE_OP_SET_RULES:
     {
         DEV_RULE_T previous_rules[MAX_RULES];
+        RULE_SCHEDULE_T previous_schedules[MAX_POLICY_GROUPS];
         memcpy(previous_rules,Dev.rules,sizeof(previous_rules));
-        status=parse_rules(req->payload,req->payload_len,Dev.rules);
+        memcpy(previous_schedules,Dev.ruleSchedules,sizeof(previous_schedules));
+        if(!Ir_PrepareConfigurationChange()){status=DEVICE_STATUS_BUSY;break;}
+        status=parse_rules(req->payload,req->payload_len,Dev.rules,Dev.ruleSchedules);
         if(status==DEVICE_STATUS_OK)status=Config_Commit();
-        if(status!=DEVICE_STATUS_OK)memcpy(Dev.rules,previous_rules,sizeof(previous_rules));
+        if(status!=DEVICE_STATUS_OK){memcpy(Dev.rules,previous_rules,sizeof(previous_rules));memcpy(Dev.ruleSchedules,previous_schedules,sizeof(previous_schedules));}
         else Rule_Reset();
         break;
     }
@@ -347,7 +374,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
             uint8_t ch=req->payload[1];
             if(ch>=MAX_IR_LEARNNUM)status=DEVICE_STATUS_INVALID_ARG;
             else if(!Dev.learnCode[ch].enable)status=DEVICE_STATUS_NOT_SUPPORTED;
-            else status=Ir_SendLearnedVerified(ch)?DEVICE_STATUS_OK:DEVICE_STATUS_BUSY;
+            else {status=Ir_SendLearnedVerified(ch)?DEVICE_STATUS_OK:DEVICE_STATUS_BUSY;if(status==DEVICE_STATUS_OK)Rule_ManualOverride();}
         }
         else if(req->payload[0]==5u&&req->payload_len==1u){uint16_t learned=Ir_GetLearnedMask();payload[0]=(uint8_t)IrBuf.type;payload[1]=IrBuf.isFinish;payload[2]=IrBuf.matchError;payload[3]=IrBuf.learnError;put16(payload+4,Dev.irType);payload[6]=Dev.irIdx;payload[7]=Dev.learnNum;put16(payload+8,learned);payload[10]=IrLearnChannel;*payload_len=11;}
         else if(req->payload[0]==6u&&req->payload_len==1u)status=Ir_CancelOperation()?DEVICE_STATUS_OK:DEVICE_STATUS_IO_ERROR;
@@ -359,7 +386,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         if(req->payload_len!=1u||req->payload[0]!=1u){status=DEVICE_STATUS_NOT_SUPPORTED;break;}
         if(!Ir_ConfiguredCommandSupported(IR_CMD_POWER_OFF)){status=DEVICE_STATUS_NOT_SUPPORTED;break;}
         status=Ir_ExecuteConfiguredVerified(IR_CMD_POWER_OFF)?DEVICE_STATUS_OK:DEVICE_STATUS_BUSY;
-        if(status==DEVICE_STATUS_OK){update_power_state(0);SaveDevInfo(50u);Ml307_RequestReport();}
+        if(status==DEVICE_STATUS_OK){Rule_ManualOverride();update_power_state(0);SaveDevInfo(50u);Ml307_RequestReport();}
         break;
     case DEVICE_OP_GET_DIAGNOSTICS:{
         const HLW8110_Status_t *meter=HLW8110_GetStatus();
@@ -386,7 +413,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         status=Connectivity_Encode(payload,DEVICE_MAX_PAYLOAD,payload_len);
         break;
     case DEVICE_OP_SET_CONNECTIVITY_CONFIG:
-        status=update_connectivity(req);
+        status=update_connectivity(req,link_action);
         break;
     case DEVICE_OP_GET_CONNECTIVITY_STATUS:
     {
@@ -491,6 +518,46 @@ uint8_t DeviceService_HandleFrame(const uint8_t *request,uint16_t request_len,ui
 {
     device_frame_t req,rsp;uint8_t payload[DEVICE_MAX_PAYLOAD];uint16_t payload_len=0;uint8_t status;
     status=DeviceProtocol_Decode(request,request_len,&req);if(status!=DEVICE_STATUS_OK||req.type!=DEVICE_FRAME_REQUEST)return status;
-    status=dispatch(&req,payload,&payload_len);rsp.type=DEVICE_FRAME_RESPONSE;rsp.seq=req.seq;rsp.opcode=req.opcode;rsp.status=status;rsp.payload_len=payload_len;rsp.payload=payload;
+    status=dispatch(&req,payload,&payload_len,0);rsp.type=DEVICE_FRAME_RESPONSE;rsp.seq=req.seq;rsp.opcode=req.opcode;rsp.status=status;rsp.payload_len=payload_len;rsp.payload=payload;
     return DeviceProtocol_Encode(&rsp,response,capacity,response_len);
+}
+
+uint8_t DeviceService_HandleRemote(uint8_t opcode,const uint8_t *request,uint16_t length,
+                                  uint8_t *response,uint16_t *response_len,uint8_t *link_action)
+{
+    device_frame_t req;uint8_t status,read_opcode=0u;
+    if(!response||!response_len||!link_action||(length&&!request)||length>DEVICE_MAX_PAYLOAD)return DEVICE_STATUS_INVALID_ARG;
+    *response_len=0u;*link_action=0u;
+    if((opcode==DEVICE_OP_COMMIT_CONFIG||opcode==DEVICE_OP_SET_RULES||opcode==DEVICE_OP_SET_CONNECTIVITY_CONFIG)&&
+       Ota_Get()->state!=OTA_STATE_IDLE)return DEVICE_STATUS_BUSY;
+    switch(opcode){
+    case DEVICE_OP_GET_CONFIG:case DEVICE_OP_GET_RULES:case DEVICE_OP_GET_DIAGNOSTICS:
+    case DEVICE_OP_GET_CONNECTIVITY_CONFIG:case DEVICE_OP_GET_CONNECTIVITY_STATUS:
+        if(length)return DEVICE_STATUS_INVALID_ARG;
+        break;
+    case DEVICE_OP_DEVICE_TIME:break;
+    case DEVICE_OP_COMMIT_CONFIG:
+        /* Remote MQTT cannot rename nodes or change the untouched LoRa topology. */
+        if(length!=11u||get16(request)!=Dev.nodeId||request[2]!=(uint8_t)Dev.channel||
+           request[3]!=Dev.linkRole||get16(request+4)!=Dev.parentRelayId)return DEVICE_STATUS_CONFLICT;
+        read_opcode=DEVICE_OP_GET_CONFIG;break;
+    case DEVICE_OP_SET_RULES:read_opcode=DEVICE_OP_GET_RULES;break;
+    case DEVICE_OP_SET_CONNECTIVITY_CONFIG:
+        /* Keep the management route and active transport reachable for the acknowledgement. */
+        if(length<17u||request[1]!=Connectivity_Get()->transport_mask||
+           memcmp(request+2,&Connectivity_Get()->lora_register_sf,4u))return DEVICE_STATUS_CONFLICT;
+        read_opcode=DEVICE_OP_GET_CONNECTIVITY_CONFIG;break;
+    case DEVICE_OP_RESTART_DEVICE:
+        if(length)return DEVICE_STATUS_INVALID_ARG;
+        if(Ota_Get()->state!=OTA_STATE_IDLE)return DEVICE_STATUS_BUSY;
+        *link_action=2u;return DEVICE_STATUS_OK;
+    case DEVICE_OP_IR_CONFIG:
+        if(length!=1u||request[0]!=5u)return DEVICE_STATUS_NOT_SUPPORTED;
+        break;
+    default:return DEVICE_STATUS_NOT_SUPPORTED;
+    }
+    req.type=DEVICE_FRAME_REQUEST;req.seq=0u;req.opcode=opcode;req.status=0u;req.payload=request;req.payload_len=length;
+    status=dispatch(&req,response,response_len,link_action);
+    if(status==DEVICE_STATUS_OK&&read_opcode){req.opcode=read_opcode;req.payload_len=0u;status=dispatch(&req,response,response_len,link_action);}
+    return status;
 }

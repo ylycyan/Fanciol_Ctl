@@ -55,6 +55,10 @@ Flash 地址不变：入口 `0x00000/4 KB`、运行应用 `0x01000/216 KB`、暂
 
 ## 构建与打包
 
+管理主题新增 type=9 当前状态查询、type=10 单次空调控制、type=11 硬件故障与恢复事件。
+查询回传既有业务状态帧的前 37 字节，只有外层 C7 校验；控制复用原执行器，7 字节载荷为 operation/tag/parameter，使用 type=4 返回结果。登记能力 bit7/8/9 分别声明这三项功能。
+故障位只保留硬件 0x0079，接入时推送一次，变化后至少间隔 10 秒合并推送最新状态；断网不积压历史，无动态分配或新 Flash 记录。服务器可仅订阅 mag 按需维护，不必接入 pub/sub。完整格式以小程序仓库 `docs/分体空调4G MQTT报文协议.md` 为准。
+
 ```powershell
 platformio run -e ch583 -e ch583_updater -e ch583_jump
 python tools/splitac_production.py package --output-dir production-release
@@ -90,6 +94,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\flash_production.ps1 `
 出厂默认写入上述平台参数；需要其他平台时可使用生成工具的 `--broker`、`--port`、`--username`、`--password`、`--publish-topic` 和 `--subscribe-topic` 参数，或在小程序管理页修改。烧写脚本会校验 CSV、写入并校验 `splitac-burn.hex`、临时生成并写入 DataFlash、读回校验、复位设备，最后清除临时文件。设备须先进入 USB Boot ISP 模式；`wchisp` 在 Windows 下使用 WinUSB 驱动。
 
 不接硬件时可先验证工单和 CSV：
+
+本地智控完成红外发送后，通过管理主题发送 type=0x0D、flags=1、transactionId=0 的16字节结果事件：UTC秒u32LE、运行毫秒u32LE、策略组u8、原因u8、动作u8、结果u8、设定温度u8、风速u8、室温×10 i16LE。组1–6；原因0进入/1高温/2低温/4退出/5定时；动作1开机/2关机/3制冷/4制热/5除湿/6送风；结果0发送完成/6失败；设定温度0表示无温度风速场景；室温-32768表示无效。仅联网时尽力发送，固定6条RAM待发区、队满丢弃新项，断网清空、不补传、不写Flash；响应、AT、OTA优先。成功不表示空调物理反馈。服务端只对同一完整事件过滤QoS1重复，不对业务控制去重。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\flash_production.ps1 `

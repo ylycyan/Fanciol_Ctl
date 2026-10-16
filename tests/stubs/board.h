@@ -134,6 +134,13 @@ typedef struct {
 #define POLICY_FAN(rule)          ((rule)->act.raw[7])
 #define POLICY_LATCH_HIGH         0x01u
 #define POLICY_LATCH_LOW          0x02u
+typedef struct {
+    uint16_t start_day;
+    uint16_t end_day;
+    uint8_t date_mode;
+    uint8_t hysteresis_x10;
+} RULE_SCHEDULE_T;
+#define RULE_LAST_DAY 13879u
 
 typedef struct {
     uint32_t energy_wh;
@@ -163,6 +170,10 @@ extern IRBUF_t IrBuf;
 void Rule_Reset(void);
 void Rule_RecordPowerChange(void);
 uint8_t Rule_WindowsOverlap(const DEV_RULE_T *a, const DEV_RULE_T *b);
+uint8_t Rule_SchedulesOverlap(const DEV_RULE_T *a, const RULE_SCHEDULE_T *sa,
+                             const DEV_RULE_T *b, const RULE_SCHEDULE_T *sb);
+void Rule_ManualOverride(void);
+void Rule_ClockChanged(void);
 
 typedef struct {
     uint16_t magicCode;
@@ -175,6 +186,7 @@ typedef struct {
     uint8_t irIdx;
     uint16_t irType;
     DEV_RULE_T rules[MAX_RULES];
+    RULE_SCHEDULE_T ruleSchedules[MAX_POLICY_GROUPS];
     DEV_METER_T meter;
     uint8_t learnNum;
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];

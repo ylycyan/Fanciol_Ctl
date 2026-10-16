@@ -127,6 +127,7 @@ uint8_t RTC_SetTimestamp(uint32_t timestamp)
     Dev.errorCode.bit.rtc = !rtcTimeValid;
     if(!rtcTimeValid) { PRINT("External RTC write/readback failed\r\n"); return 0U; }
     LocalTimestamp = verified;
+    Rule_ClockChanged();
     rtcPolled = 1U;
     rtcPollTick = rtcChangeTick = CurTick;
     PRINT("External RTC synced: %lu\r\n", (unsigned long)verified);

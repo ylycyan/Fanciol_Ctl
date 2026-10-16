@@ -279,6 +279,15 @@ typedef struct {
 #define POLICY_LATCH_HIGH         0x01u
 #define POLICY_LATCH_LOW          0x02u
 
+/* Days since 2000-01-01, inclusive. Main config still fits one Flash page. */
+typedef struct {
+    uint16_t start_day;
+    uint16_t end_day;
+    uint8_t date_mode;       /* daily / weekly / single date / date range */
+    uint8_t hysteresis_x10;  /* zero retains legacy 0.5 C */
+} RULE_SCHEDULE_T;
+#define RULE_LAST_DAY 13879u /* 2037-12-31 */
+
 // 本地计量累计与限频保存状态
 typedef struct {
     uint32_t energy_wh;                 // 累计电量，单位 0.1 kWh
@@ -307,6 +316,7 @@ typedef struct{
     uint8_t learnNum; //学习指令个数(0~10 MAX_IR_LEARNNUM)
     IR_LEARNING_t learnCode[MAX_IR_LEARNNUM];
     DEV_RULE_T    rules[MAX_RULES];       //前6项为本地智控策略组，保留160字节落盘布局
+    RULE_SCHEDULE_T ruleSchedules[MAX_POLICY_GROUPS];
     DEV_METER_T   meter;                  // 计量数据（运行区轮转保存）
     //上报数据
     OnOff_t onOff; // 空调开关状态,0:关 1:开
@@ -397,6 +407,7 @@ extern uint8_t Lora_BuildNodeReport(uint8_t *buf, uint8_t tag, uint8_t errorInfo
 extern uint8_t Lora_BuildNodeReportRssi(uint8_t *buf, uint8_t tag, uint8_t errorInfo, int8_t rssi);
 extern uint8_t Lora_ExecuteNodeControl(const uint8_t *buf, uint8_t len,
                                       uint8_t allow_zero_gateway);
+extern uint8_t ExecuteGatewayControl(uint8_t operation, uint16_t tag, uint32_t parameter);
 extern uint8_t Lora_BuildControlResult(uint8_t *buf, uint8_t tag, uint8_t result);
 
 #define BITGET(val, bit)      (((val) >> (bit)) & 1)              // 获取 val 的第 bit 位（0 或 1）
@@ -419,6 +430,10 @@ extern void Rule_Reset(void);
 extern void Rule_RecordPowerChange(void);
 extern void Rule_IrCompleted(uint8_t success);
 extern uint8_t Rule_WindowsOverlap(const DEV_RULE_T *a, const DEV_RULE_T *b);
+extern uint8_t Rule_SchedulesOverlap(const DEV_RULE_T *a, const RULE_SCHEDULE_T *sa,
+                                    const DEV_RULE_T *b, const RULE_SCHEDULE_T *sb);
+extern void Rule_ManualOverride(void);
+extern void Rule_ClockChanged(void);
 extern void Meter_Update(uint32_t dt_sec);
 extern uint8_t Meter_ClearEnergy(void);
 extern volatile uint32_t CurTick;

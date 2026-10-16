@@ -3,6 +3,8 @@
 #include "config_store.h"
 #include "gateway_lora_codec.h"
 #include "device_protocol.h"
+#include "device_service.h"
+#include "peripheral.h"
 #include "timer.h"
 #include "time_utils.h"
 #include "board.h"
@@ -15,7 +17,7 @@
 #define ML307_POWER_OFF()          GPIOB_ResetBits(ML307_POWER_PIN)
 #define ML307_RX_RING_SIZE          512U
 #define ML307_LINE_SIZE            512U
-#define ML307_TX_SIZE              192U
+#define ML307_TX_SIZE              (DEVICE_MAX_PAYLOAD + 11U)
 #define ML307_POWER_OFF_MS         1000U
 #define ML307_BOOT_WAIT_MS         12000U
 #define ML307_COMMAND_TIMEOUT_MS   3000U
@@ -48,8 +50,8 @@ static void resume_uart1_debug(void)
 #define ML307_CONTROL_FRAME_SIZE    18U
 #define ML307_LORA_TAG_READ         0U
 #define ML307_LORA_TAG_CONTROL      1U
-#define ML307_MGMT_MAX_FRAME        160U
-#define ML307_MGMT_TX_FRAME          72U
+#define ML307_MGMT_MAX_FRAME        (DEVICE_MAX_PAYLOAD + 11U)
+#define ML307_MGMT_TX_FRAME         (DEVICE_MAX_PAYLOAD + 11U)
 #define ML307_MGMT_MAGIC            0xC7U
 #define ML307_MGMT_VERSION          0x01U
 
@@ -59,6 +61,14 @@ static void resume_uart1_debug(void)
 #define ML307_MGMT_OTA_ACTIVATE         0x06U
 #define ML307_MGMT_OTA_CANCEL           0x07U
 #define ML307_MGMT_OTA_STATUS           0x08U
+#define ML307_MGMT_STATE                0x09U
+#define ML307_MGMT_CONTROL              0x0AU
+#define ML307_MGMT_ALARM                0x0BU
+#define ML307_MGMT_PARAMETERS           0x0CU
+#define ML307_MGMT_RULE_RESULT          0x0DU
+#define ML307_RULE_RECORD_SIZE          16U
+#define ML307_RULE_RECORD_COUNT         6U
+#define ML307_HARDWARE_FAULT_MASK       0x0079U
 
 #define ML307_CAP_IR_CATALOG            0x0001U
 #define ML307_CAP_IR_LEARNING           0x0002U
@@ -67,10 +77,15 @@ static void resume_uart1_debug(void)
 #define ML307_CAP_LOCAL_RULES           0x0010U
 #define ML307_CAP_LORA                  0x0020U
 #define ML307_CAP_REMOTE_OTA            0x0040U
+#define ML307_CAP_STATE_QUERY           0x0080U
+#define ML307_CAP_CONTROL               0x0100U
+#define ML307_CAP_ALARM                 0x0200U
+#define ML307_CAP_PARAMETERS            0x0400U
 #define ML307_CAPABILITIES              (ML307_CAP_IR_CATALOG | ML307_CAP_IR_LEARNING | \
                                          ML307_CAP_METERING | ML307_CAP_ENV_SENSOR | \
                                          ML307_CAP_LOCAL_RULES | ML307_CAP_LORA | \
-                                         ML307_CAP_REMOTE_OTA)
+                                         ML307_CAP_REMOTE_OTA | ML307_CAP_STATE_QUERY | \
+                                         ML307_CAP_CONTROL | ML307_CAP_ALARM | ML307_CAP_PARAMETERS)
 
 #define ML307_HTTP_IDLE             0U
 #define ML307_HTTP_CREATE           1U
@@ -125,6 +140,11 @@ typedef struct {
     uint8_t publishing_management;
     uint8_t management_length;
     uint8_t publishing_management_length;
+    uint8_t configuration_after_publish;
+    uint16_t configuration_transaction;
+    uint8_t alarm_reported_valid;
+    uint16_t alarm_reported_fault;
+    uint32_t last_alarm_ms;
     uint8_t http_step;
     uint8_t http_id;
     uint8_t http_raw_state;
@@ -166,6 +186,8 @@ static uint16_t device_jitter_ms;
 static uint8_t management_frame[ML307_MGMT_TX_FRAME];
 /* 一个在途快照 + 一个待发响应；不动态分配，不覆盖正在发送的内容。 */
 static uint8_t publishing_management_frame[ML307_MGMT_TX_FRAME];
+static uint8_t rule_records[ML307_RULE_RECORD_COUNT][ML307_RULE_RECORD_SIZE];
+static uint8_t rule_record_head, rule_record_count;
 static uint8_t http_raw_data[240] __attribute__((aligned(4)));
 
 static void queue_ota_status(uint16_t transaction, uint8_t status);
@@ -893,7 +915,7 @@ static void queue_management_frame(uint8_t type, uint16_t transaction,
     management_frame[3] = 1U; /* response/event; ignore our own MQTT echo */
     frame_put16(management_frame + 4, transaction);
     frame_put16(management_frame + 6, payload_length);
-    if(payload_length) memcpy(management_frame + 8, payload, payload_length);
+    if(payload_length&&payload!=management_frame+8)memcpy(management_frame + 8,payload,payload_length);
     management_frame[8U + payload_length] =
         GatewayLora_Checksum(management_frame, (uint16_t)payload_length + 8U);
     modem.management_length = (uint8_t)total;
@@ -907,6 +929,40 @@ static void queue_management_result(uint8_t request_type, uint16_t transaction,
     payload[0] = request_type;
     payload[1] = status;
     queue_management_frame(ML307_MGMT_RESULT, transaction, payload, sizeof(payload));
+}
+
+void Ml307_RecordRule(uint8_t index, uint8_t trigger, uint8_t action, uint8_t success)
+{
+    uint8_t *record;
+    if(!Ml307_IsOnline() || index >= MAX_POLICY_GROUPS ||
+       rule_record_count >= ML307_RULE_RECORD_COUNT) return;
+    record = rule_records[(rule_record_head + rule_record_count) % ML307_RULE_RECORD_COUNT];
+    frame_put32(record, RTC_IsTimeValid() ? LocalTimestamp : 0U);
+    frame_put32(record + 4, CurTick);
+    record[8] = index + 1U;
+    record[9] = trigger; /* 0=entry, 1=high, 2=low, 4=exit, 5=timer */
+    record[10] = action;
+    record[11] = success ? DEVICE_STATUS_OK : DEVICE_STATUS_IO_ERROR;
+    record[12] = action >= RULE_ACTION_COOL && Dev.irActType == ACT_TYPE_IR ? POLICY_TARGET_TEMP(&Dev.rules[index]) : 0U;
+    record[13] = record[12] ? POLICY_FAN(&Dev.rules[index]) : 0U;
+    frame_put16(record + 14, ADC_IsValid() ? (uint16_t)Dev.roomTempX10 : 0x8000U);
+    rule_record_count++;
+}
+
+static void poll_rule_records(void)
+{
+    if(!Ml307_IsOnline()) {
+        rule_record_count = rule_record_head = 0U;
+        /* Never replay an execution record after reconnecting. Other management replies are unchanged. */
+        if(modem.management_pending && management_frame[2] == ML307_MGMT_RULE_RESULT) modem.management_pending = 0U;
+        if(modem.publishing_management && publishing_management_frame[2] == ML307_MGMT_RULE_RESULT) modem.publishing_management = 0U;
+        return;
+    }
+    if(modem.status.phase != ML307_PHASE_ONLINE || modem.waiting || modem.mqtt_raw_state || modem.management_pending ||
+       modem.publishing_management || !rule_record_count) return;
+    queue_management_frame(ML307_MGMT_RULE_RESULT, 0U, rule_records[rule_record_head], ML307_RULE_RECORD_SIZE);
+    rule_record_head = (rule_record_head + 1U) % ML307_RULE_RECORD_COUNT;
+    rule_record_count--;
 }
 
 static void handle_management(const uint8_t *frame, uint16_t length)
@@ -928,10 +984,40 @@ static void handle_management(const uint8_t *frame, uint16_t length)
     /* 待发槽满时不执行新的管理操作；请求端必须串行等待结果再发送下一条。 */
     if(modem.management_pending) return;
     switch(type) {
+    case ML307_MGMT_PARAMETERS:
+        if(payload_length>=1U){
+            uint8_t *response=management_frame+8,action=0U;
+            uint16_t response_length=0U;
+            response[0]=frame[8];
+            response[1]=DeviceService_HandleRemote(frame[8],frame+9,payload_length-1U,response+2,&response_length,&action);
+            if(response[1]!=DEVICE_STATUS_OK)response_length=0U;
+            queue_management_frame(type,transaction,response,(uint8_t)(response_length+2U));
+            if(response[1]==DEVICE_STATUS_OK&&action){modem.configuration_after_publish=action;modem.configuration_transaction=transaction;}
+            return;
+        }
+        break;
     case ML307_MGMT_REGISTRATION:
         if(payload_length != 0U) break;
         queue_registration(transaction);
         return;
+    case ML307_MGMT_STATE:
+        if(payload_length == 0U) {
+            uint8_t report[GATEWAY_LORA_REPORT_LENGTH];
+            uint8_t size = Lora_BuildNodeReportRssi(report, 0U, 0U, modem.status.signal_rssi);
+            if(size != GATEWAY_LORA_REPORT_LENGTH) {status = DEVICE_STATUS_IO_ERROR;break;}
+            /* Outer management checksum is sufficient; omit the report checksum. */
+            queue_management_frame(type, transaction, report, (uint8_t)(size - 1U));
+            return;
+        }
+        break;
+    case ML307_MGMT_CONTROL:
+        if(payload_length == 7U &&
+           ((frame[8] >= 21U && frame[8] <= 25U) || frame[8] == 27U)) {
+            uint8_t result = ExecuteGatewayControl(frame[8], frame_u16(frame + 9), frame_u32(frame + 11));
+            status = result == 0U ? DEVICE_STATUS_OK :
+                     result == 2U ? DEVICE_STATUS_NOT_SUPPORTED : DEVICE_STATUS_IO_ERROR;
+        }
+        break;
     case ML307_MGMT_OTA_OFFER:
         /* version:u32, size:u32, crc32:u32, urlLength:u8, URL */
         if(payload_length >= 13U && frame[20] == payload_length - 13U) {
@@ -1133,6 +1219,13 @@ static void complete_publish(void)
     if(modem.publishing_management) {
         modem.publishing_management = 0U;
         modem.waiting = 0U;
+        if(modem.configuration_after_publish&&publishing_management_frame[2]==ML307_MGMT_PARAMETERS&&
+           ((uint16_t)publishing_management_frame[4]|((uint16_t)publishing_management_frame[5]<<8))==modem.configuration_transaction&&
+           publishing_management_frame[9]==DEVICE_STATUS_OK){
+            uint8_t action=modem.configuration_after_publish;modem.configuration_after_publish=0U;
+            if(action==2U)Peripheral_RequestReset();else Ml307_ApplyConfiguration();
+            return;
+        }
         if(modem.ota_activate_after_publish &&
            modem.publishing_management_length == 11U &&
            publishing_management_frame[2] == ML307_MGMT_RESULT &&
@@ -1441,6 +1534,7 @@ static void complete_mqtt_subscription(void)
     modem.status.consecutive_failures = 0U;
     modem.status.last_error = ML307_ERROR_NONE;
     modem.recovery_level = 0U;
+    modem.alarm_reported_valid = 0U;
     queue_registration(0U);
     modem.report_requested = 1U;
     modem.next_action_ms = CurTick + device_jitter_ms;
@@ -1801,6 +1895,7 @@ static void consume_uart(void)
 void Ml307_Init(void)
 {
     memset(&modem, 0, sizeof(modem));
+    rule_record_head = rule_record_count = 0U;
     modem.ota_reported_bytes = Ota_Get()->downloaded_bytes;
     device_jitter_ms = (uint16_t)(DeviceProtocol_Crc16(
         (const uint8_t *)DeviceUid_Get(), (uint16_t)strlen(DeviceUid_Get())) % 5000U);
@@ -1971,6 +2066,7 @@ void Ml307_Process(void)
     uint32_t now = CurTick;
     const connectivity_config_t *config = Connectivity_Get();
 
+    if(!Ml307_IsOnline()) poll_rule_records();
     if(!Connectivity_CellularEnabled()) {
         if(modem.status.phase != ML307_PHASE_DISABLED) Ml307_ApplyConfiguration();
         return;
@@ -2027,6 +2123,19 @@ void Ml307_Process(void)
             if(!sent) http_fail(ML307_ERROR_HTTP);
         }
         return;
+    }
+    if(modem.status.phase == ML307_PHASE_ONLINE && !modem.management_pending) {
+        uint16_t fault = Dev.errorCode.u16Val & ML307_HARDWARE_FAULT_MASK;
+        if(!modem.alarm_reported_valid ||
+           (fault != modem.alarm_reported_fault && reached(now, modem.last_alarm_ms + 10000U))) {
+            uint8_t payload[6];
+            frame_put16(payload, fault);
+            frame_put32(payload + 2, RTC_IsTimeValid() ? LocalTimestamp : 0U);
+            queue_management_frame(ML307_MGMT_ALARM, 0U, payload, sizeof(payload));
+            modem.alarm_reported_fault = fault;
+            modem.alarm_reported_valid = 1U;
+            modem.last_alarm_ms = now;
+        }
     }
     if(modem.status.phase == ML307_PHASE_ONLINE && !modem.management_pending) {
         uint8_t ota_state = Ota_Get()->state;
@@ -2099,6 +2208,9 @@ void Ml307_Process(void)
     }
     if(modem.tx_length != 0U) return;
 
+    /* Replies/HTTP/AT have priority. The event moves directly to the in-flight
+     * snapshot below, leaving the pending reply slot available for requests. */
+    poll_rule_records();
     switch((ml307_phase_t)modem.status.phase) {
     case ML307_PHASE_DISABLED:
         start_power_on();

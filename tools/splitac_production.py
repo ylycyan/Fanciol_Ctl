@@ -15,7 +15,7 @@ CONNECTIVITY_MAGIC = 0x3154454E
 CONNECTIVITY_STATE_ACTIVE = 0xA1
 CONNECTIVITY_SCHEMA = 6
 CONFIG_MAGIC = 0x31474643
-CONFIG_SCHEMA = 4
+CONFIG_SCHEMA = 5
 DATAFLASH_SIZE = 32 * 1024
 DEVICE_ID_PATTERN = re.compile(r'^A\d{2}(?:0[1-9]|1[0-2])(?!0000)[0-9A-F]{4}$')
 COMMUNICATION_MODES = {'lora': 1, '4g': 2, 'both': 3}
@@ -125,13 +125,13 @@ def connectivity_record(row, args):
         fixed_text(args.password, 32, 'password'),
         topic_text(args.publish_topic, 'publish_topic'),
         topic_text(args.subscribe_topic, 'subscribe_topic'),
-        topic_text(getattr(args, 'management_topic', 'manage/ac/{uid}'), 'management_topic')
+        topic_text(getattr(args, 'management_topic', 'mag/ac/{uid}'), 'management_topic')
     )
     prefix = struct.pack('<IBBIH', CONNECTIVITY_MAGIC, CONNECTIVITY_SCHEMA,
                          CONNECTIVITY_STATE_ACTIVE, 1, len(payload))
     checksum = crc32(prefix + payload)
     record = prefix + struct.pack('<I', checksum) + payload
-    topics = (args.publish_topic, args.subscribe_topic, getattr(args, 'management_topic', 'manage/ac/{uid}'))
+    topics = (args.publish_topic, args.subscribe_topic, getattr(args, 'management_topic', 'mag/ac/{uid}'))
     if len(set(topics)) != 3:
         raise ValueError('business and management topics must be distinct')
     strings = (row.get('mqtt_host') or args.broker, row.get('apn') or args.apn,
@@ -145,7 +145,7 @@ def device_config_record(node_id, channel):
     if not 0 <= channel <= 32:
         raise ValueError('channel is outside 0..32')
     payload = struct.pack('<HBBHBBHBB160s', node_id, channel, 0, 0,
-                          1, 0, 0, 0xFF, 0, bytes(160))
+                          1, 0, 0, 0xFF, 0, bytes(160)) + bytes(6 * 6)
     prefix = struct.pack('<IHIH', CONFIG_MAGIC, CONFIG_SCHEMA, 1, len(payload))
     return prefix + struct.pack('<I', crc32(prefix + payload)) + payload
 
@@ -246,7 +246,7 @@ def main():
     provision_cmd.add_argument('--password', default='ecac2026')
     provision_cmd.add_argument('--publish-topic', default='pub/ac/{uid}')
     provision_cmd.add_argument('--subscribe-topic', default='sub/ac/{uid}')
-    provision_cmd.add_argument('--management-topic', default='manage/ac/{uid}')
+    provision_cmd.add_argument('--management-topic', default='mag/ac/{uid}')
     provision_cmd.add_argument('--keepalive', type=int, default=60)
     provision_cmd.add_argument('--qos', type=int, choices=(0, 1), default=0)
     provision_cmd.add_argument('--clean-session', action=argparse.BooleanOptionalAction, default=True)

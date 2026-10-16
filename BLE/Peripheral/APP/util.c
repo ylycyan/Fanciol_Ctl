@@ -498,7 +498,7 @@ static uint8_t Relay_ProcessState(uint8_t *buf, uint8_t *len)
     }
 }
 
-static uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t parameterValue)
+uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t parameterValue)
 {
     IR_CMD_t command;
     uint16_t value = 0U;
@@ -548,6 +548,7 @@ static uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t p
     if(!Ir_ConfiguredCommandSupported(command)) return 2;
     /* 先确认红外配置有效且命令已提交，再更新对外状态，避免云端假成功。 */
     if(!Ir_ExecuteConfiguredVerified(command)) return 1;
+    Rule_ManualOverride();
 
     switch(op) {
         case 21:

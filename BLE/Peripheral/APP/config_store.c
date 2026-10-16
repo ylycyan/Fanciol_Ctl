@@ -22,6 +22,7 @@ typedef struct __attribute__((packed)) {
     uint8_t ir_index;
     uint8_t reserved;
     DEV_RULE_T rules[MAX_RULES];
+    RULE_SCHEDULE_T rule_schedules[MAX_POLICY_GROUPS];
 } persisted_config_t;
 
 /*
@@ -210,7 +211,7 @@ static uint32_t config_record_crc(const config_record_t *record)
                                 (uint16_t)offsetof(config_record_t, crc32));
     crc = crc32_update(crc,
                        (const uint8_t *)&record->payload,
-                       sizeof(record->payload));
+                       record->payload_length);
     return crc ^ 0xFFFFFFFFUL;
 }
 
@@ -231,6 +232,7 @@ static void capture_config(persisted_config_t *p)
     p->node_id = Dev.nodeId; p->channel = (uint8_t)Dev.channel; p->link_role = Dev.linkRole;
     p->parent_relay_id = Dev.parentRelayId; p->work_mode = Dev.mode; p->ir_action_type = (uint8_t)Dev.irActType;
     p->ir_type = Dev.irType; p->ir_index = Dev.irIdx; memcpy(p->rules, Dev.rules, sizeof(p->rules));
+    memcpy(p->rule_schedules, Dev.ruleSchedules, sizeof(p->rule_schedules));
     /* executed 是运行态，不能因规则触发而改写配置版本。 */
     for(i = 0; i < MAX_RULES; ++i) {
         p->rules[i].ctrl.executed = 0;
@@ -244,16 +246,21 @@ static void apply_config(const persisted_config_t *p)
     Dev.nodeId = p->node_id; Dev.channel = p->channel; Dev.linkRole = p->link_role;
     Dev.parentRelayId = p->parent_relay_id; Dev.mode = p->work_mode; Dev.irActType = (ActType_t)p->ir_action_type;
     Dev.irType = p->ir_type; Dev.irIdx = p->ir_index; memcpy(Dev.rules, p->rules, sizeof(Dev.rules));
+    memcpy(Dev.ruleSchedules, p->rule_schedules, sizeof(Dev.ruleSchedules));
     for(i = 0; i < MAX_RULES; ++i) {
         Dev.rules[i].ctrl.executed = 0;
         Dev.rules[i].ctrl.reserved = 0;
     }
 }
 
-static uint8_t valid_config_record(const config_record_t *r)
+static uint8_t valid_config_record(config_record_t *r)
 {
-    if(r->magic != CFG_MAGIC || r->schema_version != CONFIG_SCHEMA_VERSION || r->payload_length != sizeof(r->payload)) return 0;
-    return r->crc32 == config_record_crc(r);
+    uint8_t legacy = r->schema_version == 4u &&
+        r->payload_length == offsetof(persisted_config_t, rule_schedules);
+    if(r->magic != CFG_MAGIC || (!legacy && (r->schema_version != CONFIG_SCHEMA_VERSION || r->payload_length != sizeof(r->payload)))) return 0;
+    if(r->crc32 != config_record_crc(r)) return 0;
+    if(legacy) memset(r->payload.rule_schedules, 0, sizeof(r->payload.rule_schedules));
+    return 1u;
 }
 
 uint8_t Config_ValidateCurrent(void)
@@ -818,7 +825,7 @@ static void connectivity_defaults(connectivity_config_t *config)
     memcpy(config->mqtt_password, "ecac2026", sizeof("ecac2026"));
     memcpy(config->publish_topic, "pub/ac/{uid}", sizeof("pub/ac/{uid}"));
     memcpy(config->subscribe_topic, "sub/ac/{uid}", sizeof("sub/ac/{uid}"));
-    memcpy(config->management_topic, "manage/ac/{uid}", sizeof("manage/ac/{uid}"));
+    memcpy(config->management_topic, "mag/ac/{uid}", sizeof("mag/ac/{uid}"));
 }
 
 static uint8_t connectivity_string_valid(const char *value, uint16_t capacity)

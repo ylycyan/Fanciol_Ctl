@@ -661,7 +661,7 @@ static void test_connectivity_v5_migration_preserves_both_old_pages(void)
     assert(Connectivity_Load() == DEVICE_STATUS_OK);
     assert(!memcmp(pages, dataflash + CONNECTIVITY_SLOT_A, sizeof(pages)));
     assert(strcmp(Connectivity_Get()->mqtt_password, "secret") == 0);
-    assert(strcmp(Connectivity_Get()->management_topic, "manage/ac/{uid}") == 0);
+    assert(strcmp(Connectivity_Get()->management_topic, "mag/ac/{uid}") == 0);
     assert(strcmp(Connectivity_Get()->publish_topic, "custom/u/{uid}") == 0);
     assert(dataflash[CONNECTIVITY_SLOT_B + 4] == 6);
     assert(Connectivity_Load() == DEVICE_STATUS_OK); /* now the new A peer may be rebuilt */
@@ -737,6 +737,27 @@ static void test_custom_device_uid_prefix_recovery(void)
 
 int main(void)
 {
+    /* Extension remains atomic with the main config; legacy record loads too. */
+    reset_flash();create_initial_config();
+    Dev.rules[0].ctrl.enable=1;Dev.rules[0].ctrl.trig_type=TRIG_TIME;
+    Dev.ruleSchedules[0]=(RULE_SCHEDULE_T){9708,9708,2,10};
+    assert(Config_Commit()==DEVICE_STATUS_OK);
+    memset(Dev.ruleSchedules,0,sizeof(Dev.ruleSchedules));
+    assert(Config_Load()==DEVICE_STATUS_OK);
+    assert(Dev.ruleSchedules[0].start_day==9708 && Dev.ruleSchedules[0].hysteresis_x10==10);
+    {
+        uint32_t crc;
+        uint8_t legacy[188];
+        memcpy(legacy,dataflash+CONFIG_SLOT_B,sizeof(legacy));
+        legacy[4]=4;legacy[5]=0;legacy[10]=172;legacy[11]=0;
+        legacy[16]=0x78;legacy[17]=0x56;
+        uint8_t material[184];memcpy(material,legacy,12);memcpy(material+12,legacy+16,172);
+        crc=Config_Crc32(material,sizeof(material));memcpy(legacy+12,&crc,4);
+        memset(dataflash,0xFF,0x2000);memcpy(dataflash,legacy,sizeof(legacy));
+        assert(Config_Load()==DEVICE_STATUS_OK);
+        assert(Dev.nodeId==0x5678);
+        assert(Dev.ruleSchedules[0].date_mode==0 && Dev.ruleSchedules[0].hysteresis_x10==0);
+    }
     test_verified_commit_keeps_rejected_values_out_of_flash();
     test_runtime_uncommitted_slot_does_not_hide_later_records();
     test_config_slot_recovery();

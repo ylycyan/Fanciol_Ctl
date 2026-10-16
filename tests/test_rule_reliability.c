@@ -21,14 +21,21 @@ static uint8_t runtime_append_status;
 static uint16_t rtc_hour = 12u;
 static uint16_t rtc_minute;
 static uint16_t rtc_day = 31u;
+static uint16_t rtc_month = 7u;
+static uint16_t rtc_year = 2026u;
+static uint8_t sensor_valid = 1u;
 static uint8_t rtc_valid = 1u;
 static uint8_t rtc_read_ok = 1u;
 
 void Ml307_RequestReport(void) {}
+static uint16_t record_calls;
+static uint8_t record_index, record_trigger, record_action, record_success;
+void Ml307_RecordRule(uint8_t index, uint8_t trigger, uint8_t action, uint8_t success)
+{ record_calls++;record_index=index;record_trigger=trigger;record_action=action;record_success=success; }
 
 uint8_t ADC_IsValid(void)
 {
-    return 1u;
+    return sensor_valid;
 }
 
 uint8_t Ir_ExecuteVerified(IR_CMD_t cmd)
@@ -75,8 +82,8 @@ uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *month, uint16_t *day,
                         uint16_t *hour, uint16_t *minute, uint16_t *second)
 {
     if(!rtc_read_ok) return 0u;
-    *year = 2026u;
-    *month = 7u;
+    *year = rtc_year;
+    *month = rtc_month;
     *day = rtc_day;
     *hour = rtc_hour;
     *minute = rtc_minute;
@@ -416,12 +423,15 @@ int main(void)
     /* 提交不是发送完成；失败后五秒重试，且不提前计数、保存或锁存。 */
     setup_policy(0,0,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
     CurTick+=60000;ir_accept=1;ir_complete=0;ir_calls=save_calls=0;
-    Rule_Pro(); assert(ir_calls==1 && Dev.onOff==PowerOff && save_calls==0);
+    record_calls=0;
+    Rule_Pro(); assert(ir_calls==1 && Dev.onOff==PowerOff && save_calls==0 && record_calls==0);
     assert(!(Dev.rules[0].ctrl.reserved & POLICY_LATCH_HIGH));
     Rule_Pro();assert(ir_calls==1);
-    Rule_IrCompleted(0);CurTick+=4999;Rule_Pro();assert(ir_calls==1);
+    Rule_IrCompleted(0);assert(record_calls==1 && !record_success && record_index==0 && record_trigger==POLICY_LATCH_HIGH && record_action==RULE_ACTION_COOL);
+    CurTick+=4999;Rule_Pro();assert(ir_calls==1);
     CurTick++;Rule_Pro();assert(ir_calls==2 && Dev.onOff==PowerOff);
     Rule_IrCompleted(1);
+    assert(record_calls==2 && record_success);
     assert(Dev.onOff==PowerOn && save_calls==1 && Dev.meter.onoff_count==1);
     assert(Dev.rules[0].ctrl.reserved & POLICY_LATCH_HIGH);
     Rule_Pro();assert(ir_calls==2);
@@ -454,6 +464,68 @@ int main(void)
     Rule_Pro();assert(ir_calls==1);Rule_IrCompleted(0);
     CurTick+=30000;Rule_Pro();assert(ir_calls==1 && Dev.onOff==PowerOff);
     ir_complete=1;
-    puts("rule IR submission reliability: PASS");
+    /* Timer is an edge, not a window: no boot catch-up and no minute replay. */
+    setup_policy(1080,1080,RULE_ACTION_POWER_OFF,0,0,0);
+    Dev.rules[0].ctrl.trig_type=TRIG_TIME;
+    Dev.onOff=PowerOn;rtc_month=7;rtc_day=31;rtc_hour=17;rtc_minute=59;
+    Rule_RecordPowerChange(); /* scheduled shutdown is not skipped by restart guard */
+    ir_calls=0;sensor_valid=0;Rule_Pro();assert(ir_calls==0);
+    CurTick+=1000;rtc_hour=18;rtc_minute=0;Rule_Pro();assert(ir_calls==1 && Dev.onOff==PowerOff);
+    Rule_Pro();assert(ir_calls==1); /* timer works even if temperature is invalid */
+    Rule_ClockChanged();rtc_hour=17;rtc_minute=59;Rule_Pro();
+    CurTick+=1000;rtc_hour=18;rtc_minute=0;Rule_Pro();assert(ir_calls==1);
+    Rule_Reset();Rule_Pro();assert(ir_calls==1); /* reboot/config reset at due minute */
+    rtc_hour=17;rtc_minute=59;Rule_ClockChanged();Rule_Pro();
+    rtc_hour=18;rtc_minute=2;CurTick+=1000;Rule_Pro();assert(ir_calls==1); /* no late catch-up */
+
+    /* Date-limited timer: only the specified date, never next day. */
+    Rule_Reset();Dev.ruleSchedules[0].date_mode=2;
+    Dev.ruleSchedules[0].start_day=Dev.ruleSchedules[0].end_day=9708;
+    rtc_hour=17;rtc_minute=59;Rule_Pro();CurTick+=1000;
+    rtc_hour=18;rtc_minute=0;Rule_Pro();assert(ir_calls==2);
+    rtc_month=8;rtc_day=1;rtc_hour=17;rtc_minute=59;Rule_Pro();CurTick+=1000;
+    rtc_hour=18;rtc_minute=0;Rule_Pro();assert(ir_calls==2);
+
+    /* Cross-midnight belongs to the start date, including the final date. */
+    setup_policy(1320,360,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    Dev.ruleSchedules[0].date_mode=2;
+    Dev.ruleSchedules[0].start_day=Dev.ruleSchedules[0].end_day=9708;
+    rtc_month=8;rtc_day=1;rtc_hour=5;rtc_minute=0;sensor_valid=1;ir_calls=0;
+    Rule_Pro();assert(ir_calls==1);
+    rtc_hour=6;Rule_Pro();assert(ir_calls==1);
+
+    /* Explicit manual action suspends this temperature window, not future days. */
+    setup_policy(0,0,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    rtc_month=7;rtc_day=31;rtc_hour=12;ir_calls=0;Rule_Pro();assert(ir_calls==1);
+    Rule_ManualOverride();Dev.onOff=PowerOff;CurTick+=60000;Rule_Pro();assert(ir_calls==1);
+    rtc_hour=23;Rule_Pro();assert(ir_calls==1);
+    rtc_month=8;rtc_day=1;rtc_hour=0;CurTick+=60000;Rule_Pro();assert(ir_calls==2);
+
+    /* Faulty temperature never stops a scheduled absolute shutdown. */
+    sensor_valid=0;Rule_Reset();ir_calls=0;Rule_Pro();assert(ir_calls==0);sensor_valid=1;
+
+    /* Date-aware conflict checks are symmetric and cover the midnight tail. */
+    setup_policy(1320,360,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    Dev.ruleSchedules[0].date_mode=2;
+    Dev.ruleSchedules[0].start_day=Dev.ruleSchedules[0].end_day=9708;
+    Dev.rules[1]=Dev.rules[0];Dev.rules[1].ctrl.trig_type=TRIG_TIME;
+    Dev.rules[1].trig_val=Dev.rules[1].trig_val2=300;
+    Dev.ruleSchedules[1].date_mode=2;
+    Dev.ruleSchedules[1].start_day=Dev.ruleSchedules[1].end_day=9709;
+    assert(Rule_SchedulesOverlap(&Dev.rules[0],&Dev.ruleSchedules[0],&Dev.rules[1],&Dev.ruleSchedules[1]));
+    assert(Rule_SchedulesOverlap(&Dev.rules[1],&Dev.ruleSchedules[1],&Dev.rules[0],&Dev.ruleSchedules[0]));
+    Dev.rules[1].trig_val=360;assert(!Rule_SchedulesOverlap(&Dev.rules[0],&Dev.ruleSchedules[0],&Dev.rules[1],&Dev.ruleSchedules[1]));
+    Dev.rules[0].act.raw[5]=16;assert(Rule_SchedulesOverlap(&Dev.rules[0],&Dev.ruleSchedules[0],&Dev.rules[1],&Dev.ruleSchedules[1]));
+    /* A large backward clock correction cannot extend the hold indefinitely. */
+    setup_policy(0,0,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    rtc_year=2026;rtc_month=7;rtc_day=31;rtc_hour=12;ir_calls=0;Rule_Pro();assert(ir_calls==1);
+    Rule_ManualOverride();Dev.onOff=PowerOff;rtc_hour=1;CurTick+=12u*3600000u;
+    Rule_Pro();assert(ir_calls==2);
+    /* The final supported start date can still finish its overnight tail. */
+    setup_policy(1320,360,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    Dev.ruleSchedules[0]=(RULE_SCHEDULE_T){13879,13879,2,10};
+    rtc_year=2038;rtc_month=1;rtc_day=1;rtc_hour=5;ir_calls=0;Rule_Pro();assert(ir_calls==1);
+    rtc_hour=6;Rule_Pro();assert(ir_calls==1);
+    puts("rule IR submission/calendar/timer reliability: PASS");
     return 0;
 }

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CONFIG_SCHEMA_VERSION 4u
+#define CONFIG_SCHEMA_VERSION 5u
 #define CONFIG_SLOT_A         0x0000u
 #define CONFIG_SLOT_B         0x1000u
 #define STORAGE_RESERVED_PAGE         0x2000u
