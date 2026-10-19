@@ -90,8 +90,9 @@ void Ir_Pro(void)
         return;
     }
     if(!IrBuf.isFinish) {
-        if(irOperationDeadline != 0U &&
-           (int32_t)(CurTick - irOperationDeadline) >= 0) {
+        /* isFinish already identifies an active operation; zero is also a
+         * valid deadline when the millisecond counter wraps. */
+        if((int32_t)(CurTick - irOperationDeadline) >= 0) {
             if(IrBuf.type == IR_TYPE_MATCH) IrBuf.matchError = 1;
             if(IrBuf.type == IR_TYPE_LEARNing) IrBuf.learnError = 1;
             PRINT("IR operation timeout: type=%u\r\n", IrBuf.type);

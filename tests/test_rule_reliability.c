@@ -154,7 +154,7 @@ int main(void)
     DEV_RULE_T *rule;
 
     /* 上电后不能用旧墙上时间认定保护期已过，应保守等待一次间隔。 */
-    setup_policy(0u, 0u, RULE_ACTION_POWER_ON, 0u, 0u, 0u);
+    setup_policy(0u, 0u, 0u, 0u, 0u, RULE_ACTION_POWER_ON);
     CurTick = 0u;
     ir_accept = 1u;
     ir_calls = 0u;
@@ -331,7 +331,7 @@ int main(void)
     rtc_day = 31u;
 
     /* 对时向前/向后不能绕过启停保护；单调计时跨 32 位回卷仍正确。 */
-    setup_policy(0u, 0u, RULE_ACTION_POWER_OFF, 0u, 0u, 0u);
+    setup_policy(0u, 0u, 0u, 0u, 0u, RULE_ACTION_POWER_OFF);
     Dev.onOff = PowerOn;
     CurTick = 0xFFFFFF00u;
     Rule_RecordPowerChange();
@@ -464,6 +464,34 @@ int main(void)
     Rule_Pro();assert(ir_calls==1);Rule_IrCompleted(0);
     CurTick+=30000;Rule_Pro();assert(ir_calls==1 && Dev.onOff==PowerOff);
     ir_complete=1;
+    /* A deferred temperature action is re-evaluated, never blindly replayed. */
+    setup_policy(0,0,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    Dev.rules[0].act.raw[2]=5;
+    Rule_RecordPowerChange();ir_calls=0;
+    CurTick+=120000;Rule_Pro();assert(ir_calls==0);
+    Dev.roomTempX10=270;CurTick+=180000;Rule_Pro();assert(ir_calls==0);
+    Dev.roomTempX10=300;Rule_Pro();assert(ir_calls==1 && Dev.onOff==PowerOn);
+    Dev.roomTempX10=250;CurTick+=299999;Rule_Pro();assert(ir_calls==1);
+    CurTick++;Rule_Pro();assert(ir_calls==2 && Dev.onOff==PowerOff);
+    /* Timed/window actions are not temperature triggers. */
+    setup_policy(480,600,RULE_ACTION_POWER_ON,1,0,0);
+    Rule_RecordPowerChange();rtc_hour=9;rtc_minute=59;ir_calls=0;
+    Rule_Pro();assert(ir_calls==1 && Dev.onOff==PowerOn);
+    CurTick+=1000;rtc_hour=10;rtc_minute=0;Rule_Pro();assert(ir_calls==2 && Dev.onOff==PowerOff);
+    /* Every timer action bypasses the interval in both IR modes. */
+    for(uint8_t type=ACT_TYPE_IR;type<=ACT_TYPE_LEARN;type++) {
+        for(uint8_t action=RULE_ACTION_POWER_ON;action<=RULE_ACTION_MAX;action++) {
+            setup_policy(1080,1080,action,0,0,0);
+            Dev.rules[0].ctrl.trig_type=TRIG_TIME;
+            Dev.rules[0].act.raw[2]=5;Dev.irActType=type;
+            Dev.onOff=action==RULE_ACTION_POWER_OFF?PowerOn:PowerOff;
+            rtc_hour=17;rtc_minute=59;sensor_valid=0;ir_calls=0;
+            Rule_RecordPowerChange();Rule_Pro();assert(ir_calls==0);
+            CurTick+=60000;rtc_hour=18;rtc_minute=0;Rule_Pro();
+            assert(ir_calls==1 && Dev.onOff==(action==RULE_ACTION_POWER_OFF?PowerOff:PowerOn));
+            Rule_Pro();assert(ir_calls==1);
+        }
+    }
     /* Timer is an edge, not a window: no boot catch-up and no minute replay. */
     setup_policy(1080,1080,RULE_ACTION_POWER_OFF,0,0,0);
     Dev.rules[0].ctrl.trig_type=TRIG_TIME;
@@ -521,11 +549,23 @@ int main(void)
     rtc_year=2026;rtc_month=7;rtc_day=31;rtc_hour=12;ir_calls=0;Rule_Pro();assert(ir_calls==1);
     Rule_ManualOverride();Dev.onOff=PowerOff;rtc_hour=1;CurTick+=12u*3600000u;
     Rule_Pro();assert(ir_calls==2);
-    /* The final supported start date can still finish its overnight tail. */
+    /* A late supported start date can still finish its overnight tail. */
     setup_policy(1320,360,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
-    Dev.ruleSchedules[0]=(RULE_SCHEDULE_T){13879,13879,2,10};
-    rtc_year=2038;rtc_month=1;rtc_day=1;rtc_hour=5;ir_calls=0;Rule_Pro();assert(ir_calls==1);
+    Dev.ruleSchedules[0]=(RULE_SCHEDULE_T){36523,36523,2,10};
+    rtc_year=2099;rtc_month=12;rtc_day=31;rtc_hour=5;ir_calls=0;Rule_Pro();assert(ir_calls==1);
     rtc_hour=6;Rule_Pro();assert(ir_calls==1);
+    /* The last supported calendar day still accepts a timer. */
+    setup_policy(1080,1080,RULE_ACTION_POWER_ON,0,0,0);
+    Dev.rules[0].ctrl.trig_type=TRIG_TIME;
+    Dev.ruleSchedules[0]=(RULE_SCHEDULE_T){RULE_LAST_DAY,RULE_LAST_DAY,2,10};
+    rtc_hour=17;rtc_minute=59;ir_calls=0;Rule_Pro();
+    CurTick+=60000;rtc_hour=18;rtc_minute=0;Rule_Pro();assert(ir_calls==1);
+    /* A power change older than a tick cycle cannot re-arm protection. */
+    setup_policy(0,0,0,0,RULE_ACTION_POWER_OFF,RULE_ACTION_COOL);
+    Dev.rules[0].act.raw[2]=5;Dev.roomTempX10=270;
+    CurTick=0;Rule_RecordPowerChange();ir_calls=0;
+    for(uint8_t day=0;day<49;day++) {CurTick+=86400000UL;Rule_Pro();}
+    CurTick=60000;Dev.roomTempX10=300;Rule_Pro();assert(ir_calls==1);
     puts("rule IR submission/calendar/timer reliability: PASS");
     return 0;
 }

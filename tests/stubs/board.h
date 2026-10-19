@@ -140,7 +140,7 @@ typedef struct {
     uint8_t date_mode;
     uint8_t hysteresis_x10;
 } RULE_SCHEDULE_T;
-#define RULE_LAST_DAY 13879u
+#define RULE_LAST_DAY 36524u
 
 typedef struct {
     uint32_t energy_wh;

@@ -2,7 +2,7 @@
  * @file time_utils.c
  * @brief Unix 时间戳 ↔ 公历日期互转（纯整数，无浮点/无 mktime）
  *
- * 有效范围 1970-01-01 ~ 2038-01-19（uint32 时间戳上限附近），
+ * 有效范围 1970-01-01 ~ 2099-12-31，使用无符号 32 位秒数，
  * 超出范围返回 0，防止无效日历进入业务控制。
  */
 #include "time_utils.h"
@@ -45,7 +45,7 @@ uint8_t TimeUtil_FromUnix(uint32_t timestamp, time_fields_t *fields)
     uint16_t year = 1970U;
     uint8_t month = 1U;
 
-    if(fields == 0 || timestamp > 2147483000UL) return 0;
+    if(fields == 0 || timestamp > TIME_UTIL_MAX_TIMESTAMP) return 0;
 
     days = timestamp / 86400UL;
     secondsOfDay = timestamp % 86400UL;
@@ -85,7 +85,7 @@ uint8_t TimeUtil_ToUnix(const time_fields_t *fields, uint32_t *timestamp)
     uint8_t daysInMonth;
 
     if(fields == 0 || timestamp == 0) return 0;
-    if(fields->year < 1970U || fields->year > 2038U ||
+    if(fields->year < 1970U || fields->year > 2099U ||
        fields->month < 1U || fields->month > 12U ||
        fields->hour > 23U || fields->minute > 59U || fields->second > 59U) {
         return 0;
@@ -105,11 +105,11 @@ uint8_t TimeUtil_ToUnix(const time_fields_t *fields, uint32_t *timestamp)
     }
     days += (uint32_t)fields->day - 1UL;
 
-    if(days > 24855UL) return 0;
+    /* Year validation bounds days to 47481; multiplication fits uint32_t. */
     *timestamp = days * 86400UL +
                  (uint32_t)fields->hour * 3600UL +
                  (uint32_t)fields->minute * 60UL +
                  fields->second;
-    if(*timestamp > 2147483000UL) return 0;
+    if(*timestamp > TIME_UTIL_MAX_TIMESTAMP) return 0;
     return 1;
 }

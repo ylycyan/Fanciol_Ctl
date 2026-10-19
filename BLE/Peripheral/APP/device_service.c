@@ -6,6 +6,7 @@
 #include "health.h"
 #include "hlw8110.h"
 #include "timer.h"
+#include "time_utils.h"
 #include "ml307r.h"
 #include "peripheral.h"
 #include "lora.h"
@@ -277,7 +278,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
         *payload_len=(uint16_t)(2u+device_id_len);break;}
     case DEVICE_OP_IDENTIFY:{
         uint8_t mode=req->payload_len?req->payload[0]:1u;if(req->payload_len>1u||(mode!=1u&&mode!=2u)){status=DEVICE_STATUS_INVALID_ARG;break;}
-        identify_until=CurTick+10000u;payload[0]=mode;*payload_len=1;break;}
+        identify_until=CurTick+10000u;if(!identify_until)identify_until=1u;payload[0]=mode;*payload_len=1;break;}
     case DEVICE_OP_GET_STATE:{
         const HLW8110_Status_t *meter=HLW8110_GetStatus();
         int16_t room=Dev.roomTempX10;
@@ -463,7 +464,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
     case DEVICE_OP_DEVICE_TIME:
         if(req->payload_len==4u) {
             uint32_t timestamp=get32(req->payload);
-            if(timestamp<1672531200u||timestamp>2147483000u){status=DEVICE_STATUS_INVALID_ARG;break;}
+            if(timestamp<1672531200u||timestamp>TIME_UTIL_MAX_TIMESTAMP){status=DEVICE_STATUS_INVALID_ARG;break;}
             if(!RTC_SetTimestamp(timestamp)){status=DEVICE_STATUS_IO_ERROR;break;}
             LocalTimestamp=Rtc_GetTimestamp();
             if(!RTC_IsTimeValid()||LocalTimestamp<timestamp||LocalTimestamp>timestamp+2u){

@@ -165,7 +165,7 @@ uint8_t RTC_SyncTimestamp(uint32_t timestamp)
 {
     uint32_t current = Rtc_GetTimestamp();
     uint32_t difference;
-    if(timestamp < 1672531200U || timestamp > 2147483000U) return 0U;
+    if(timestamp < 1672531200U || timestamp > TIME_UTIL_MAX_TIMESTAMP) return 0U;
     if(rtcTimeValid) {
         difference = timestamp > current ? timestamp - current : current - timestamp;
         if(difference > 300U) {
@@ -207,7 +207,7 @@ uint8_t RTC_GetWallTime(uint16_t *year, uint16_t *mon, uint16_t *day,
     time_fields_t fields;
     uint32_t timestamp = Rtc_GetTimestamp();
     /* External RTC keeps UTC; weekly policies use site time (UTC+8). */
-    if(!rtcTimeValid || timestamp > 2147483000UL - 8UL * 3600UL ||
+    if(!rtcTimeValid || timestamp > TIME_UTIL_MAX_TIMESTAMP - 8UL * 3600UL ||
        !TimeUtil_FromUnix(timestamp + 8UL * 3600UL, &fields)) return 0;
     if(year) *year = fields.year;
     if(mon) *mon = fields.month;

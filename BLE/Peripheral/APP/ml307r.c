@@ -1040,7 +1040,7 @@ static void handle_management(const uint8_t *frame, uint16_t length)
             if(status == DEVICE_STATUS_OK) {
                 modem.ota_retry_count = 0U;
                 modem.ota_retry_blocked = 0U;
-                modem.ota_retry_at_ms = 0U;
+                modem.ota_retry_at_ms = CurTick;
                 modem.ota_reported_bytes = Ota_Get()->downloaded_bytes;
                 modem.status.last_error = ML307_ERROR_NONE;
             }
@@ -1058,7 +1058,7 @@ static void handle_management(const uint8_t *frame, uint16_t length)
             if(status == DEVICE_STATUS_OK) {
                 modem.ota_retry_count = 0U;
                 modem.ota_retry_blocked = 0U;
-                modem.ota_retry_at_ms = 0U;
+                modem.ota_retry_at_ms = CurTick;
                 modem.ota_reported_bytes = 0U;
                 modem.status.last_error = ML307_ERROR_NONE;
             }
@@ -1204,7 +1204,7 @@ static void parse_network_clock(const char *line, uint16_t length)
     /* The deployed ML307R returns UTC calendar fields, even with a +32
      * network-zone suffix. Beijing conversion belongs only to UI/policies. */
     if(!TimeUtil_ToUnix(&fields, &utc_timestamp)) return;
-    if(utc_timestamp < 1672531200UL || utc_timestamp > 2147483000UL) return;
+    if(utc_timestamp < 1672531200UL || utc_timestamp > TIME_UTIL_MAX_TIMESTAMP) return;
     RTC_SyncTimestamp(utc_timestamp);
     modem.time_synced = RTC_IsTimeValid();
     if(modem.time_synced) {
@@ -1454,7 +1454,7 @@ static uint8_t http_process_line(char *line, uint16_t length)
                 /* The whole Range is now committed by Ota_Write(), including
                  * its metadata checkpoint.  Later retries start after it. */
                 modem.ota_retry_count = 0U;
-                modem.ota_retry_at_ms = 0U;
+                modem.ota_retry_at_ms = CurTick;
                 modem.status.last_error = ML307_ERROR_NONE;
                 if(modem.ota_write_offset + modem.http_range_received >=
                    Ota_Get()->image_size) {
@@ -2100,9 +2100,11 @@ void Ml307_Process(void)
             at_finish(ML307_AT_TIMEOUT);
         return;
     }
-    if(modem.at_status.state != ML307_AT_IDLE && !modem.at_result_read &&
-       !reached(now, modem.at_started_ms + ML307_AT_TIMEOUT_MS + ML307_AT_RESULT_HOLD_MS))
-        return;
+    if(modem.at_status.state != ML307_AT_IDLE && !modem.at_result_read) {
+        if((uint32_t)(now - modem.at_started_ms) < ML307_AT_TIMEOUT_MS + ML307_AT_RESULT_HOLD_MS)
+            return;
+        modem.at_result_read = 1U; /* expired result must never re-block MQTT */
+    }
     if(modem.http_step != ML307_HTTP_IDLE) {
         if(modem.waiting && reached(now, modem.deadline_ms)) {
             http_fail(ML307_ERROR_HTTP);
@@ -2127,7 +2129,7 @@ void Ml307_Process(void)
     if(modem.status.phase == ML307_PHASE_ONLINE && !modem.management_pending) {
         uint16_t fault = Dev.errorCode.u16Val & ML307_HARDWARE_FAULT_MASK;
         if(!modem.alarm_reported_valid ||
-           (fault != modem.alarm_reported_fault && reached(now, modem.last_alarm_ms + 10000U))) {
+           (fault != modem.alarm_reported_fault && (uint32_t)(now - modem.last_alarm_ms) >= 10000U)) {
             uint8_t payload[6];
             frame_put16(payload, fault);
             frame_put32(payload + 2, RTC_IsTimeValid() ? LocalTimestamp : 0U);
@@ -2295,6 +2297,9 @@ void Ml307_Process(void)
             enter_backoff(ML307_ERROR_CONFIG);
         break;
     case ML307_PHASE_ONLINE:
+        /* Consume the initial connection jitter; do not retain a deadline
+         * for >INT32_MAX milliseconds while the connection stays online. */
+        if(reached(now, modem.next_action_ms)) modem.next_action_ms = now;
         if(modem.publishing_management || modem.management_pending ||
            ((modem.report_requested || modem.periodic_report_pending) && reached(now, modem.next_action_ms))) {
             if(!start_publish()) enter_backoff(ML307_ERROR_CONFIG);

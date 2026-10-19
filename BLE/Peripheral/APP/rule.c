@@ -25,7 +25,7 @@ extern uint32_t LocalTimestamp;
 
 static int8_t policy_active_index = -1;
 static uint8_t policy_active_known;
-/* 上电后保守等待一次保护间隔；运行中的保护不受任何对时影响。 */
+/* 温控启停使用单调时间，上电后保守等待一次间隔。 */
 static uint32_t power_change_ms;
 static uint8_t pending_action, pending_index, pending_latch;
 static uint8_t retry_pending;
@@ -55,7 +55,7 @@ static bool rule_get_time(uint16_t *hour, uint16_t *min, uint16_t *weekday,
 
     if (hour)   *hour   = h;
     if (min)    *min    = m;
-    if(year < 2000u || year > 2038u || mon < 1u || mon > 12u || !day || day > 31u) return false;
+    if(year < 2000u || year > 2099u || mon < 1u || mon > 12u || !day || day > 31u) return false;
     years = year - 2000u;
     ordinal = (uint16_t)(years * 365u + (years + 3u) / 4u + month_offset[mon - 1u] + day - 1u);
     if(mon > 2u && year % 4u == 0u) ordinal++;
@@ -160,9 +160,9 @@ static bool Rule_Execute(DEV_RULE_T *r, uint8_t action, uint8_t latch)
     bool accepted;
     if(pending_action != RULE_ACTION_NONE || action < RULE_ACTION_POWER_ON ||
        action > RULE_ACTION_MAX) return false;
-    /* An explicit timed shutdown must not be lost merely because the unit
-     * started recently. Restart/temperature actions retain their protection. */
-    if(changesPower && !(latch == POLICY_TIMER_ACTION && action == RULE_ACTION_POWER_OFF) &&
+    /* Only temperature-triggered power changes are rate limited.
+     * Timers and window entry/exit actions run at their scheduled time. */
+    if(changesPower && (latch == POLICY_LATCH_HIGH || latch == POLICY_LATCH_LOW) &&
        (uint32_t)(CurTick - power_change_ms) < (uint32_t)minimum * 60000u) {
         PRINT("[Rule] defer power change, minimum=%u min\r\n", minimum);
         return false;
@@ -296,6 +296,11 @@ void Rule_Pro(void)
     uint16_t hour, minute, day;
     uint32_t now;
     DEV_RULE_T *r;
+
+    /* All configured intervals are <=24 h. Keep an expired reference aged
+     * without letting a 49.7-day tick wrap re-arm an old power change. */
+    if((uint32_t)(CurTick - power_change_ms) > 86400000UL)
+        power_change_ms = CurTick - 86400000UL;
 
     /* 仅远程控制模式不执行本地规则；混合模式不依赖网络状态。 */
     if (Dev.mode != 0u) {

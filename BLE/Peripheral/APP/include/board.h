@@ -286,7 +286,7 @@ typedef struct {
     uint8_t date_mode;       /* daily / weekly / single date / date range */
     uint8_t hysteresis_x10;  /* zero retains legacy 0.5 C */
 } RULE_SCHEDULE_T;
-#define RULE_LAST_DAY 13879u /* 2037-12-31 */
+#define RULE_LAST_DAY 36524u /* 2099-12-31; days since 2000-01-01 */
 
 // 本地计量累计与限频保存状态
 typedef struct {

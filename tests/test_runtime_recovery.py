@@ -338,7 +338,7 @@ static struct {
 static uint8_t management_frame[72],report[38],result;
 static uint8_t operation,valid_time;
 static uint16_t tag;
-static uint32_t parameter,LocalTimestamp=1785987000;
+static uint32_t parameter,LocalTimestamp=1785987000,CurTick;
 static struct { struct { uint16_t u16Val; } errorCode; } Dev;
 static const ota_metadata_t *Ota_Get(void){return &ota;}
 static uint8_t Ota_Cancel(void){return 0;}
@@ -380,6 +380,13 @@ int main(void){
  modem.management_pending=0;Dev.errorCode.u16Val=0;alarm_step(10002);assert(!modem.management_pending);
  modem.status.phase=0;alarm_step(21001);assert(!modem.management_pending);
  modem.status.phase=1;alarm_step(21001);assert(frame_u16(management_frame+8)==0);
+ modem.management_pending=0;Dev.errorCode.u16Val=16;
+ alarm_step(0x80010000U);assert(modem.management_pending && frame_u16(management_frame+8)==16);
+ modem.management_pending=0;modem.last_alarm_ms=UINT32_MAX-5000U;Dev.errorCode.u16Val=0;
+ alarm_step(6000U);assert(modem.management_pending && frame_u16(management_frame+8)==0);
+ uint8_t offer[14]={0};offer[12]=1;offer[13]='x';modem.management_pending=0;
+ CurTick=0x90000000U;request(5,47,sizeof(offer),offer);
+ assert(modem.ota_retry_at_ms==CurTick && reached(CurTick,modem.ota_retry_at_ms));
  return 0;
 }
 ''')
@@ -544,7 +551,7 @@ int main(void) {
     present=1;assert(RTC_SetTimestamp(1709164800U));
     CurTick=0xfffffff0;assert(RTC_SetTimestamp(1709164800U));
     CurTick+=1000;regs[0]=1;assert(Rtc_GetTimestamp()==1709164801U);
-    assert(!RTC_SetTimestamp(1U) && !RTC_SetTimestamp(2147483001U));
+    assert(!RTC_SetTimestamp(1U) && !RTC_SetTimestamp(TIME_UTIL_MAX_TIMESTAMP+1U));
     /* Sunday UTC becomes Monday in Beijing: policies must use local weekday. */
     assert(RTC_SetTimestamp(1791734400U)); /* 2026-10-12 00:00 Beijing */
     uint16_t weekday;
@@ -556,7 +563,7 @@ int main(void) {
     assert(Rtc_GetTimestamp()==1791734400U && RTC_IsTimeValid() && !Dev.errorCode.bit.rtc);
     before=delays;assert(RTC_SyncTimestamp(1791734403U));assert(before==delays);
     assert(!RTC_SyncTimestamp(1791734701U)); /* >5 min: stale/wrong network clock */
-    assert(!RTC_SyncTimestamp(1U) && !RTC_SyncTimestamp(2147483001U));
+    assert(!RTC_SyncTimestamp(1U) && !RTC_SyncTimestamp(TIME_UTIL_MAX_TIMESTAMP+1U));
     assert(RTC_SyncTimestamp(1791734700U)); /* bounded drift may be corrected */
     assert(Rtc_GetTimestamp()==1791734700U);
     /* Explicit phone sync remains unrestricted, including correcting old time. */
@@ -583,6 +590,23 @@ int main(void) {
     assert(RTC_GetWallTime(&y,&m,&d,&h,&mi,&s));
     assert(y==2026 && m==10 && d==12 && h==0 && mi==24 && s==30);
     assert(rule_get_time(&h,&mi,&weekday,&m) && weekday==1 && h==0 && mi==24);
+    /* No signed-2038 truncation; BCD year and Beijing conversion agree. */
+    assert(RTC_SetTimestamp(2147483648U));
+    assert(RTC_GetWallTime(&y,&m,&d,&h,&mi,&s) && y==2038 && h==11 && mi==14 && s==8);
+    assert(RTC_SetTimestamp(3981312000U));
+    assert(regs[6]==0x96 && regs[4]==2 && regs[3]==0x29);
+    assert(RTC_GetWallTime(&y,&m,&d,&h,&mi,&s) && y==2096 && m==2 && d==29 && h==8);
+    assert(RTC_SetTimestamp(4102415999U)); /* final supported Beijing second */
+    assert(regs[6]==0x99 && RTC_GetWallTime(&y,&m,&d,&h,&mi,&s));
+    assert(y==2099 && m==12 && d==31 && h==23 && mi==59 && s==59);
+    assert(rule_get_time(&h,&mi,&weekday,&m) && m==RULE_LAST_DAY);
+    assert(RTC_SetTimestamp(TIME_UTIL_MAX_TIMESTAMP));
+    assert(!RTC_GetWallTime(&y,&m,&d,&h,&mi,&s)); /* local date would be 2100 */
+    RTC_ProductInit();assert(RTC_IsTimeValid() && LocalTimestamp==TIME_UTIL_MAX_TIMESTAMP);
+    regs[0]|=0x80;rtcPolled=0;Rtc_GetTimestamp();
+    const char late_clock[]="+CCLK: \"99/12/31,15:59:59+32\"";
+    parse_network_clock(late_clock,sizeof(late_clock)-1);
+    assert(Rtc_GetTimestamp()==4102415999U && RTC_IsTimeValid());
     return 0;
 }
 ''')
@@ -990,6 +1014,7 @@ int main(void) {
 static ml307_context_t modem;
 static ota_metadata_t ota;
 static unsigned controls, registrations, statuses, results, cancellations;
+static uint32_t CurTick;
 static uint8_t management_frame[251];
 const ota_metadata_t *Ota_Get(void) {return &ota;}
 uint8_t Ota_BeginRemote(uint32_t v,uint32_t n,uint32_t c,const char *u,uint8_t l) {(void)v;(void)n;(void)c;(void)u;(void)l;return 0;}
@@ -1025,6 +1050,37 @@ int main(void) {
     assert(registrations==1 && statuses==1 && results==1);
     modem.management_pending=1;request(frame,7,0);handle_mqtt_payload(frame,9);assert(cancellations==1);
     modem.management_pending=0;frame[8]++;handle_mqtt_payload(frame,9);assert(cancellations==1);
+    return 0;
+}
+''')
+
+    def test_mqtt_long_lived_deadlines_are_consumed(self):
+        source = (APP / 'ml307r.c').read_text(encoding='utf-8')
+        process = function(source, 'Ml307_Process')
+        hold = process[process.index('    if(modem.at_status.state != ML307_AT_IDLE && !modem.at_result_read)'):process.index('    if(modem.http_step != ML307_HTTP_IDLE)')]
+        online = process[process.index('    case ML307_PHASE_ONLINE:')+len('    case ML307_PHASE_ONLINE:'):process.index('        if(modem.publishing_management || modem.management_pending ||')]
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+#define ML307_AT_IDLE 0U
+#define ML307_AT_TIMEOUT_MS 5000U
+#define ML307_AT_RESULT_HOLD_MS 3000U
+static struct {struct {uint8_t state;} at_status;uint8_t at_result_read;uint32_t at_started_ms,next_action_ms;} modem;
+static unsigned passed;
+''' + function(source, 'reached') + '\nstatic void hold_result(uint32_t now){\n' + hold + '\npassed++;}\nstatic void online_gate(uint32_t now){\n' + online + r'''
+}
+int main(void) {
+    modem.at_status.state=2;modem.at_started_ms=UINT32_MAX-1000U;
+    hold_result(6998U);assert(!passed && !modem.at_result_read);
+    hold_result(6999U);assert(passed==1 && modem.at_result_read);
+    hold_result(0x80010000U);assert(passed==2); /* never re-block after 24.9 days */
+    modem.next_action_ms=2002U;
+    online_gate(2001U);assert(!reached(2001U,modem.next_action_ms));
+    online_gate(2002U);assert(reached(2002U,modem.next_action_ms));
+    uint32_t now=2002U;
+    for(unsigned minute=0;minute<180000;minute++) {
+        now+=60000U;online_gate(now);assert(reached(now,modem.next_action_ms));
+    }
     return 0;
 }
 ''')
@@ -1160,6 +1216,10 @@ int main(void) {
     Ir_Pro();assert(irTxActive && irProfileOffset==2 && !completed);
     Ir_HandleTxFifoEmpty();Ir_Pro();
     assert(completed==1 && Ir_IsControlPathIdle());
+    /* Learning/raw timeout exactly at tick zero must still release busy. */
+    IrBuf.isFinish=0;IrBuf.type=IR_TYPE_LEARNing;irOperationDeadline=0;
+    CurTick=UINT32_MAX;Ir_Pro();assert(!IrBuf.isFinish);
+    CurTick=0;Ir_Pro();assert(IrBuf.isFinish && IrBuf.learnError);
     return 0;
 }
 ''')
@@ -1207,6 +1267,9 @@ int main(void) {
     DeviceTxStep();DeviceTxStep();assert(!deviceTxActive);
     SendDeviceFrame(frame,32);notify_ok=0;CurTick=1500;
     DeviceTxStep();assert(!deviceTxActive && terminated==1);
+    CurTick=UINT32_MAX-1499U;SendDeviceFrame(frame,32);
+    CurTick=UINT32_MAX;DeviceTxStep();assert(deviceTxActive && terminated==1);
+    CurTick=0;DeviceTxStep();assert(!deviceTxActive && terminated==2);
     return 0;
 }
 ''')

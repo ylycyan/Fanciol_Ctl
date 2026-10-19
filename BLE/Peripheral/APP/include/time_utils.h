@@ -12,7 +12,8 @@ typedef struct {
     uint8_t second;
 } time_fields_t;
 
-/* 产品 RTC 的有效范围固定为 1970-01-01 至 2038-01-19。 */
+/* Unsigned Unix seconds: 1970-01-01 through 2099-12-31 23:59:59 UTC. */
+#define TIME_UTIL_MAX_TIMESTAMP 4102444799UL
 uint8_t TimeUtil_FromUnix(uint32_t timestamp, time_fields_t *fields);
 uint8_t TimeUtil_ToUnix(const time_fields_t *fields, uint32_t *timestamp);
 
