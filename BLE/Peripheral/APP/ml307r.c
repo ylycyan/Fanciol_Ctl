@@ -19,7 +19,13 @@
 #define ML307_LINE_SIZE            512U
 #define ML307_TX_SIZE              (DEVICE_MAX_PAYLOAD + 11U)
 #define ML307_POWER_OFF_MS         1000U
-#define ML307_BOOT_WAIT_MS         12000U
+#define ML307_BOOT_WAIT_MS         3000U
+#define ML307_SYNC_TIMEOUT_MS       400U
+#define ML307_SYNC_RETRY_MS         100U
+#define ML307_SIM_TIMEOUT_MS        400U
+#define ML307_SIM_RECHECK_MS        5000U
+#define ML307_SIM_RESET_LIMIT       14U
+#define ML307_IDENTITY_TIMEOUT_MS   1000U
 #define ML307_COMMAND_TIMEOUT_MS   3000U
 #define ML307_MQTT_TIMEOUT_MS      15000U
 #define ML307_SIGNAL_INTERVAL_MS   60000U
@@ -68,7 +74,7 @@ static void resume_uart1_debug(void)
 #define ML307_MGMT_RULE_RESULT          0x0DU
 #define ML307_RULE_RECORD_SIZE          16U
 #define ML307_RULE_RECORD_COUNT         6U
-#define ML307_HARDWARE_FAULT_MASK       0x0079U
+#define ML307_HARDWARE_FAULT_MASK       0x01F9U
 
 #define ML307_CAP_IR_CATALOG            0x0001U
 #define ML307_CAP_IR_LEARNING           0x0002U
@@ -315,6 +321,15 @@ static void queue_registration(uint16_t transaction)
     queue_management_frame(ML307_MGMT_REGISTRATION, transaction, payload, offset);
 }
 
+/* Only basic AT probes diagnose a silent modem; MQTT/SIM failures do not. */
+static uint8_t at_sync_failures, sim_failures, sim_check_pending;
+static void record_at_response(uint8_t responded)
+{
+    if(responded) at_sync_failures = 0U;
+    else if(at_sync_failures < 2U) at_sync_failures++;
+    Dev.errorCode.bit.cellular = (at_sync_failures >= 2U || sim_failures >= 2U);
+}
+
 static void status_phase(ml307_phase_t phase)
 {
     modem.status.phase = (uint8_t)phase;
@@ -385,6 +400,7 @@ static void reset_runtime_flags(void)
     modem.status.rsrp_dbm = -127;
     modem.status.rsrq_db_x10 = -32768;
     modem.status.sim_ready = 0U;
+    sim_check_pending = 0U;
     modem.status.network_registered = 0U;
     modem.status.mqtt_online = 0U;
     modem.waiting = 0U;
@@ -436,6 +452,31 @@ static void start_power_cycle(void)
     if(modem.status.power_cycle_count != 0xFFFFU) modem.status.power_cycle_count++;
     modem.deadline_ms = CurTick + ML307_POWER_OFF_MS;
     status_phase(ML307_PHASE_POWER_OFF);
+}
+
+/* A missing/locked SIM is separate from an unresponsive UART. No PIN attempts. */
+static void sim_probe_result(uint8_t ready)
+{
+    sim_check_pending = 0U;
+    modem.waiting = 0U;
+    modem.status.sim_ready = ready;
+    if(ready) {
+        sim_failures = 0U;
+        if(modem.status.last_error == ML307_ERROR_SIM)
+            modem.status.last_error = ML307_ERROR_NONE;
+        modem.next_action_ms = CurTick;
+    } else {
+        if(sim_failures < ML307_SIM_RESET_LIMIT) sim_failures++;
+        modem.status.last_error = ML307_ERROR_SIM;
+        modem.identity_step = 0U;
+        modem.next_action_ms = CurTick +
+            (sim_failures < 2U ? ML307_SYNC_RETRY_MS : ML307_SIM_RECHECK_MS);
+    }
+    Dev.errorCode.bit.cellular = (at_sync_failures >= 2U || sim_failures >= 2U);
+    if(!ready && sim_failures >= ML307_SIM_RESET_LIMIT) {
+        sim_failures = 2U; /* Keep the fault latched across the recovery power cycle. */
+        start_power_cycle();
+    }
 }
 
 static void enter_backoff(ml307_error_t error)
@@ -1581,6 +1622,9 @@ static uint8_t at_process_line(const char *line, uint16_t length)
 static void process_line(char *line, uint16_t length)
 {
     uint8_t phase = modem.status.phase;
+    if(strcmp(line, "OK") == 0 || strcmp(line, "ERROR") == 0 ||
+       strstr(line, "+CME ERROR:") != 0 || strstr(line, "+CMS ERROR:") != 0)
+        record_at_response(1U);
     if(at_process_line(line, length)) return;
     if(mqtt_urc_is(line, "conn")) {
         uint16_t result = 0xFFFFU;
@@ -1633,8 +1677,28 @@ static void process_line(char *line, uint16_t length)
             complete_publish();
         return;
     }
-    if(strstr(line, "+CPIN:") != 0 && strstr(line, "READY") != 0)
-        modem.status.sim_ready = 1U;
+    {
+        const char *pin = strstr(line, "+CPIN:");
+        if(pin != 0) {
+            uint8_t was_ready = modem.status.sim_ready;
+            pin += 6;
+            while(*pin == ' ' || *pin == '\t') pin++;
+            modem.status.sim_ready = strcmp(pin, "READY") == 0;
+            if(modem.status.sim_ready) {
+                sim_failures = 0U;
+                Dev.errorCode.bit.cellular = at_sync_failures >= 2U;
+                if(modem.status.last_error == ML307_ERROR_SIM)
+                    modem.status.last_error = ML307_ERROR_NONE;
+                if(phase == ML307_PHASE_SIM && !sim_check_pending && !modem.waiting)
+                    modem.next_action_ms = CurTick;
+            } else if(was_ready && !sim_check_pending) {
+                sim_failures = 2U;
+                Dev.errorCode.bit.cellular = 1U;
+                enter_backoff(ML307_ERROR_SIM);
+                return;
+            }
+        }
+    }
     if(phase == ML307_PHASE_SIM && modem.identity_step == 1U)
         (void)copy_numeric_identity(modem.imei, sizeof(modem.imei), line, 15U, 15U);
     if(phase == ML307_PHASE_SIM && modem.identity_step == 3U)
@@ -1653,6 +1717,10 @@ static void process_line(char *line, uint16_t length)
     if(strstr(line, "+CCLK:") != 0) parse_network_clock(line, length);
     if(http_process_line(line, length)) return;
     if(strcmp(line, "ERROR") == 0 || strstr(line, "+CME ERROR:") != 0) {
+        if(phase == ML307_PHASE_SIM && sim_check_pending) {
+            sim_probe_result(0U);
+            return;
+        }
         if(phase == ML307_PHASE_SIM && modem.status.sim_ready &&
            (modem.identity_step == 1U || modem.identity_step == 3U)) {
             /* IMEI/ICCID 是登记信息，查询失败不能阻断设备联网。 */
@@ -1660,7 +1728,7 @@ static void process_line(char *line, uint16_t length)
             modem.waiting = 0U;
             modem.next_action_ms = CurTick;
         }
-        else if(phase == ML307_PHASE_SIM) enter_backoff(ML307_ERROR_SIM);
+        else if(phase == ML307_PHASE_SIM) enter_backoff(ML307_ERROR_COMMAND);
         else if(phase == ML307_PHASE_NETWORK && modem.network_command == 1U) {
             modem.waiting = 0U;
             modem.next_action_ms = CurTick + 1000U;
@@ -1701,6 +1769,7 @@ static void process_line(char *line, uint16_t length)
         else modem.waiting = 1U;
         return;
     }
+    if(phase == ML307_PHASE_SIM && !modem.waiting) return;
     modem.waiting = 0U;
     switch(phase) {
     case ML307_PHASE_AT_SYNC:
@@ -1708,13 +1777,18 @@ static void process_line(char *line, uint16_t length)
          * counter.  Once the modem has answered, start clock retries from
          * zero so repeated AT probes cannot suppress network time sync. */
         modem.time_sync_attempts = 0U;
-        if(tx_command("ATE0\r\n")) transition_wait(ML307_PHASE_SIM, ML307_COMMAND_TIMEOUT_MS);
+        modem.status.last_error = ML307_ERROR_NONE;
+        if(tx_command("ATE0\r\n")) transition_wait(ML307_PHASE_SIM, ML307_SYNC_TIMEOUT_MS);
         break;
     case ML307_PHASE_SIM:
+        if(sim_check_pending) {
+            sim_probe_result(modem.status.sim_ready);
+            break;
+        }
         if(modem.status.sim_ready &&
            (modem.identity_step == 1U || modem.identity_step == 3U))
             modem.identity_step++;
-        modem.next_action_ms = CurTick + (modem.status.sim_ready ? 0U : 2000U);
+        modem.next_action_ms = CurTick; /* ATE0 OK: query CPIN immediately. */
         break;
     case ML307_PHASE_APN:
         modem.network_started_ms = CurTick;
@@ -1895,6 +1969,8 @@ static void consume_uart(void)
 void Ml307_Init(void)
 {
     memset(&modem, 0, sizeof(modem));
+    sim_failures = sim_check_pending = 0U;
+    record_at_response(1U);
     rule_record_head = rule_record_count = 0U;
     modem.ota_reported_bytes = Ota_Get()->downloaded_bytes;
     device_jitter_ms = (uint16_t)(DeviceProtocol_Crc16(
@@ -1940,6 +2016,8 @@ void Ml307_ApplyConfiguration(void)
     modem.publishing_command_valid = 0U;
     modem.report_requested = 0U;
     if(!Connectivity_CellularEnabled()) {
+        sim_failures = sim_check_pending = 0U;
+        record_at_response(1U);
         reset_runtime_flags();
         uart_disable();
         power_off();
@@ -2004,6 +2082,7 @@ uint8_t Ml307_AtStart(const uint8_t *command, uint8_t length)
      * unfinished receive state and resume that phase after the manual result. */
     modem.at_previous_phase = at_resume_phase(modem.status.phase);
     modem.waiting = 0U;
+    sim_check_pending = 0U;
     modem.response_seen = 0U;
     modem.prompt_seen = 0U;
     modem.line_length = 0U;
@@ -2178,6 +2257,11 @@ void Ml307_Process(void)
         }
     }
     if(modem.waiting && reached(now, modem.deadline_ms)) {
+        if(modem.status.phase == ML307_PHASE_AT_SYNC) record_at_response(0U);
+        if(modem.status.phase == ML307_PHASE_SIM && sim_check_pending) {
+            sim_probe_result(0U);
+            return;
+        }
         if(modem.status.phase == ML307_PHASE_SIM && modem.status.sim_ready &&
            (modem.identity_step == 1U || modem.identity_step == 3U)) {
             /* 设备身份用于登记展示，读取超时不能阻断 MQTT 接入。 */
@@ -2189,7 +2273,7 @@ void Ml307_Process(void)
         if(modem.status.phase == ML307_PHASE_AT_SYNC &&
            modem.time_sync_attempts < ML307_SYNC_RETRY_LIMIT) {
             modem.waiting = 0U;
-            modem.next_action_ms = now + 200U;
+            modem.next_action_ms = now + ML307_SYNC_RETRY_MS;
             return;
         }
         if(modem.status.phase == ML307_PHASE_NETWORK && modem.network_command == 1U) {
@@ -2205,7 +2289,7 @@ void Ml307_Process(void)
             status_phase(ML307_PHASE_ONLINE);
             return;
         }
-        enter_backoff(ML307_ERROR_TIMEOUT);
+        enter_backoff(modem.status.phase == ML307_PHASE_AT_SYNC ? ML307_ERROR_MODEM : ML307_ERROR_TIMEOUT);
         return;
     }
     if(modem.tx_length != 0U) return;
@@ -2229,28 +2313,30 @@ void Ml307_Process(void)
             uart_enable();
             if(tx_command("AT\r\n")) {
                 modem.time_sync_attempts = 1U;
-                transition_wait(ML307_PHASE_AT_SYNC, ML307_COMMAND_TIMEOUT_MS);
+                transition_wait(ML307_PHASE_AT_SYNC, ML307_SYNC_TIMEOUT_MS);
             }
         }
         break;
     case ML307_PHASE_AT_SYNC:
         if(!modem.waiting && reached(now, modem.next_action_ms) && tx_command("AT\r\n")) {
             modem.time_sync_attempts++;
-            transition_wait(ML307_PHASE_AT_SYNC, ML307_COMMAND_TIMEOUT_MS);
+            transition_wait(ML307_PHASE_AT_SYNC, ML307_SYNC_TIMEOUT_MS);
         }
         break;
     case ML307_PHASE_SIM:
         if(!modem.waiting && reached(now, modem.next_action_ms)) {
-            if(!modem.status.sim_ready && tx_command("AT+CPIN?\r\n"))
-                transition_wait(ML307_PHASE_SIM, ML307_COMMAND_TIMEOUT_MS);
+            if(!modem.status.sim_ready && tx_command("AT+CPIN?\r\n")) {
+                sim_check_pending = 1U;
+                transition_wait(ML307_PHASE_SIM, ML307_SIM_TIMEOUT_MS);
+            }
             else if(modem.status.sim_ready && modem.identity_step == 0U &&
                     tx_command("AT+CGSN=1\r\n")) {
                 modem.identity_step = 1U;
-                transition_wait(ML307_PHASE_SIM, ML307_COMMAND_TIMEOUT_MS);
+                transition_wait(ML307_PHASE_SIM, ML307_IDENTITY_TIMEOUT_MS);
             } else if(modem.status.sim_ready && modem.identity_step == 2U &&
                       tx_command("AT+ICCID\r\n")) {
                 modem.identity_step = 3U;
-                transition_wait(ML307_PHASE_SIM, ML307_COMMAND_TIMEOUT_MS);
+                transition_wait(ML307_PHASE_SIM, ML307_IDENTITY_TIMEOUT_MS);
             } else if(modem.status.sim_ready && modem.identity_step >= 4U && !send_apn())
                 enter_backoff(ML307_ERROR_CONFIG);
         }

@@ -101,7 +101,7 @@ void LoadDevInfo(void)
     (void)LoraParams_Load();
     /* bit1/bit2 were used by old firmware for IR operation state.  They are
      * no longer hardware faults and must not survive an in-field upgrade. */
-    Dev.errorCode.u16Val &= (uint16_t)~0x0006U;
+    Dev.errorCode.u16Val &= (uint16_t)~0x0186U; /* Runtime radio checks never inherit stale faults. */
     if(Storage_GetStartupFlags() != 0U) Dev.errorCode.bit.flash = 1;
     /* 状态机没有 Uninit 分支；直接进入注册态，下一次 20 ms 轮询即按配置初始化射频。 */
     Dev.loraStatus = Status_Logining;

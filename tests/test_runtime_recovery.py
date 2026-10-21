@@ -115,6 +115,7 @@ int main(void) {
 
     def test_led_running_and_network_indicators_do_not_blink(self):
         source = no_includes((APP / 'led.c').read_text(encoding='utf-8'))
+        led_init = function((APP / 'include/board.h').read_text(encoding='utf-8'), 'Led_Init')
         self.compile_run(r'''
 #include <assert.h>
 #include <stdint.h>
@@ -125,29 +126,55 @@ int main(void) {
 #define Status_Connected 4U
 #define GAPROLE_STATE 0U
 #define GAPROLE_STATE_ADV_MASK 15U
+#define GAPROLE_ADVERTISING 1U
 #define GAPROLE_CONNECTED 2U
 #define GAPROLE_CONNECTED_ADV 3U
+#define SUCCESS 0U
+#define GPIO_ModeOut_PP_5mA 0U
 #define ML307_ERROR_MODEM 1U
 #define ML307_ERROR_RX_OVERFLOW 2U
 #define ML307_ERROR_UART 3U
-typedef struct { uint8_t mqtt_online, last_error; } ml307_status_t;
+typedef struct { uint8_t mqtt_online, last_error, sim_ready; } ml307_status_t;
+typedef struct { uint8_t valid; } HLW8110_Status_t;
+static HLW8110_Status_t meter;
 static ml307_status_t cell;
 static struct {
     uint8_t loraStatus;
-    struct { struct { uint8_t flash, ad, power, rtc, lora; } bit; } errorCode;
+    struct { struct { uint8_t flash, ad, power, rtc, lora, cellular, ble; } bit; } errorCode;
 } Dev;
 static uint32_t CurTick, lights;
-static uint8_t lora, cellular, identify, ble;
+static uint8_t lora, cellular, identify, ble, ble_error, adc_valid;
 static void GPIOB_ResetBits(uint32_t pins) { lights |= pins; }
 static void GPIOB_SetBits(uint32_t pins) { lights &= ~pins; }
+static void GPIOB_ModeCfg(uint32_t pins, unsigned mode) { (void)pins; (void)mode; }
+static uint8_t ADC_IsValid(void) { return adc_valid; }
+static const HLW8110_Status_t *HLW8110_GetStatus(void) { return &meter; }
 static const ml307_status_t *Ml307_GetStatus(void) { return &cell; }
 static uint8_t Connectivity_LoraEnabled(void) { return lora; }
 static uint8_t Connectivity_CellularEnabled(void) { return cellular; }
 static uint8_t DeviceService_IdentifyActive(void) { return identify; }
-static void GAPRole_GetParameter(unsigned p, uint8_t *s) { (void)p; *s=ble; }
-''' + source + r'''
+static uint8_t GAPRole_GetParameter(unsigned p, uint8_t *s) { (void)p; *s=ble; return ble_error; }
+''' + led_init + source + r'''
 int main(void) {
-    for(CurTick=0; CurTick<4000; CurTick+=100) {
+    Led_Init();assert(lights==(LED_GREEN_PIN|LED_RED_PIN));
+    cellular=1;ble=GAPROLE_ADVERTISING;
+    for(CurTick=0; CurTick<5000; CurTick+=100) {
+        /* Temporary startup failures must not make the self-test lamp flicker. */
+        Dev.errorCode.bit.cellular=(CurTick/100U)&1U;
+        LED_Pro();assert(lights==(LED_GREEN_PIN|LED_RED_PIN));
+    }
+    Dev.errorCode.bit.cellular=0;
+    LED_Pro();assert(lights & LED_RED_PIN);
+    adc_valid=1;LED_Pro();assert(lights & LED_RED_PIN);
+    meter.valid=1;LED_Pro();assert(lights & LED_RED_PIN); /* SIM still unready */
+    cell.sim_ready=1;ble_error=1;LED_Pro();assert(lights & LED_RED_PIN);
+    ble_error=0;ble=0;LED_Pro();assert(lights & LED_RED_PIN);
+    ble=GAPROLE_ADVERTISING;LED_Pro();assert(!(lights & LED_RED_PIN));
+    assert(bootChecked && !cell.mqtt_online); /* no network required */
+    cell.sim_ready=0;LED_Pro();assert(!(lights & LED_RED_PIN)); /* no second boot test */
+    bootChecked=0;cellular=0;LED_Pro();assert(bootChecked && !(lights & LED_RED_PIN));
+    ble=0;
+    for(CurTick=6000; CurTick<10000; CurTick+=100) {
         lora=1; cellular=0; Dev.loraStatus=0; LED_Pro();
         assert(lights==LED_GREEN_PIN);
         Dev.loraStatus=Status_Connected; LED_Pro();
@@ -165,12 +192,92 @@ int main(void) {
         assert(lights==(LED_GREEN_PIN|LED_RED_PIN));
         Dev.errorCode.bit.flash=0;
     }
+    cellular=1;cell.mqtt_online=0;cell.last_error=ML307_ERROR_MODEM;
+    LED_Pro();assert(!(lights & LED_RED_PIN)); /* a status code alone is not a hardware diagnosis */
+    Dev.errorCode.bit.cellular=1;LED_Pro();assert(lights & LED_RED_PIN);
+    identify=1;LED_Pro();assert(lights & LED_RED_PIN); /* identify never hides a hardware fault */
+    identify=0;cellular=0;LED_Pro();assert(!(lights & LED_RED_PIN));
+    Dev.errorCode.bit.cellular=0;Dev.errorCode.bit.ble=1;LED_Pro();assert(lights & LED_RED_PIN);
+    Dev.errorCode.bit.ble=0;
     CurTick=UINT32_MAX-199U; LED_NotifyIrTx();
     for(unsigned offset=0; offset<=500; offset+=100) {
         CurTick=(UINT32_MAX-199U)+offset; LED_Pro();
         assert(!!(lights & LED_GREEN_PIN)==(offset>=400 || (offset/100U)%2U==0));
         assert(!(lights & LED_WHITE_PIN));
+        assert(!(lights & LED_RED_PIN)); /* completed self-test survives tick wrap */
     }
+    return 0;
+}
+''')
+
+    def test_at_selftest_is_early_bounded_and_recovers_without_mqtt(self):
+        source = (APP / 'ml307r.c').read_text(encoding='utf-8')
+        boot = int(re.search(r'#define ML307_BOOT_WAIT_MS\s+(\d+)U', source).group(1))
+        wait = int(re.search(r'#define ML307_SYNC_TIMEOUT_MS\s+(\d+)U', source).group(1))
+        retry = int(re.search(r'#define ML307_SYNC_RETRY_MS\s+(\d+)U', source).group(1))
+        self.assertEqual(boot, 3000)
+        self.assertLessEqual(1000 + boot + wait * 2 + retry, 5000)
+        self.compile_run(r'''
+#include <assert.h>
+#include "board.h"
+t_dev Dev;
+static uint8_t at_sync_failures, sim_failures;
+''' + function(source, 'record_at_response') + r'''
+int main(void) {
+    Dev.errorCode.bit.cellular=1;assert(Dev.errorCode.u16Val==0x80);
+    Dev.errorCode.u16Val=0;Dev.errorCode.bit.ble=1;assert(Dev.errorCode.u16Val==0x100);
+    assert(sizeof(Dev.errorCode)==2);
+    record_at_response(1);assert(!Dev.errorCode.bit.cellular);
+    record_at_response(0);assert(!Dev.errorCode.bit.cellular);
+    record_at_response(0);assert(Dev.errorCode.bit.cellular);
+    for(unsigned i=0;i<1000;i++)record_at_response(0);
+    assert(at_sync_failures==2 && Dev.errorCode.bit.cellular);
+    Dev.errorCode.bit.power=1;record_at_response(1);
+    assert(!Dev.errorCode.bit.cellular && Dev.errorCode.bit.power && Dev.errorCode.bit.ble);
+    record_at_response(0);assert(!Dev.errorCode.bit.cellular);
+    sim_failures=2;record_at_response(1);assert(Dev.errorCode.bit.cellular);
+    sim_failures=0;record_at_response(1);assert(!Dev.errorCode.bit.cellular);
+    return 0;
+}
+''')
+
+    def test_ble_selftest_only_restarts_missing_advertising_and_handles_tick_wrap(self):
+        source = (APP / 'peripheral.c').read_text(encoding='utf-8')
+        self.compile_run(r'''
+#include <assert.h>
+#include "board.h"
+#define SUCCESS 0U
+#define GAPROLE_STATE 0U
+#define GAPROLE_STATE_ADV_MASK 15U
+#define GAPROLE_ADVERTISING 1U
+#define GAPROLE_CONNECTED 2U
+#define GAPROLE_CONNECTED_ADV 3U
+t_dev Dev;
+volatile uint32_t CurTick;
+static uint32_t bleCheckTick,bleReadyTick;
+static uint8_t bleInitFault,state,get_status;
+static unsigned retries;
+static uint8_t GAPRole_GetParameter(unsigned p,uint8_t *s) {(void)p;*s=state;return get_status;}
+static void peripheralEnableAdvertising(const char *reason) {(void)reason;retries++;}
+''' + function(source, 'Peripheral_CheckHealth') + r'''
+int main(void) {
+    CurTick=999;Peripheral_CheckHealth();assert(!retries && !Dev.errorCode.bit.ble);
+    CurTick=1000;Peripheral_CheckHealth();assert(retries==1 && !Dev.errorCode.bit.ble);
+    CurTick=4999;Peripheral_CheckHealth();assert(!Dev.errorCode.bit.ble);
+    CurTick=5000;Peripheral_CheckHealth();assert(Dev.errorCode.bit.ble);
+    state=GAPROLE_ADVERTISING;Peripheral_CheckHealth();assert(!Dev.errorCode.bit.ble);
+    unsigned before=retries;
+    for(CurTick=5100;CurTick<20000;CurTick+=100) {
+        state=GAPROLE_CONNECTED;Peripheral_CheckHealth();
+        assert(retries==before && !Dev.errorCode.bit.ble);
+    }
+    get_status=1;CurTick=24899;Peripheral_CheckHealth();assert(!Dev.errorCode.bit.ble);
+    CurTick=24900;Peripheral_CheckHealth();assert(Dev.errorCode.bit.ble);
+    get_status=0;state=GAPROLE_CONNECTED_ADV;Peripheral_CheckHealth();assert(!Dev.errorCode.bit.ble);
+    bleInitFault=1;Peripheral_CheckHealth();assert(Dev.errorCode.bit.ble);
+    bleInitFault=0;state=0;bleCheckTick=bleReadyTick=UINT32_MAX-2499U;
+    Dev.errorCode.bit.ble=0;CurTick=2499;Peripheral_CheckHealth();assert(!Dev.errorCode.bit.ble);
+    CurTick=2500;Peripheral_CheckHealth();assert(Dev.errorCode.bit.ble);
     return 0;
 }
 ''')
@@ -313,7 +420,7 @@ int main(void) {
 #define ML307_MGMT_STATE 9U
 #define ML307_MGMT_CONTROL 10U
 #define ML307_MGMT_ALARM 11U
-#define ML307_HARDWARE_FAULT_MASK 0x79U
+#define ML307_HARDWARE_FAULT_MASK 0x1F9U
 #define ML307_PHASE_ONLINE 1U
 #define ML307_HTTP_IDLE 0U
 #define ML307_HTTP_TERM 7U
@@ -1108,6 +1215,14 @@ static const connectivity_config_t *Connectivity_Get(void) {return &config;}
 static void uart_disable(void) {}
 void Ml307_ApplyConfiguration(void) {}
 static void Peripheral_RequestReset(void) {}
+#define ML307_SYNC_RETRY_MS 100U
+#define ML307_SYNC_TIMEOUT_MS 400U
+#define ML307_SIM_RECHECK_MS 5000U
+#define ML307_SIM_RESET_LIMIT 14U
+static uint8_t at_sync_failures,sim_failures,sim_check_pending;
+static unsigned sim_power_cycles;
+static struct {struct {struct {uint8_t cellular;} bit;} errorCode;} Dev;
+static void start_power_cycle(void) {sim_power_cycles++;modem.waiting=0;modem.status.phase=ML307_PHASE_POWER_OFF;}
 static uint8_t at_process_line(const char *l,uint16_t n) {(void)l;(void)n;return 0;}
 static uint8_t http_process_line(char *l,uint16_t n) {(void)l;(void)n;if(!modem.http_step)return 0;http_calls++;return 1;}
 static void complete_mqtt_connection(void) {}
@@ -1123,7 +1238,8 @@ static uint8_t tx_start(uint16_t n) {(void)n;assert(!strcmp(subscription,modem.m
     "AT+MQTTSUB=0,\"mag/ac/test\",1\r\n":"AT+MQTTSUB=0,\"sub/ac/test\",0\r\n"));return 1;}
 ''' + '\n'.join(function(source,n) for n in (
     'mqtt_urc_is','mqtt_urc_number','parse_cereg','parse_signal','parse_extended_signal',
-    'status_phase','transition_wait','send_mqtt_subscribe','enter_backoff','complete_mqtt_subscription','process_line')) + r'''
+    'status_phase','transition_wait','send_mqtt_subscribe','enter_backoff','complete_mqtt_subscription',
+    'record_at_response','sim_probe_result','process_line')) + r'''
 static void online_http(void) {
     memset(&modem,0,sizeof(modem));http_calls=0;
     modem.status.phase=ML307_PHASE_ONLINE;modem.status.mqtt_online=1;
@@ -1160,6 +1276,38 @@ int main(void) {
     process_line(second_ack,strlen(second_ack));assert(!modem.status.mqtt_online && modem.waiting);
     process_line(ok,2);assert(modem.status.mqtt_online && registrations==1);
     process_line(second_ack,strlen(second_ack));assert(registrations==1);
+    /* ATE0 must not add a fixed delay before the first CPIN request. */
+    memset(&modem,0,sizeof(modem));CurTick=4000;modem.status.phase=ML307_PHASE_SIM;modem.waiting=1;
+    process_line(ok,2);assert(modem.next_action_ms==CurTick && !modem.waiting);
+    char not_ready[]="+CPIN: NOT READY", locked[]="+CPIN: SIM PIN", ready[]="+CPIN: READY", missing[]="+CME ERROR: 10";
+    sim_check_pending=1;modem.waiting=1;process_line(not_ready,strlen(not_ready));
+    assert(!modem.status.sim_ready);process_line(ok,2);
+    assert(sim_failures==1 && !Dev.errorCode.bit.cellular && modem.next_action_ms==4100);
+    CurTick=4100;sim_check_pending=1;modem.waiting=1;process_line(locked,strlen(locked));process_line(ok,2);
+    assert(sim_failures==2 && Dev.errorCode.bit.cellular && modem.status.last_error==ML307_ERROR_SIM);
+    assert(modem.next_action_ms==9100 && !sim_power_cycles);
+    process_line(ok,2);assert(Dev.errorCode.bit.cellular && modem.next_action_ms==9100);
+    CurTick=4200;process_line(ready,strlen(ready));
+    assert(!Dev.errorCode.bit.cellular && !sim_failures && modem.next_action_ms==4200);
+    /* No reply and explicit missing-card errors share the same bounded retry. */
+    modem.status.sim_ready=0;sim_check_pending=1;modem.waiting=1;process_line(missing,strlen(missing));
+    assert(sim_failures==1 && !modem.waiting && !Dev.errorCode.bit.cellular);
+    sim_probe_result(0);assert(Dev.errorCode.bit.cellular);
+    record_at_response(1);assert(Dev.errorCode.bit.cellular);
+    while(!sim_power_cycles)sim_probe_result(0);
+    assert(sim_failures==2 && Dev.errorCode.bit.cellular && modem.status.phase==ML307_PHASE_POWER_OFF);
+    sim_probe_result(1);assert(!Dev.errorCode.bit.cellular && modem.status.sim_ready);
+    /* Startup NOT READY is not a runtime removal; an already-ready SIM disappearing is. */
+    memset(&modem,0,sizeof(modem));modem.status.phase=ML307_PHASE_AT_SYNC;
+    process_line(not_ready,strlen(not_ready));assert(!Dev.errorCode.bit.cellular && modem.status.phase==ML307_PHASE_AT_SYNC);
+    modem.status.phase=ML307_PHASE_ONLINE;modem.status.sim_ready=1;
+    process_line(not_ready,strlen(not_ready));assert(Dev.errorCode.bit.cellular && modem.status.phase==ML307_PHASE_BACKOFF);
+    /* No forced PIN/PUK entry; identity-query errors still do not fail SIM health. */
+    sim_failures=0;modem.http_step=0;modem.status.phase=ML307_PHASE_SIM;
+    modem.status.sim_ready=1;modem.identity_step=1;sim_check_pending=0;modem.waiting=1;
+    process_line(error,5);assert(modem.identity_step==2 && !Dev.errorCode.bit.cellular);
+    process_line(not_ready,strlen(not_ready));
+    assert(Dev.errorCode.bit.cellular && modem.status.phase==ML307_PHASE_BACKOFF);
     return 0;
 }
 ''')

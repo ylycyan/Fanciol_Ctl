@@ -214,6 +214,8 @@ typedef struct {
             uint16_t power : 1;
             uint16_t flash : 1;
             uint16_t rtc : 1;
+            uint16_t cellular : 1;
+            uint16_t ble : 1;
         } bit;
     } errorCode;
 } t_dev;

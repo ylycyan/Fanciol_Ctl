@@ -123,6 +123,8 @@ static uint8_t deviceTxCount;
 static uint8_t deviceTxActive;
 static uint32_t deviceTxDeadline;
 static uint8_t deviceSessionReady;
+static uint8_t bleInitFault;
+static uint32_t bleCheckTick, bleReadyTick;
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
@@ -189,6 +191,24 @@ static void peripheralEnableAdvertising(const char *reason)
         PRINT("BLE advertising restart requested: %s\n", reason);
     }
 }
+/* Poll once per 100 ms; retry only advertising, never reset a live BLE stack. */
+void Peripheral_CheckHealth(void)
+{
+    uint8_t state = 0U;
+    uint8_t status = GAPRole_GetParameter(GAPROLE_STATE, &state);
+    state &= GAPROLE_STATE_ADV_MASK;
+    if(status == SUCCESS && (state == GAPROLE_ADVERTISING ||
+       state == GAPROLE_CONNECTED || state == GAPROLE_CONNECTED_ADV)) {
+        bleReadyTick = CurTick;
+        Dev.errorCode.bit.ble = bleInitFault;
+        return;
+    }
+    if((uint32_t)(CurTick - bleReadyTick) >= 5000U) Dev.errorCode.bit.ble = 1U;
+    if((uint32_t)(CurTick - bleCheckTick) >= 1000U) {
+        bleCheckTick = CurTick;
+        peripheralEnableAdvertising("health check");
+    }
+}
 /*********************************************************************
  * PUBLIC FUNCTIONS
  */
@@ -214,7 +234,14 @@ void Peripheral_Init()
     bStatus_t devInfoStatus;
     bStatus_t simpleServiceStatus;
     bStatus_t otaServiceStatus;
+    bleInitFault = 0U;
+    bleCheckTick = bleReadyTick = CurTick;
+    Dev.errorCode.bit.ble = 0U;
     Peripheral_TaskID = TMOS_ProcessEventRegister(Peripheral_ProcessEvent);
+    if(Peripheral_TaskID == INVALID_TASK_ID) {
+        bleInitFault = Dev.errorCode.bit.ble = 1U;
+        return;
+    }
 #if defined(BLE_BASELINE_DIAGNOSTIC)
     {
         static uint8_t baselineAdv[] = {
@@ -265,7 +292,8 @@ void Peripheral_Init()
             PRINT("BLE adv cfg: task=%u len=%u scan=%02x adv=%02x min=%02x max=%02x enable=%02x\r\n",
                   Peripheral_TaskID, advLen, scanStatus, advStatus,
                   minStatus, maxStatus, enableStatus);
-            (void)enableStatus;
+            if(scanStatus != SUCCESS || advStatus != SUCCESS || enableStatus != SUCCESS)
+                Dev.errorCode.bit.ble = 1U;
         }
         (void)scanStatus;
         (void)advStatus;
@@ -309,6 +337,10 @@ void Peripheral_Init()
     (void)devInfoStatus;
     (void)simpleServiceStatus;
     (void)otaServiceStatus;
+    bleInitFault = (gapServiceStatus != SUCCESS || gattServiceStatus != SUCCESS ||
+                    devInfoStatus != SUCCESS || simpleServiceStatus != SUCCESS ||
+                    otaServiceStatus != SUCCESS);
+    if(bleInitFault) Dev.errorCode.bit.ble = 1U;
 
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, sizeof(attDeviceName), attDeviceName);
     PRINT("Device Name: %s\n", attDeviceName);
@@ -400,7 +432,10 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
                                                     &Peripheral_BondMgrCBs,
                                                     &Peripheral_PeripheralCBs);
         PRINT("BLE start status=%02x\r\n", startStatus);
-        (void)startStatus;
+        if(startStatus != SUCCESS) {
+            Dev.errorCode.bit.ble = 1U;
+            tmos_start_task(Peripheral_TaskID, SBP_START_DEVICE_EVT, MS1_TO_SYSTEM_TIME(1000));
+        }
         return (events ^ SBP_START_DEVICE_EVT);
     }
 
@@ -820,6 +855,7 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
             break;
 
         case GAPROLE_ERROR:
+            Dev.errorCode.bit.ble = 1U;
             PRINT("Error..\n");
             break;
 

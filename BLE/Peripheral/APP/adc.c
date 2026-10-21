@@ -154,7 +154,7 @@ void ADC_Init(void){
     sht30Errors = 0U;
     i2c_sda_release();
     i2c_scl_release();
-    Dev.errorCode.bit.ad = 1;
+    Dev.errorCode.bit.ad = 0; /* Not yet sampled is not a confirmed hardware fault. */
 }
 uint8_t ADC_IsValid(void){ return adcValid; }
 uint8_t ADC_GetSensorStatus(void){ return sensorStatus; }

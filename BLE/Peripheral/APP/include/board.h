@@ -334,7 +334,7 @@ typedef struct{
     uint8_t loraRegisterBw;
     uint8_t loraListenSf;
     uint8_t loraListenBw;
-    union{  // 硬件故障码：bit0 LoRa、bit3 温度采集、bit4 计量、bit5 Flash、bit6 外部RTC；bit1/2 保留
+    union{  // 硬件故障码：bit0 LoRa、bit3 温度、bit4 计量、bit5 Flash、bit6 RTC、bit7 4G、bit8 BLE；bit1/2 保留
         uint16_t u16Val; 
         struct{
             uint16_t lora:1; // LoRa 硬件/SPI异常
@@ -344,6 +344,8 @@ typedef struct{
             uint16_t power:1; // 功率转换异常
             uint16_t flash:1; //flash(内部eeprom)操作异常
             uint16_t rtc:1; // DS1302 外部时钟读写/停走异常
+            uint16_t cellular:1; // 启用4G后的基础AT或SIM卡异常
+            uint16_t ble:1; // BLE初始化/广播恢复异常
         }bit;
     }errorCode;
 }t_dev;
@@ -357,7 +359,9 @@ extern uint32_t LocalTimestamp;
 #define LED_BLUE_PIN    GPIO_Pin_0
 #define LED_WHITE_PIN   GPIO_Pin_16
 static inline void Led_Init(void){
-    GPIOB_SetBits(LED_RED_PIN | LED_GREEN_PIN | LED_WHITE_PIN | LED_BLUE_PIN);
+    GPIOB_SetBits(LED_WHITE_PIN | LED_BLUE_PIN);
+    /* 上电立即显示运行与自检，检查完成后由 LED_Pro 解除红灯。 */
+    GPIOB_ResetBits(LED_RED_PIN | LED_GREEN_PIN);
     GPIOB_ModeCfg(LED_RED_PIN | LED_GREEN_PIN | LED_WHITE_PIN | LED_BLUE_PIN,GPIO_ModeOut_PP_5mA);
 }
 #define LED_RED(x) (x?GPIOB_ResetBits(LED_RED_PIN):GPIOB_SetBits(LED_RED_PIN))

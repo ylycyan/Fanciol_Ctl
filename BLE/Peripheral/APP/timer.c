@@ -239,6 +239,7 @@ void Period_100ms(void){
         Check_IrBuf();
         Ir_Pro();
         WWDG_Refresh();
+        Peripheral_CheckHealth();
         LED_Pro();
     }
 }

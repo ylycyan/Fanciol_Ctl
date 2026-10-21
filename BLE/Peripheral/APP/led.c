@@ -7,10 +7,13 @@
 #include "config_store.h"
 #include "device_service.h"
 #include "ml307r.h"
+#include "hlw8110.h"
 
 #define LED_IR_FLASH_MS 400U
+#define LED_BOOT_CHECK_MS 5000U
 static uint32_t irFlashStart;
 static uint8_t irFlashing;
+static uint8_t bootChecked;
 
 static void led_write(uint32_t pin, uint8_t on)
 {
@@ -34,8 +37,9 @@ void LED_Pro(void)
                             (cellularEnabled && cell->mqtt_online);
     uint8_t bleState = 0U;
     uint8_t hardwareFault;
+    uint8_t bleReady;
 
-    GAPRole_GetParameter(GAPROLE_STATE, &bleState);
+    bleReady = (GAPRole_GetParameter(GAPROLE_STATE, &bleState) == SUCCESS);
 
     /* 运行时常亮；红外发送短闪两次后恢复。无符号差值兼容计时回绕。 */
     if(irFlashing && (uint32_t)(CurTick - irFlashStart) >= LED_IR_FLASH_MS)
@@ -49,8 +53,6 @@ void LED_Pro(void)
     /* BLE设备定位期间仅蓝灯快闪，保留运行与联网指示。 */
     if(DeviceService_IdentifyActive()) {
         led_write(LED_BLUE_PIN, (uint8_t)((CurTick / 100U) & 1U));
-        led_write(LED_RED_PIN, 0U);
-        return;
     }
 
     /*
@@ -58,17 +60,23 @@ void LED_Pro(void)
      * 由上面的分支处理。连接建立即代表链路已确认，不再持续闪烁。
      */
     bleState &= GAPROLE_STATE_ADV_MASK;
-    led_write(LED_BLUE_PIN,
-              (bleState == GAPROLE_CONNECTED || bleState == GAPROLE_CONNECTED_ADV) ?
-              1U : 0U);
+    bleReady = bleReady && (bleState == GAPROLE_ADVERTISING ||
+                           bleState == GAPROLE_CONNECTED || bleState == GAPROLE_CONNECTED_ADV);
+    if(!DeviceService_IdentifyActive())
+        led_write(LED_BLUE_PIN,
+                  (bleState == GAPROLE_CONNECTED || bleState == GAPROLE_CONNECTED_ADV) ?
+                  1U : 0U);
 
-    /* 红灯只表示需要排查的硬件级故障，不表示普通网络重连。 */
+    /* 自检期间持续亮红灯；未取得有效采样或 SIM READY 不能提前放行。
+     * 不等待网关、运营商注册或 MQTT；未对时也不等于 RTC 硬件故障。
+     * 只在本次启动检查一次，避免运行中重连或 tick 回绕重启自检。 */
     hardwareFault = Dev.errorCode.bit.flash || Dev.errorCode.bit.ad ||
-                    Dev.errorCode.bit.power || Dev.errorCode.bit.rtc ||
+                    Dev.errorCode.bit.power || Dev.errorCode.bit.rtc || Dev.errorCode.bit.ble ||
                     (loraEnabled && Dev.errorCode.bit.lora) ||
-                    (cellularEnabled &&
-                     (cell->last_error == ML307_ERROR_MODEM ||
-                      cell->last_error == ML307_ERROR_RX_OVERFLOW ||
-                      cell->last_error == ML307_ERROR_UART));
-    led_write(LED_RED_PIN, hardwareFault);
+                    (cellularEnabled && Dev.errorCode.bit.cellular);
+    if(!bootChecked && CurTick >= LED_BOOT_CHECK_MS && !hardwareFault &&
+       bleReady && ADC_IsValid() && HLW8110_GetStatus()->valid &&
+       (!cellularEnabled || cell->sim_ready))
+        bootChecked = 1U;
+    led_write(LED_RED_PIN, !bootChecked || hardwareFault);
 }
