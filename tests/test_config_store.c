@@ -27,6 +27,8 @@ t_dev Dev;
 IRBUF_t IrBuf;
 static uint8_t dataflash[DATAFLASH_SIZE];
 static failure_t failure;
+static uint8_t silent_commit_marker, fail_backup_cleanup;
+static uint32_t backup_erase_calls;
 
 typedef struct __attribute__((packed)) {
     uint8_t transport_mask;
@@ -89,6 +91,8 @@ uint32_t Test_EepromRead(uint32_t address, void *buffer, uint32_t length)
 
 uint32_t Test_EepromErase(uint32_t address, uint32_t length)
 {
+    if(fail_backup_cleanup && address == RUNTIME_BACKUP_PAGE && ++backup_erase_calls > 1U)
+        return 1U;
     assert(address <= DATAFLASH_SIZE);
     assert(length <= DATAFLASH_SIZE - address);
     assert((address % EEPROM_PAGE_SIZE) == 0u);
@@ -103,6 +107,8 @@ uint32_t Test_EepromErase(uint32_t address, uint32_t length)
 
 uint32_t Test_EepromWrite(uint32_t address, const void *buffer, uint32_t length)
 {
+    if(silent_commit_marker && length == 4U &&
+       (address == CONFIG_SLOT_A || address == CONFIG_SLOT_B)) return 0U;
     uint32_t i;
     uint32_t written = length;
     const uint8_t *source = (const uint8_t *)buffer;
@@ -123,6 +129,8 @@ uint32_t SYS_GetLastResetSta(void)
 
 static void reset_flash(void)
 {
+    silent_commit_marker = fail_backup_cleanup = 0U;
+    backup_erase_calls = 0U;
     memset(dataflash, 0xFF, sizeof(dataflash));
     memset(&Dev, 0, sizeof(Dev));
     clear_failure();
@@ -512,11 +520,18 @@ static void test_factory_reset_reports_partial_failure(void)
     Dev.learnCode[0].cmd[0] = 0x30u;
     assert(IrStore_SaveIfChanged() == DEVICE_STATUS_OK);
 
-    fail_on(FAIL_ERASE, 3, 0);
-    assert(Storage_FactoryReset() == DEVICE_STATUS_IO_ERROR);
+    /* Runtime, IR and config erase failures all remain hardware faults until
+     * the corresponding storage is recovered, not just an operation error. */
+    for(uint8_t erase = 1U; erase <= 7U; erase += 2U) {
+        fail_on(FAIL_ERASE, erase, 0);
+        assert(Storage_FactoryReset() == DEVICE_STATUS_IO_ERROR);
+        assert(Dev.errorCode.bit.flash);
+        clear_failure();
+    }
 
     clear_failure();
     assert(Storage_FactoryReset() == DEVICE_STATUS_OK);
+    assert(!Dev.errorCode.bit.flash);
     assert(Config_Load() == DEVICE_STATUS_OK);
     assert(Dev.nodeId == Default_DevId);
     assert(Config_GetRevision() == 2u);
@@ -735,8 +750,74 @@ static void test_custom_device_uid_prefix_recovery(void)
     assert(strcmp(DeviceUid_Get(), "A261300AF") == 0);
 }
 
+static void test_final_commit_marker_is_read_back(void)
+{
+    reset_flash(); create_initial_config();
+    uint32_t revision = Config_GetRevision();
+    Dev.nodeId = 0x1234U;
+    silent_commit_marker = 1U;
+    assert(Config_Commit() == DEVICE_STATUS_VERIFY_FAILED);
+    assert(Config_GetRevision() == revision && Dev.errorCode.bit.flash);
+    silent_commit_marker = 0U;
+    assert(Config_Load() == DEVICE_STATUS_OK && Dev.nodeId == Default_DevId);
+    Dev.nodeId = 0x1234U;
+    assert(Config_Commit() == DEVICE_STATUS_OK);
+    assert(Config_Load() == DEVICE_STATUS_OK && Dev.nodeId == 0x1234U);
+}
+
+static void test_stale_runtime_backup_never_replaces_newer_main_log(void)
+{
+    uint8_t snapshot[DATAFLASH_SIZE];
+    fill_runtime_page(snapshot); restore_runtime_snapshot(snapshot);
+    fail_backup_cleanup = 1U;
+    for(uint16_t n = 65U; n <= 128U; n++) {
+        Dev.meter.energy_wh = n;
+        assert(Runtime_Append() == DEVICE_STATUS_OK);
+        assert(Dev.errorCode.bit.flash);
+    }
+    assert(Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED);
+    assert(Runtime_Load() == DEVICE_STATUS_OK && Dev.meter.energy_wh == 128U);
+    memcpy(snapshot, dataflash, sizeof(snapshot));
+    Dev.meter.energy_wh = 129U;
+    /* Failed backup refresh must leave the latest primary log untouched. */
+    assert(Runtime_Append() != DEVICE_STATUS_OK);
+    assert(!memcmp(snapshot + RUNTIME_PAGE, dataflash + RUNTIME_PAGE, EEPROM_BLOCK_SIZE));
+    assert(Runtime_Load() == DEVICE_STATUS_OK && Dev.meter.energy_wh == 128U);
+    fail_backup_cleanup = 0U;
+    Dev.meter.energy_wh = 129U;
+    fail_on(FAIL_WRITE, 3U, 1U); /* Fresh checkpoint committed, then main copy interrupted. */
+    assert(Runtime_Append() == DEVICE_STATUS_OK);
+    clear_failure();
+    assert(Runtime_Load() == DEVICE_STATUS_OK && Dev.meter.energy_wh == 129U);
+    Dev.meter.energy_wh = 130U;
+    assert(Runtime_Append() == DEVICE_STATUS_OK);
+    assert(!Dev.errorCode.bit.flash);
+}
+
+static void test_connectivity_flash_fault_is_owned_until_its_recovery(void)
+{
+    reset_flash(); create_initial_config();
+    assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    connectivity_config_t next = *Connectivity_Get();
+    fail_on(FAIL_WRITE, 1U, 0U);
+    assert(Connectivity_Save(&next) != DEVICE_STATUS_OK && Dev.errorCode.bit.flash);
+    /* A normal periodic runtime save cannot clear a failed connectivity write. */
+    Dev.onOff = PowerOff; Dev.temSet = 25U;
+    assert(Runtime_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    assert(Runtime_Append() == DEVICE_STATUS_OK && Dev.errorCode.bit.flash);
+    Storage_ReportFault(STORAGE_FAULT_OTA_METADATA, 1U);
+    assert(Connectivity_Save(&next) == DEVICE_STATUS_OK && Dev.errorCode.bit.flash);
+    Storage_ReportFault(STORAGE_FAULT_OTA_METADATA, 0U);
+    assert(!Dev.errorCode.bit.flash);
+    next.mqtt_port = 0U;
+    assert(Connectivity_Save(&next) == DEVICE_STATUS_INVALID_ARG && !Dev.errorCode.bit.flash);
+}
+
 int main(void)
 {
+    test_final_commit_marker_is_read_back();
+    test_stale_runtime_backup_never_replaces_newer_main_log();
+    test_connectivity_flash_fault_is_owned_until_its_recovery();
     /* Extension remains atomic with the main config; legacy record loads too. */
     reset_flash();create_initial_config();
     Dev.rules[0].ctrl.enable=1;Dev.rules[0].ctrl.trig_type=TRIG_TIME;

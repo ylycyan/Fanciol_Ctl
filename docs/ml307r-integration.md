@@ -49,7 +49,7 @@ Flash 地址不变：入口 `0x00000/4 KB`、运行应用 `0x01000/216 KB`、暂
 
 应用始终从 `0x1000` 运行，`0x37000` 只保存待升级镜像。收到安装指令后 updater 校验暂存镜像、复制到运行区、再次校验并启动。复制阶段掉电时安装标记仍保留，重启后从完整暂存镜像重新复制；没有试运行、健康确认、双链接镜像或运行槽切换状态机。
 
-安装器末尾不足四字节时补 `FF` 再按 DWORD 写入，CRC 只覆盖真实镜像长度。2026-10-10 修复版首次部署须烧录完整 `splitac-burn.hex` 更新安装器，保留 DataFlash；只升级应用 BIN 不会更新旧 Updater。
+安装器末尾不足四字节时补 `FF` 再按 DWORD 写入，CRC 只覆盖真实镜像长度。2026-10-10 修复版首次部署须烧录完整 `sacc26.hex` 更新安装器，保留 DataFlash；只升级应用 BIN 不会更新旧 Updater。
 
 管理请求需串行发送并等待事务结果。设备只保留一个不可变在途快照和一个待发响应，断网时保留并重发；待发槽满时不执行后续管理请求，由请求端超时重试。OTA 激活只在对应成功结果发布完成后重启，不由其他状态发布完成触发。业务下行仍不去重。
 
@@ -60,44 +60,23 @@ Flash 地址不变：入口 `0x00000/4 KB`、运行应用 `0x01000/216 KB`、暂
 故障位只保留硬件 0x0079，接入时推送一次，变化后至少间隔 10 秒合并推送最新状态；断网不积压历史，无动态分配或新 Flash 记录。服务器可仅订阅 mag 按需维护，不必接入 pub/sub。完整格式以小程序仓库 `docs/分体空调4G MQTT报文协议.md` 为准。
 
 ```powershell
-platformio run -e ch583 -e ch583_updater -e ch583_jump
-python tools/splitac_production.py package --output-dir production-release
+cd F:\code\Fanciol_Ctl
+pio run -d BLE/Peripheral
 ```
 
-- `splitac-burn.hex`：唯一烧写固件，包含入口、运行应用和 updater，不覆盖 DataFlash。
-- `splitac-update.bin`：唯一更新固件，供微信小程序 BLE OTA 与 HTTP 4G OTA 共用；支持升级、回退和同版本重刷。
-- Jump、应用和 Updater 只是构建过程中的内部组件，不作为产品固件交付。
-- 量产不保存一机一份的 DataFlash 文件。烧写脚本根据设备编号从统一 CSV 临时生成，写入、读回校验后立即删除。
-
-`production.csv` 是量产版本的唯一来源，固定列为：
-
-```csv
-device_id,communication_mode,lora_channel,firmware_version,hardware_version
-A26091001,lora,9,2.22.19,HW1.0
-```
-
-- `device_id` 同时作为完整 BLE 广播名称和 MQTT client ID；末四位就是 nodeId，工具直接解析，不再在 CSV 中重复维护 nodeId。
-- `communication_mode` 仅允许 `lora`、`4g`、`both`，分别对应 LoRa、4G 或调试双链路。
-- `lora_channel` 范围为 `0~32`；纯 4G 设备可填写 `0`。
-- `firmware_version` 同时用于固件编译、BLE 设备信息、MQTT 登记和 OTA 当前版本。
-- `hardware_version` 同时用于固件编译和 MQTT 登记，最长 12 个 ASCII 字符。
-- 同一份 CSV 对应同一批构建，所有行的软件和硬件版本必须一致；工具不再提供写死的版本默认值。
-- 不再生成重复的 `platform-import.csv`。MQTT client ID、主题、DataFlash 文件名和地址都由工具或固件派生，量产只维护这一份五列 CSV。
-
-量产工位只需要输入或扫码得到 `device_id`：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\flash_production.ps1 `
-  -DeviceId A26091001
-```
-
-出厂默认写入上述平台参数；需要其他平台时可使用生成工具的 `--broker`、`--port`、`--username`、`--password`、`--publish-topic` 和 `--subscribe-topic` 参数，或在小程序管理页修改。烧写脚本会校验 CSV、写入并校验 `splitac-burn.hex`、临时生成并写入 DataFlash、读回校验、复位设备，最后清除临时文件。设备须先进入 USB Boot ISP 模式；`wchisp` 在 Windows 下使用 WinUSB 驱动。
-
-不接硬件时可先验证工单和 CSV：
+- 在 VS Code 中打开 `BLE/Peripheral`，点击 PlatformIO 的 `ch583 → General → Build` 即可；默认环境为 `ch583`。也可执行上面的命令。
+- APP 编译成功后自动构建引导组件，四个固件直接生成在当前环境原有的编译目录（正式版为 `BLE/Peripheral/.pio/build/ch583`，调试版为 `.pio/build/ch583_debug`），不再创建额外导出目录。增量构建也会重新打包，不需要独立脚本或手动打包。构建失败时不导出，请勿使用旧文件。
+- `ch583_debug` 同样自动导出调试应用；量产使用 `ch583`，不要使用 BLE baseline 测试环境。
+- `sacc26.hex`：完整烧写固件，包含启动入口、APP 和升级程序，不含 DataFlash。量产或首次烧录使用这个文件。
+- `bootload.hex`：启动入口（`0x00000`）和升级程序（`0x6D000`），不是可独立运行的完整固件。
+- `app.hex`：运行应用，地址 `0x1000`；仅供明确保留引导区的单独调试烧录。
+- `app.bin`：原始应用镜像，供微信小程序 BLE OTA 与 HTTP 4G OTA 共用，不能作为整片首次烧写固件。
+- 烧写 SDK 内置文件统一为 `firmware/sacc26.hex`。SDK 的 `package.ps1` 默认直接读取上述 PlatformIO 编译目录中的完整 HEX，不再依赖另一份导出目录；也可在验证程序中选择新的完整 HEX。
+- 出厂配置统一使用烧写 SDK 的 `default-config.json`；设备 ID 由调用程序传入，末四位作为节点号。
+- 量产不维护配置 CSV，也不保存一机一份的 DataFlash。烧写库根据 JSON 和本台设备 ID 生成、写入并读回校验。
+- USB 烧写调用 `SA_ProgramJson`，批量烧写使用 SDK 验证程序。接口与参数见上位机仓库 `tools/production/README.md`。
+- 单独导出 DataFlash 使用上位机工具：`python tools/production/programmer.py prepare --device-id A26100001 --output dataflash.bin`；可添加 `--config 配置.json`，省略时读取 DLL 旁的默认 JSON。
+- 软硬件版本只在 `BLE/Peripheral/APP/include/product_version.h` 的 `FIRMWARE_VERSION`、`HARDWARE_VERSION` 定义，修改后重新编译、打包。JSON 和 DataFlash 不定义版本。
+- 软件版本为三段数字，每段 0～255；硬件版本最长 12 个 ASCII 字符。烧写日志只作结果记录，不作为设备配置。
 
 本地智控完成红外发送后，通过管理主题发送 type=0x0D、flags=1、transactionId=0 的16字节结果事件：UTC秒u32LE、运行毫秒u32LE、策略组u8、原因u8、动作u8、结果u8、设定温度u8、风速u8、室温×10 i16LE。组1–6；原因0进入/1高温/2低温/4退出/5定时；动作1开机/2关机/3制冷/4制热/5除湿/6送风；结果0发送完成/6失败；设定温度0表示无温度风速场景；室温-32768表示无效。仅联网时尽力发送，固定6条RAM待发区、队满丢弃新项，断网清空、不补传、不写Flash；响应、AT、OTA优先。成功不表示空调物理反馈。服务端只对同一完整事件过滤QoS1重复，不对业务控制去重。
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\flash_production.ps1 `
-  -DeviceId A26091001 -PrepareOnly
-```

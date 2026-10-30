@@ -121,6 +121,7 @@ static uint16_t deviceTxChunk;
 static uint8_t deviceTxIndex;
 static uint8_t deviceTxCount;
 static uint8_t deviceTxActive;
+static uint8_t deviceControlPending;
 static uint32_t deviceTxDeadline;
 static uint8_t deviceSessionReady;
 static uint8_t bleInitFault;
@@ -669,6 +670,7 @@ static void Peripheral_LinkEstablished(gapRoleEvent_t *pEvent)
         DeviceProtocol_Reset(&deviceReassembler);
         DeviceService_ResetSession();
         deviceTxActive = 0U;
+        deviceControlPending = 0U;
         deviceTxIndex = 0U;
         deviceTxOffset = 0U;
         deviceSessionReady = 0U;
@@ -714,6 +716,7 @@ static void Peripheral_LinkTerminated(gapRoleEvent_t *pEvent)
         tmos_stop_task(Peripheral_TaskID, SBP_TX_FRAME_EVT);
         tmos_stop_task(Peripheral_TaskID, SBP_HANDSHAKE_TIMEOUT_EVT);
         deviceTxActive = 0U;
+        deviceControlPending = 0U;
         deviceSessionReady = 0U;
         DeviceProtocol_Reset(&deviceReassembler);
         DeviceService_ResetSession();
@@ -942,13 +945,27 @@ static void __attribute__((noinline)) SendDeviceFrame(const uint8_t *frame, uint
     tmos_start_task(Peripheral_TaskID, SBP_TX_FRAME_EVT, MS1_TO_SYSTEM_TIME(1));
 }
 
+void Peripheral_ControlCompleted(uint8_t status)
+{
+    uint16_t crc;
+    if(!deviceControlPending) return;
+    deviceControlPending = 0U;
+    if(!deviceTxActive) return;
+    deviceTxFrame[6] = status;
+    crc = DeviceProtocol_Crc16(deviceTxFrame, deviceTxLength - 2U);
+    deviceTxFrame[deviceTxLength - 2U] = (uint8_t)crc;
+    deviceTxFrame[deviceTxLength - 1U] = (uint8_t)(crc >> 8);
+    deviceTxDeadline = CurTick + 1500U;
+    tmos_set_event(Peripheral_TaskID, SBP_TX_FRAME_EVT);
+}
+
 static void DeviceTxStep(void)
 {
     uint8_t fragment[DEVICE_MAX_FRAGMENT_CHUNK + DEVICE_FRAGMENT_HEADER_SIZE];
     uint16_t length = (uint16_t)(deviceTxLength - deviceTxOffset);
     uint16_t seq;
 
-    if(!deviceTxActive) return;
+    if(!deviceTxActive || deviceControlPending) return;
     if(length > deviceTxChunk) length = deviceTxChunk;
     seq = (deviceTxLength >= 5u) ?
           ((uint16_t)deviceTxFrame[3] | ((uint16_t)deviceTxFrame[4] << 8)) : 0;
@@ -1013,6 +1030,8 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
     {
         case SIMPLEPROFILE_CHAR1:
         {
+            /* Do not execute a second write whose reply cannot be retained. */
+            if(deviceTxActive) break;
             if((len >= DEVICE_FRAGMENT_HEADER_SIZE) && ((pValue[0] & 0x80u) || deviceReassembler.active)) {
                 uint16_t requestLen = 0;
                 uint16_t responseLen = 0;
@@ -1023,6 +1042,9 @@ static void simpleProfileChangeCB(uint8_t paramID, uint8_t *pValue, uint16_t len
                         deviceSessionReady = 1U;
                         tmos_stop_task(Peripheral_TaskID, SBP_HANDSHAKE_TIMEOUT_EVT);
                     }
+                    deviceControlPending = deviceFrame[6] == DEVICE_STATUS_OK &&
+                        (deviceFrame[5] == DEVICE_OP_EXEC_CONTROL || deviceFrame[5] == DEVICE_OP_IR_ACTION) &&
+                        SplitAcControl_IsPending();
                     SendDeviceFrame(deviceFrame, responseLen);
                 } else {
                     DeviceProtocol_Reset(&deviceReassembler);

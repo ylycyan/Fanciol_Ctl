@@ -4,6 +4,7 @@
 #include "peripheral.h"
 #include "gattprofile.h"
 #include "ir_control_map.h"
+#include "device_service.h"
 IRBUF_t IrBuf = {0};
 uint8_t IrLearnChannel = 0; //当前正在学习的通道索引 (0-9)
 
@@ -117,7 +118,7 @@ void Ir_Pro(void)
     }
     if(irCompletionPending) {
         irCompletionPending = 0U;
-        Rule_IrCompleted(1U);
+        if(!SplitAcControl_IrCompleted(1U)) Rule_IrCompleted(1U);
     }
 
 }
@@ -219,7 +220,7 @@ void Check_IrBuf(void){ //
 void IR_Init(void){ //uart3
     if(irCompletionPending) {
         irCompletionPending = 0U;
-        Rule_IrCompleted(0U);
+        if(!SplitAcControl_IrCompleted(0U)) Rule_IrCompleted(0U);
     }
     IrBuf.isFinish = 1U;
     IrBuf.type = IR_TYPE_NORMAL;

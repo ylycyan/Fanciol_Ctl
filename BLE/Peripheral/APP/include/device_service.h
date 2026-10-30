@@ -7,6 +7,8 @@ void DeviceService_Init(void);
 void DeviceService_ResetSession(void);
 uint8_t DeviceService_IdentifyActive(void);
 uint8_t SplitAcControl_Execute(uint8_t control, uint16_t value);
+uint8_t SplitAcControl_IsPending(void);
+uint8_t SplitAcControl_IrCompleted(uint8_t success);
 /* MQTT reuses the same validation/storage paths; response is the saved readback. */
 uint8_t DeviceService_HandleRemote(uint8_t opcode,const uint8_t *request,uint16_t length,
                                   uint8_t *response,uint16_t *response_len,uint8_t *link_action);

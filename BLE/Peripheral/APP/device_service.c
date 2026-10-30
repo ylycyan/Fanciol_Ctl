@@ -32,6 +32,9 @@ typedef struct __attribute__((packed)) {
 } staged_config_t;
 
 static uint32_t identify_until;
+/* One physical IR transmission, shared by BLE and MQTT. No command queue. */
+static uint8_t control_pending, control_field;
+static uint16_t control_value;
 
 static uint16_t get16(const uint8_t *p){return (uint16_t)p[0]|((uint16_t)p[1]<<8);}
 static uint32_t get32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
@@ -181,14 +184,13 @@ uint8_t SplitAcControl_Execute(uint8_t control,uint16_t value)
 {
     IR_CMD_t cmd;
 
+    if(control_pending)return DEVICE_STATUS_BUSY;
+
     if(control==CONTROL_FIELD_LEARNED_CHANNEL) {
         if(value>=MAX_IR_LEARNNUM)return DEVICE_STATUS_INVALID_ARG;
         if(Dev.irActType!=ACT_TYPE_LEARN||!Dev.learnCode[value].enable)return DEVICE_STATUS_NOT_SUPPORTED;
         if(!Ir_SendLearnedVerified((uint8_t)value))return DEVICE_STATUS_BUSY;
-        Rule_ManualOverride();
-        update_learned_state((uint8_t)value);
-        SaveDevInfo(50u);
-        Ml307_RequestReport();
+        control_pending=1u;control_field=control;control_value=value;
         return DEVICE_STATUS_OK;
     }
 
@@ -210,16 +212,38 @@ uint8_t SplitAcControl_Execute(uint8_t control,uint16_t value)
     }
     if(!Ir_ConfiguredCommandSupported(cmd))return DEVICE_STATUS_NOT_SUPPORTED;
     if(!Ir_ExecuteConfiguredVerified(cmd))return DEVICE_STATUS_BUSY;
-    Rule_ManualOverride();
-    if(control==CONTROL_FIELD_POWER)update_power_state(value?1u:0u);
-    else if(control==CONTROL_FIELD_MODE)Dev.ctlMode=(Mode_t)value;
-    else if(control==CONTROL_FIELD_TEMPERATURE)Dev.temSet=value/10u;
-    else if(control==CONTROL_FIELD_FAN)Dev.wind=(Wind_t)value;
-    else if(control==CONTROL_FIELD_TEMP_STEP){if(Dev.temSet<16u||Dev.temSet>31u)Dev.temSet=25u;if(value&&Dev.temSet<31u)Dev.temSet++;else if(!value&&Dev.temSet>16u)Dev.temSet--;}
-    else if(control==CONTROL_FIELD_FAST_MODE){update_power_state(1);Dev.ctlMode=value?Mode_Heat:Mode_Cool;}
-    SaveDevInfo(50u);
+    control_pending=1u;control_field=control;control_value=value;
+    return DEVICE_STATUS_OK; /* accepted; transports wait for the callback */
+}
+
+uint8_t SplitAcControl_IsPending(void){return control_pending;}
+
+uint8_t SplitAcControl_IrCompleted(uint8_t success)
+{
+    uint8_t control=control_field;
+    uint16_t value=control_value;
+    if(!control_pending)return 0u;
+    control_pending=0u;
+    if(success){
+        Rule_ManualOverride();
+        if(control==CONTROL_FIELD_LEARNED_CHANNEL)update_learned_state((uint8_t)value);
+        else if(control==CONTROL_FIELD_POWER)update_power_state(value?1u:0u);
+        else if(control==CONTROL_FIELD_MODE)Dev.ctlMode=(Mode_t)value;
+        else if(control==CONTROL_FIELD_TEMPERATURE)Dev.temSet=value/10u;
+        else if(control==CONTROL_FIELD_FAN)Dev.wind=(Wind_t)value;
+        else if(control==CONTROL_FIELD_TEMP_STEP){
+            if(Dev.temSet<16u||Dev.temSet>31u)Dev.temSet=25u;
+            if(value&&Dev.temSet<31u)Dev.temSet++;
+            else if(!value&&Dev.temSet>16u)Dev.temSet--;
+        } else if(control==CONTROL_FIELD_FAST_MODE){
+            update_power_state(1);Dev.ctlMode=value?Mode_Heat:Mode_Cool;
+        }
+        SaveDevInfo(50u);
+    }
     Ml307_RequestReport();
-    return DEVICE_STATUS_OK;
+    Peripheral_ControlCompleted(success?DEVICE_STATUS_OK:DEVICE_STATUS_IO_ERROR);
+    Ml307_ControlCompleted(success?DEVICE_STATUS_OK:DEVICE_STATUS_IO_ERROR);
+    return 1u;
 }
 
 static uint8_t execute_control(const uint8_t *p,uint16_t len)
@@ -300,7 +324,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
     {
         DEV_RULE_T rollback_rules[MAX_RULES];
         status=parse_config(req->payload,req->payload_len,&cfg);if(status!=DEVICE_STATUS_OK)break;
-        if((cfg.ir_action_type!=(uint8_t)Dev.irActType||cfg.ir_type!=Dev.irType||cfg.ir_index!=Dev.irIdx)&&
+        if((cfg.work_mode!=Dev.mode||cfg.ir_action_type!=(uint8_t)Dev.irActType||cfg.ir_type!=Dev.irType||cfg.ir_index!=Dev.irIdx)&&
            !Ir_PrepareConfigurationChange()){status=DEVICE_STATUS_BUSY;break;}
         staged_config_t previous={Dev.nodeId,(uint8_t)Dev.channel,Dev.linkRole,Dev.parentRelayId,Dev.mode,(uint8_t)Dev.irActType,Dev.irType,Dev.irIdx};
         memcpy(rollback_rules,Dev.rules,sizeof(rollback_rules));
@@ -386,8 +410,7 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
     case DEVICE_OP_IR_ACTION:
         if(req->payload_len!=1u||req->payload[0]!=1u){status=DEVICE_STATUS_NOT_SUPPORTED;break;}
         if(!Ir_ConfiguredCommandSupported(IR_CMD_POWER_OFF)){status=DEVICE_STATUS_NOT_SUPPORTED;break;}
-        status=Ir_ExecuteConfiguredVerified(IR_CMD_POWER_OFF)?DEVICE_STATUS_OK:DEVICE_STATUS_BUSY;
-        if(status==DEVICE_STATUS_OK){Rule_ManualOverride();update_power_state(0);SaveDevInfo(50u);Ml307_RequestReport();}
+        status=SplitAcControl_Execute(CONTROL_FIELD_POWER,0u);
         break;
     case DEVICE_OP_GET_DIAGNOSTICS:{
         const HLW8110_Status_t *meter=HLW8110_GetStatus();

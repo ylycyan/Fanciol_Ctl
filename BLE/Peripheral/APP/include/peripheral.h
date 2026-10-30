@@ -61,6 +61,7 @@ extern void Peripheral_Init(void);
 extern void Peripheral_CheckHealth(void);
 extern void Peripheral_RefreshDeviceName(void);
 extern void Peripheral_RequestReset(void);
+extern void Peripheral_ControlCompleted(uint8_t status);
 
 /*
  * Task Event Processor for the BLE Application

@@ -183,7 +183,7 @@ int main(void)
      */
     if((Storage_GetStartupFlags() & STORAGE_STARTUP_RECOVERED) != 0U &&
        (Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED) == 0U) {
-        Dev.errorCode.bit.flash = 0;
+        Storage_ReportFault(0U, 0U);
     }
     WWDG_Refresh();
     PRINT("IR catalog brands: %u\r\n", IR_BRAND_COUNT);

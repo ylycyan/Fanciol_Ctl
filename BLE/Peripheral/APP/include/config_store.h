@@ -32,6 +32,17 @@ typedef enum {
 #define STORAGE_STARTUP_RECOVERED 0x01U
 #define STORAGE_STARTUP_DEGRADED  0x02U
 
+/* RAM-only fault ownership: a successful write must not clear another source. */
+#define STORAGE_FAULT_CONFIG       0x01U
+#define STORAGE_FAULT_RUNTIME      0x02U
+#define STORAGE_FAULT_IR           0x04U
+#define STORAGE_FAULT_CONNECTIVITY 0x08U
+#define STORAGE_FAULT_OTA_METADATA 0x10U
+#define STORAGE_FAULT_OTA_IMAGE    0x20U
+void Storage_ReportFault(uint8_t source, uint8_t failed);
+/* Erased target: verify candidate body, then commit and verify magic. */
+uint8_t Storage_WriteVerified(uint32_t address, const void *record, uint16_t length);
+
 #define CONNECTIVITY_LORA          0x01U
 #define CONNECTIVITY_CELLULAR      0x02U
 #define CONNECTIVITY_SCHEMA        6U

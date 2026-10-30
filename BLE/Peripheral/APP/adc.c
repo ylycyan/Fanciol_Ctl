@@ -128,22 +128,52 @@ static uint8_t sht30_read(int16_t *temperature, uint16_t *humidity)
     return 1U;
 }
 
+static uint8_t adc_convert(uint16_t *value)
+{
+    uint32_t started = CurTick;
+    R8_ADC_CONVERT = RB_ADC_START;
+    while(R8_ADC_CONVERT & RB_ADC_START) {
+        if((uint32_t)(CurTick - started) >= 10U) {
+            R8_ADC_CONVERT = 0U;
+            return 0U;
+        }
+    }
+    *value = R16_ADC_DATA & RB_ADC_DATA;
+    return 1U;
+}
+
 static uint8_t ntc_sample(int16_t *temperatureX10)
 {
-    uint16_t caliVal, temp, maxVal = 0, minVal = 0xffff, i;
+    int16_t calibration;
+    uint16_t temp, maxVal = 0, minVal = 0xffff, i;
     uint32_t sum = 0;
     GPIOA_ModeCfg(GPIO_Pin_4, GPIO_ModeIN_Floating);
     ADC_ExtSingleChSampInit(SampleFreq_3_2, ADC_PGA_0);
-    caliVal = ADC_DataCalib_Rough();
+    /* Same 16-sample offset calibration as the WCH routine, with a deadline
+     * on every conversion instead of resetting the whole controller if stuck. */
+    ADC_ChannelCfg(1);
+    R8_ADC_CFG = (R8_ADC_CFG | RB_ADC_OFS_TEST) & (uint8_t)~RB_ADC_DIFF_EN;
+    if(!adc_convert(&temp)) goto failed;
+    for(i = 0U; i < 16U; i++) {
+        if(!adc_convert(&temp)) goto failed;
+        sum += (~temp) & RB_ADC_DATA;
+    }
+    calibration = (int16_t)(2048L - (int32_t)((sum + 8U) >> 4));
+    ADC_ExtSingleChSampInit(SampleFreq_3_2, ADC_PGA_0);
     ADC_ChannelCfg(0);
+    sum = 0U;
     for(i = 0; i < 20; i++) {
-        temp = ADC_ExcutSingleConver() + caliVal;
+        if(!adc_convert(&temp)) goto failed;
+        temp = (uint16_t)((int32_t)temp + calibration);
         if(temp > maxVal) maxVal = temp;
         if(temp < minVal) minVal = temp;
         sum += temp;
     }
     sum -= (maxVal + minVal);
     return NtcB3950_AdcToTempX10((uint16_t)(sum / 18U), temperatureX10);
+failed:
+    ADC_ExtSingleChSampInit(SampleFreq_3_2, ADC_PGA_0);
+    return 0U;
 }
 
 void ADC_Init(void){

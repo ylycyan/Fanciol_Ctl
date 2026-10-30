@@ -123,6 +123,10 @@ typedef struct {
     uint16_t line_length;
     uint8_t waiting;
     uint8_t response_seen;
+    uint16_t mqtt_packet_id, mqtt_ack_id;
+    uint8_t mqtt_ack_result;
+    uint8_t control_reply;
+    uint16_t control_transaction;
     uint8_t report_requested;
     uint8_t pending_command_result;
     uint8_t pending_command_valid;
@@ -158,7 +162,6 @@ typedef struct {
     uint8_t http_read_type;
     uint8_t ota_retry_count;
     uint8_t ota_retry_blocked;
-    uint8_t ota_activate_after_publish;
     uint16_t http_range_size;
     uint16_t http_range_received;
     uint16_t http_header_remaining;
@@ -292,7 +295,7 @@ static void queue_registration(uint16_t transaction)
     const connectivity_config_t *config = Connectivity_Get();
     uint8_t payload[62];
     uint8_t offset;
-    uint8_t hardware_length = (uint8_t)bounded_length(HARDWARE_BUILD_VERSION, 12U);
+    uint8_t hardware_length = (uint8_t)bounded_length(HARDWARE_VERSION, 12U);
     uint8_t imei_length = (uint8_t)bounded_length(modem.imei, 15U);
     uint8_t iccid_length = (uint8_t)bounded_length(modem.iccid, 20U);
     uint32_t revision = Config_GetRevision();
@@ -310,7 +313,7 @@ static void queue_registration(uint16_t transaction)
     payload[10] = (uint8_t)ML307_CAPABILITIES;
     payload[11] = (uint8_t)(ML307_CAPABILITIES >> 8);
     payload[12] = hardware_length;
-    memcpy(payload + 13U, HARDWARE_BUILD_VERSION, hardware_length);
+    memcpy(payload + 13U, HARDWARE_VERSION, hardware_length);
     offset = (uint8_t)(13U + hardware_length);
     payload[offset++] = imei_length;
     memcpy(payload + offset, modem.imei, imei_length);
@@ -606,6 +609,7 @@ static void transition_wait(ml307_phase_t phase, uint32_t timeout_ms)
 {
     modem.waiting = 1U;
     modem.response_seen = 0U;
+    modem.mqtt_packet_id = modem.mqtt_ack_id = 0U;
     modem.deadline_ms = CurTick + timeout_ms;
     status_phase(phase);
 }
@@ -949,7 +953,7 @@ static void queue_management_frame(uint8_t type, uint16_t transaction,
                                    const uint8_t *payload, uint8_t payload_length)
 {
     uint16_t total = (uint16_t)payload_length + 9U;
-    if(total > sizeof(management_frame) || modem.management_pending) return;
+    if(total > sizeof(management_frame) || modem.management_pending || modem.control_reply == 2U) return;
     management_frame[0] = ML307_MGMT_MAGIC;
     management_frame[1] = ML307_MGMT_VERSION;
     management_frame[2] = type;
@@ -1000,10 +1004,36 @@ static void poll_rule_records(void)
         return;
     }
     if(modem.status.phase != ML307_PHASE_ONLINE || modem.waiting || modem.mqtt_raw_state || modem.management_pending ||
-       modem.publishing_management || !rule_record_count) return;
+       modem.publishing_management || modem.control_reply == 2U || !rule_record_count) return;
     queue_management_frame(ML307_MGMT_RULE_RESULT, 0U, rule_records[rule_record_head], ML307_RULE_RECORD_SIZE);
     rule_record_head = (rule_record_head + 1U) % ML307_RULE_RECORD_COUNT;
     rule_record_count--;
+}
+
+/* MQTT binary wire operations map to the same executor as BLE. Keep the
+ * legacy LoRa/gateway response path untouched. */
+static uint8_t execute_cloud_control(uint8_t op, uint16_t tag, uint32_t parameter)
+{
+    uint8_t field, status;
+    uint16_t value = 0U;
+    switch(op) {
+    case 21: case 22:
+        if(tag) return 2U;
+        field = CONTROL_FIELD_POWER; value = op == 21U; break;
+    case 23:
+        if(tag || parameter < 16U || parameter > 31U) return 2U;
+        field = CONTROL_FIELD_TEMPERATURE; value = (uint16_t)(parameter * 10U); break;
+    case 24:
+        if(tag > Mode_Heat) return 2U;
+        field = CONTROL_FIELD_MODE; value = tag; break;
+    case 25:
+        if(tag > Wind_High) return 2U;
+        field = CONTROL_FIELD_FAN; value = tag; break;
+    case 26: case 27: return ExecuteGatewayControl(op, tag, parameter);
+    default: return 2U;
+    }
+    status = SplitAcControl_Execute(field, value);
+    return status == DEVICE_STATUS_OK ? 0U : status == DEVICE_STATUS_NOT_SUPPORTED ? 2U : 1U;
 }
 
 static void handle_management(const uint8_t *frame, uint16_t length)
@@ -1023,7 +1053,7 @@ static void handle_management(const uint8_t *frame, uint16_t length)
        frame[8U + payload_length] !=
        GatewayLora_Checksum(frame, (uint16_t)payload_length + 8U)) return;
     /* 待发槽满时不执行新的管理操作；请求端必须串行等待结果再发送下一条。 */
-    if(modem.management_pending) return;
+    if(modem.management_pending || modem.control_reply == 2U) return;
     switch(type) {
     case ML307_MGMT_PARAMETERS:
         if(payload_length>=1U){
@@ -1054,9 +1084,14 @@ static void handle_management(const uint8_t *frame, uint16_t length)
     case ML307_MGMT_CONTROL:
         if(payload_length == 7U &&
            ((frame[8] >= 21U && frame[8] <= 25U) || frame[8] == 27U)) {
-            uint8_t result = ExecuteGatewayControl(frame[8], frame_u16(frame + 9), frame_u32(frame + 11));
+            uint8_t result = execute_cloud_control(frame[8], frame_u16(frame + 9), frame_u32(frame + 11));
             status = result == 0U ? DEVICE_STATUS_OK :
                      result == 2U ? DEVICE_STATUS_NOT_SUPPORTED : DEVICE_STATUS_IO_ERROR;
+            if(result == 0U && frame[8] != 27U) {
+                modem.control_reply = 2U;
+                modem.control_transaction = transaction;
+                return;
+            }
         }
         break;
     case ML307_MGMT_OTA_OFFER:
@@ -1090,7 +1125,10 @@ static void handle_management(const uint8_t *frame, uint16_t length)
     case ML307_MGMT_OTA_ACTIVATE:
         if(payload_length == 4U && frame_u32(frame + 8) == Ota_Get()->update_version) {
             status = Ota_MarkInstall();
-            if(status == DEVICE_STATUS_OK) modem.ota_activate_after_publish = 1U;
+            /* The committed install decision must not wait forever for PUBACK.
+             * Existing TMOS reset event gives the reply 600 ms, then installs
+             * even if MQTT disconnects or the modem needs a power cycle. */
+            if(status == DEVICE_STATUS_OK) Peripheral_RequestReset();
         }
         break;
     case ML307_MGMT_OTA_CANCEL:
@@ -1131,11 +1169,16 @@ static void handle_management(const uint8_t *frame, uint16_t length)
 
 static void execute_command(const uint8_t *frame, uint8_t length)
 {
-    uint8_t result = Lora_ExecuteNodeControl(frame, length, 1U);
+    uint8_t result = length == ML307_CONTROL_FRAME_SIZE ?
+        execute_cloud_control(frame[6], frame_u16(frame + 7), frame_u32(frame + 9)) : 0xFFU;
     if(result == 0xFFU) {
         if(modem.status.command_rejected_count != 0xFFFFU)
             modem.status.command_rejected_count++;
         modem.status.last_error = ML307_ERROR_COMMAND;
+        return;
+    }
+    if(result == 0U && frame[6] >= 21U && frame[6] <= 25U) {
+        modem.control_reply = 1U;
         return;
     }
     if(result == 0U) {
@@ -1267,16 +1310,7 @@ static void complete_publish(void)
             if(action==2U)Peripheral_RequestReset();else Ml307_ApplyConfiguration();
             return;
         }
-        if(modem.ota_activate_after_publish &&
-           modem.publishing_management_length == 11U &&
-           publishing_management_frame[2] == ML307_MGMT_RESULT &&
-           publishing_management_frame[8] == ML307_MGMT_OTA_ACTIVATE &&
-           publishing_management_frame[9] == DEVICE_STATUS_OK) {
-            modem.ota_activate_after_publish = 0U;
-            SYS_DisableAllIrq(NULL);
-            mDelaymS(10);
-            SYS_ResetExecute();
-        } else status_phase(ML307_PHASE_ONLINE);
+        status_phase(ML307_PHASE_ONLINE);
         return;
     }
     modem.status.last_report_ms = CurTick;
@@ -1289,8 +1323,13 @@ static uint8_t mqtt_urc_number(const char *line, uint8_t index, uint16_t *value)
 {
     const char *cursor = strstr(line, "\",");
     uint8_t current = 0U;
-    if(!cursor || !value) return 0U;
-    cursor += 2;
+    if(!value) return 0U;
+    if(cursor) cursor += 2;
+    else {
+        cursor = strchr(line, ':');
+        if(!cursor) return 0U;
+        cursor++;
+    }
     for(;;) {
         uint32_t parsed = 0U;
         uint8_t digits = 0U;
@@ -1619,6 +1658,19 @@ static uint8_t at_process_line(const char *line, uint16_t length)
     return 1U;
 }
 
+/* AT acceptance and network acknowledgement may arrive in either order.
+ * Retain one pair of IDs; unrelated/late acknowledgements never advance it. */
+static void mqtt_check_ack(void)
+{
+    uint8_t phase = modem.status.phase;
+    if((modem.response_seen & 13U) != 13U ||
+       modem.mqtt_packet_id != modem.mqtt_ack_id) return;
+    if(phase == ML307_PHASE_MQTT_SUBSCRIBE) {
+        if(modem.mqtt_ack_result > 2U) enter_backoff(ML307_ERROR_SUBSCRIBE);
+        else complete_mqtt_subscription();
+    } else if(phase == ML307_PHASE_PUBLISH && modem.prompt_seen) complete_publish();
+}
+
 static void process_line(char *line, uint16_t length)
 {
     uint8_t phase = modem.status.phase;
@@ -1626,6 +1678,17 @@ static void process_line(char *line, uint16_t length)
        strstr(line, "+CME ERROR:") != 0 || strstr(line, "+CMS ERROR:") != 0)
         record_at_response(1U);
     if(at_process_line(line, length)) return;
+    if((phase == ML307_PHASE_MQTT_SUBSCRIBE && strncmp(line, "+MQTTSUB:", 9U) == 0) ||
+       (phase == ML307_PHASE_PUBLISH && strncmp(line, "+MQTTPUB:", 9U) == 0)) {
+        uint16_t client, packet;
+        if(mqtt_urc_number(line, 0U, &client) && client == 0U &&
+           mqtt_urc_number(line, 1U, &packet) && packet) {
+            modem.mqtt_packet_id = packet;
+            modem.response_seen |= 4U;
+            mqtt_check_ack();
+        }
+        return;
+    }
     if(mqtt_urc_is(line, "conn")) {
         uint16_t result = 0xFFFFU;
         if(mqtt_urc_number(line, 1U, &result) && result == 0U) {
@@ -1661,20 +1724,30 @@ static void process_line(char *line, uint16_t length)
         return;
     }
     if(mqtt_urc_is(line, "suback")) {
-        uint16_t result;
+        uint16_t client, packet, result;
         if(phase != ML307_PHASE_MQTT_SUBSCRIBE || !modem.waiting) return;
         /* SUBACK code 0/1/2 is the granted QoS; 128 means rejected. */
-        if(!mqtt_urc_number(line, 2U, &result) || result > 2U) {
-            enter_backoff(ML307_ERROR_SUBSCRIBE);
-            return;
+        if(mqtt_urc_number(line, 0U, &client) && client == 0U &&
+           mqtt_urc_number(line, 1U, &packet) && packet &&
+           mqtt_urc_number(line, 2U, &result) &&
+           (!(modem.response_seen & 4U) || packet == modem.mqtt_packet_id)) {
+            modem.mqtt_ack_id = packet;
+            modem.mqtt_ack_result = result > 2U ? 128U : (uint8_t)result;
+            modem.response_seen |= 8U;
+            mqtt_check_ack();
         }
-        modem.response_seen |= 2U;
-        if((modem.response_seen & 3U) == 3U) complete_mqtt_subscription();
         return;
     }
     if(mqtt_urc_is(line, "puback")) {
-        if(phase == ML307_PHASE_PUBLISH && modem.prompt_seen)
-            complete_publish();
+        uint16_t client, packet;
+        if(phase == ML307_PHASE_PUBLISH && modem.prompt_seen &&
+           mqtt_urc_number(line, 0U, &client) && client == 0U &&
+           mqtt_urc_number(line, 1U, &packet) && packet &&
+           (!(modem.response_seen & 4U) || packet == modem.mqtt_packet_id)) {
+            modem.mqtt_ack_id = packet;
+            modem.response_seen |= 8U;
+            mqtt_check_ack();
+        }
         return;
     }
     {
@@ -1765,8 +1838,7 @@ static void process_line(char *line, uint16_t length)
     if(phase == ML307_PHASE_MQTT_SUBSCRIBE) {
         /* 命令 OK 只表示已受理，必须继续等待 conn/suback URC。 */
         modem.response_seen |= 1U;
-        if((modem.response_seen & 3U) == 3U) complete_mqtt_subscription();
-        else modem.waiting = 1U;
+        mqtt_check_ack();
         return;
     }
     if(phase == ML307_PHASE_SIM && !modem.waiting) return;
@@ -1814,8 +1886,9 @@ static void process_line(char *line, uint16_t length)
         if(modem.prompt_seen) {
             if(modem.publishing_management || Connectivity_Get()->mqtt_qos == 1U) {
                 /* QoS 1 只有收到 puback 才算完成；OK 仅表示命令已处理。 */
-                modem.response_seen = 1U;
+                modem.response_seen |= 1U;
                 modem.waiting = 1U;
+                mqtt_check_ack();
             } else complete_publish();
         }
         break;
@@ -2045,6 +2118,24 @@ void Ml307_RequestReport(void)
     modem.report_requested = 1U;
 }
 
+void Ml307_ControlCompleted(uint8_t status)
+{
+    uint8_t reply = modem.control_reply;
+    if(!reply) return;
+    modem.control_reply = 0U;
+    if(status == DEVICE_STATUS_OK) {
+        if(modem.status.command_executed_count != 0xFFFFU) modem.status.command_executed_count++;
+    } else {
+        if(modem.status.command_rejected_count != 0xFFFFU) modem.status.command_rejected_count++;
+    }
+    if(reply == 2U) queue_management_result(ML307_MGMT_CONTROL, modem.control_transaction, status);
+    else {
+        modem.pending_command_result = status == DEVICE_STATUS_OK ? 0U : 1U;
+        modem.pending_command_valid = 1U;
+    }
+    modem.report_requested = 1U;
+}
+
 uint8_t Ml307_IsOnline(void)
 {
     return Connectivity_CellularEnabled() && modem.status.mqtt_online;
@@ -2207,8 +2298,8 @@ void Ml307_Process(void)
     }
     if(modem.status.phase == ML307_PHASE_ONLINE && !modem.management_pending) {
         uint16_t fault = Dev.errorCode.u16Val & ML307_HARDWARE_FAULT_MASK;
-        if(!modem.alarm_reported_valid ||
-           (fault != modem.alarm_reported_fault && (uint32_t)(now - modem.last_alarm_ms) >= 10000U)) {
+        if(modem.control_reply != 2U && (!modem.alarm_reported_valid ||
+           (fault != modem.alarm_reported_fault && (uint32_t)(now - modem.last_alarm_ms) >= 10000U))) {
             uint8_t payload[6];
             frame_put16(payload, fault);
             frame_put32(payload + 2, RTC_IsTimeValid() ? LocalTimestamp : 0U);

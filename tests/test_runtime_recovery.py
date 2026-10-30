@@ -9,6 +9,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / 'BLE/Peripheral/APP'
+version_source = (APP / 'include/product_version.h').read_text(encoding='utf-8')
+version_parts = re.search(r'#define FIRMWARE_VERSION "([0-9.]+)"', version_source).group(1).split('.')
+FIRMWARE_BUILD_VERSION = sum(int(value) << (16 - 8 * index)
+                             for index, value in enumerate(version_parts))
 
 
 def function(source, name):
@@ -301,12 +305,13 @@ int main(void) {
 #include "config_store.h"
 t_dev Dev;
 static uint8_t runtime_status,ir_status,startup_flags;
+static uint8_t storage_faults;
 uint8_t Config_CommitIfChanged(void) {return 0;}
-uint8_t Runtime_Append(void) {return runtime_status;}
-uint8_t IrStore_SaveIfChanged(void) {return ir_status;}
+uint8_t Runtime_Append(void) {Storage_ReportFault(STORAGE_FAULT_RUNTIME,runtime_status!=0);return runtime_status;}
+uint8_t IrStore_SaveIfChanged(void) {Storage_ReportFault(STORAGE_FAULT_IR,ir_status!=0);return ir_status;}
 uint32_t Config_GetRevision(void) {return 1;}
 uint8_t Storage_GetStartupFlags(void) {return startup_flags;}
-''' + source + r'''
+''' + function((APP / 'config_store.c').read_text(encoding='utf-8'), 'Storage_ReportFault') + source + r'''
 int main(void) {
  runtime_status=DEVICE_STATUS_IO_ERROR;SaveDevInfo(0);Flash_Poll();
  assert(Dev.errorCode.bit.flash);
@@ -435,9 +440,9 @@ int main(void) {
 typedef struct { uint8_t state;uint32_t update_version,downloaded_bytes; } ota_metadata_t;
 static ota_metadata_t ota;
 static struct {
- uint8_t management_pending,management_length,http_step,ota_retry_count,ota_retry_blocked,ota_activate_after_publish;
+ uint8_t management_pending,management_length,http_step,ota_retry_count,ota_retry_blocked;
  uint8_t waiting,http_raw_state,http_raw_comma_count,http_read_type,alarm_reported_valid;
- uint8_t configuration_after_publish;uint16_t configuration_transaction;
+ uint8_t configuration_after_publish,control_reply;uint16_t configuration_transaction,control_transaction;
  uint16_t http_header_remaining,http_raw_length,http_raw_received,line_length,alarm_reported_fault;
  uint32_t ota_retry_at_ms,ota_reported_bytes,last_alarm_ms;
  struct { uint8_t last_error,phase;int8_t signal_rssi; } status;
@@ -449,13 +454,16 @@ static uint32_t parameter,LocalTimestamp=1785987000,CurTick;
 static struct { struct { uint16_t u16Val; } errorCode; } Dev;
 static const ota_metadata_t *Ota_Get(void){return &ota;}
 static uint8_t Ota_Cancel(void){return 0;}
-static uint8_t Ota_MarkInstall(void){return 0;}
+static unsigned reset_requests;
+static uint8_t install_result;
+static void Peripheral_RequestReset(void){reset_requests++;}
+static uint8_t Ota_MarkInstall(void){if(!install_result)ota.state=OTA_STATE_INSTALLING;return install_result;}
 static uint8_t Ota_BeginRemote(uint32_t a,uint32_t b,uint32_t c,const char*d,uint8_t e){(void)a;(void)b;(void)c;(void)d;(void)e;return 0;}
 static void queue_registration(uint16_t t){(void)t;}
 static void queue_ota_status(uint16_t t,uint8_t s){(void)t;(void)s;}
 static uint8_t RTC_IsTimeValid(void){return valid_time;}
 static uint8_t Lora_BuildNodeReportRssi(uint8_t*out,uint8_t t,uint8_t e,int8_t r){(void)t;(void)e;(void)r;memcpy(out,report,38);return 38;}
-static uint8_t ExecuteGatewayControl(uint8_t o,uint16_t t,uint32_t p){operation=o;tag=t;parameter=p;return result;}
+static uint8_t execute_cloud_control(uint8_t o,uint16_t t,uint32_t p){operation=o;tag=t;parameter=p;return result;}
 static uint8_t DeviceService_HandleRemote(uint8_t o,const uint8_t*p,uint16_t n,uint8_t*r,uint16_t*l,uint8_t*a){(void)o;(void)p;(void)n;(void)r;*l=0;*a=0;return 0;}
 ''' + function((APP / 'gateway_lora_codec.c').read_text(encoding='utf-8'), 'GatewayLora_Checksum') +
             ''.join(function(source, name) for name in ('reached','frame_u16','frame_u32','frame_put16','frame_put32','queue_management_frame','queue_management_result','handle_management')) +
@@ -475,7 +483,8 @@ int main(void){
  assert(management_frame[45]==GatewayLora_Checksum(management_frame,45));
  operation=0;request(10,43,7,command);assert(operation==0); /* occupied response slot */
  modem.management_pending=0;request(10,43,7,command);assert(operation==23&&tag==0&&parameter==26);
- assert(management_frame[8]==10&&management_frame[9]==0);
+ assert(modem.control_reply==2&&modem.control_transaction==43&&!modem.management_pending);
+ modem.control_reply=0; /* actual completion path tested separately */
  result=2;modem.management_pending=0;request(10,44,7,command);assert(management_frame[9]==4);
  modem.management_pending=0;command[0]=26;request(10,45,7,command);assert(operation==23&&management_frame[9]==1);
  modem.management_pending=0;request(10,46,6,command);assert(operation==23&&management_frame[9]==1);
@@ -494,6 +503,14 @@ int main(void){
  uint8_t offer[14]={0};offer[12]=1;offer[13]='x';modem.management_pending=0;
  CurTick=0x90000000U;request(5,47,sizeof(offer),offer);
  assert(modem.ota_retry_at_ms==CurTick && reached(CurTick,modem.ota_retry_at_ms));
+ /* Schedule reset immediately after durable activation, without any PUBACK. */
+ uint8_t version[4]={0};modem.management_pending=0;
+ request(6,48,sizeof(version),version);
+ assert(reset_requests==1 && ota.state==OTA_STATE_INSTALLING && modem.management_pending);
+ assert(management_frame[2]==4 && management_frame[8]==6 && management_frame[9]==0);
+ /* A failed metadata commit must not schedule a reset. */
+ modem.management_pending=0;install_result=6;
+ request(6,49,sizeof(version),version);assert(reset_requests==1 && management_frame[9]==6);
  return 0;
 }
 ''')
@@ -539,6 +556,239 @@ int main(void){
 }
 ''')
 
+    def test_shared_storage_commit_never_leaves_failed_install_marker(self):
+        source = (APP / 'config_store.c').read_text(encoding='utf-8')
+        self.compile_run(r'''
+#include <stdint.h>
+#include <string.h>
+#include <assert.h>
+#include "config_store.h"
+#include "device_protocol.h"
+#include "CH58x_common.h"
+static uint8_t flash[256];
+static unsigned reads,fail_read,writes,fail_write;
+uint32_t Test_EepromRead(uint32_t a,void *p,uint32_t n){if(++reads==fail_read)return 1;memcpy(p,flash+a,n);return 0;}
+uint32_t Test_EepromWrite(uint32_t a,const void *p,uint32_t n){writes++;memcpy(flash+a,p,n);return writes==fail_write;}
+''' + function(source, 'Storage_WriteVerified') + r'''
+int main(void){
+ uint32_t record[42];for(unsigned i=0;i<42;i++)record[i]=i+123;
+ for(unsigned phase=1;phase<=5;phase++){
+  memset(flash,255,sizeof(flash));reads=writes=0;fail_read=phase;fail_write=0;
+  assert(Storage_WriteVerified(0,record,sizeof(record))!=0);
+  assert(memcmp(flash,record,4)!=0);
+ }
+ for(unsigned phase=1;phase<=2;phase++){
+  memset(flash,255,sizeof(flash));reads=writes=0;fail_read=0;fail_write=phase;
+  assert(Storage_WriteVerified(0,record,sizeof(record))!=0);
+  assert(memcmp(flash,record,4)!=0);
+ }
+ memset(flash,255,sizeof(flash));reads=writes=fail_read=fail_write=0;
+ assert(Storage_WriteVerified(0,record,sizeof(record))==0&&!memcmp(flash,record,sizeof(record)));
+ return 0;
+}
+''')
+
+    def test_manual_control_updates_only_after_uart_completion(self):
+        source = (APP / 'device_service.c').read_text(encoding='utf-8')
+        constants = ''.join('#define '+n+' '+v+'\n' for n,v in re.findall(
+            r'\b(IR_CMD_[A-Z0-9_]+)\s*=\s*(0x[0-9a-fA-F]+)',
+            (APP / 'include/ir_tab.h').read_text(encoding='utf-8')))
+        self.compile_run(r'''
+#include <assert.h>
+#include <string.h>
+#include "board.h"
+#include "device_protocol.h"
+#include "device_service.h"
+t_dev Dev;uint32_t LocalTimestamp;
+static uint8_t control_pending,control_field;
+static uint16_t control_value;
+static unsigned saved,reports,ble_replies,mqtt_replies,transmitted;
+static uint8_t accepted=1,last_status;
+uint8_t Ir_ConfiguredCommandSupported(IR_CMD_t c){(void)c;return 1;}
+uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t c){(void)c;transmitted++;return accepted;}
+uint8_t Ir_SendLearnedVerified(uint8_t c){(void)c;transmitted++;return accepted;}
+void Rule_ManualOverride(void){}
+void Rule_RecordPowerChange(void){}
+void SaveDevInfo(uint16_t n){assert(n==50);saved++;}
+void Ml307_RequestReport(void){reports++;}
+void Peripheral_ControlCompleted(uint8_t s){last_status=s;ble_replies++;}
+void Ml307_ControlCompleted(uint8_t s){last_status=s;mqtt_replies++;}
+''' + constants + ''.join(function(source,n) for n in (
+            'update_power_state','update_learned_state','SplitAcControl_Execute',
+            'SplitAcControl_IsPending','SplitAcControl_IrCompleted')) + r'''
+int main(void){
+ Dev.irActType=ACT_TYPE_IR;Dev.onOff=PowerOff;
+ assert(SplitAcControl_Execute(CONTROL_FIELD_POWER,1)==0);
+ assert(Dev.onOff==PowerOff&&!saved&&SplitAcControl_IsPending());
+ assert(SplitAcControl_Execute(CONTROL_FIELD_POWER,0)==DEVICE_STATUS_BUSY&&transmitted==1);
+ assert(SplitAcControl_IrCompleted(0));
+ assert(Dev.onOff==PowerOff&&!saved&&last_status==DEVICE_STATUS_IO_ERROR);
+ assert(!SplitAcControl_IsPending()&&!SplitAcControl_IrCompleted(1));
+ assert(ble_replies==1&&mqtt_replies==1);
+ assert(SplitAcControl_Execute(CONTROL_FIELD_POWER,1)==0);
+ assert(SplitAcControl_IrCompleted(1)&&Dev.onOff==PowerOn&&saved==1&&!last_status);
+ assert(Dev.meter.onoff_count==1);
+ Dev.irActType=ACT_TYPE_LEARN;Dev.learnCode[6].enable=1;Dev.temSet=25;
+ assert(SplitAcControl_Execute(CONTROL_FIELD_LEARNED_CHANNEL,6)==0&&Dev.temSet==25);
+ assert(SplitAcControl_IrCompleted(1)&&Dev.temSet==26&&saved==2);
+ accepted=0;
+ assert(SplitAcControl_Execute(CONTROL_FIELD_POWER,0)==DEVICE_STATUS_BUSY);
+ assert(!SplitAcControl_IsPending()&&saved==2&&reports==3);
+ return 0;
+}
+''')
+
+    def test_adc_fallback_conversion_is_bounded_and_restores_configuration(self):
+        source = (APP / 'adc.c').read_text(encoding='utf-8')
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+#define RB_ADC_START 1U
+#define RB_ADC_DATA 4095U
+#define RB_ADC_OFS_TEST 2U
+#define RB_ADC_DIFF_EN 4U
+#define GPIO_Pin_4 16U
+#define GPIO_ModeIN_Floating 0U
+#define SampleFreq_3_2 0U
+#define ADC_PGA_0 0U
+static uint32_t CurTick;
+static uint8_t R8_ADC_CFG,reg,stuck;
+static uint16_t adc_value;
+static unsigned conversions;
+static uint8_t *conversion_register(void){CurTick+=10U;if(!stuck)reg=0;return &reg;}
+#define R8_ADC_CONVERT (*conversion_register())
+#define R16_ADC_DATA ((R8_ADC_CFG & RB_ADC_OFS_TEST)?2047U:2000U)
+static void GPIOA_ModeCfg(unsigned p,unsigned m){(void)p;(void)m;}
+static void ADC_ExtSingleChSampInit(unsigned s,unsigned p){(void)s;(void)p;R8_ADC_CFG=0;}
+static void ADC_ChannelCfg(unsigned c){(void)c;conversions++;}
+static uint8_t NtcB3950_AdcToTempX10(uint16_t v,int16_t *t){adc_value=v;*t=260;return 1;}
+''' + function(source,'adc_convert') + function(source,'ntc_sample') + r'''
+int main(void){
+ int16_t t=0;uint32_t before;
+ assert(ntc_sample(&t)&&t==260&&adc_value==2000&&R8_ADC_CFG==0);
+ stuck=1;CurTick=UINT32_MAX-9U;before=CurTick;
+ assert(!ntc_sample(&t)&&R8_ADC_CFG==0);
+ assert((uint32_t)(CurTick-before)<=40U);
+ stuck=0;assert(ntc_sample(&t)&&t==260);
+ return 0;
+}
+''')
+
+    def test_mode_commit_is_busy_during_ir_without_touching_configuration(self):
+        source = (APP / 'device_service.c').read_text(encoding='utf-8')
+        context = re.search(r'typedef struct.*?staged_config_t;', source, re.S).group()
+        case = source[source.index('    case DEVICE_OP_COMMIT_CONFIG:\n'):source.index('    case DEVICE_OP_EXEC_CONTROL:\n')]
+        self.compile_run(r'''
+#include <assert.h>
+#include <string.h>
+#include "board.h"
+#include "device_protocol.h"
+#include "config_store.h"
+t_dev Dev;IRBUF_t IrBuf;
+static unsigned commits,resets;
+static uint8_t idle;
+static uint32_t Timer_Lora;
+#define LORA_SEC_TO_TICKS(n) (n)
+static uint16_t get16(const uint8_t*p){return p[0]|(uint16_t)p[1]<<8;}
+uint8_t Ir_PrepareConfigurationChange(void){return idle;}
+uint8_t Config_Commit(void){commits++;return 0;}
+void Peripheral_RefreshDeviceName(void){}
+void Ml307_ApplyConfiguration(void){}
+void Rule_Reset(void){resets++;}
+''' + context + function(source,'parse_config') + '\nstatic uint8_t commit(const device_frame_t *req){uint8_t status=0;staged_config_t cfg;switch(req->opcode){\n'+case+'}return status;}\n'+r'''
+int main(void){
+ uint8_t p[11]={0x34,0x12,9,0,0,0,1,0,1,0,0};
+ device_frame_t req={0};req.opcode=DEVICE_OP_COMMIT_CONFIG;req.payload=p;req.payload_len=11;
+ Dev.nodeId=0x1234;Dev.channel=9;Dev.irType=1;Dev.irActType=ACT_TYPE_IR;
+ assert(commit(&req)==DEVICE_STATUS_BUSY&&!commits&&!resets&&Dev.mode==0);
+ idle=1;assert(commit(&req)==0&&commits==1&&resets==1&&Dev.mode==1);
+ return 0;
+}
+''')
+
+    def test_mqtt_control_results_wait_for_completion_and_reserve_reply_slot(self):
+        source = (APP / 'ml307r.c').read_text(encoding='utf-8')
+        context = re.search(r'typedef struct \{.*?\} ml307_context_t;',source,re.S).group()
+        self.compile_run(r'''
+#include <assert.h>
+#include <string.h>
+#include "board.h"
+#include "ml307r.h"
+#include "device_protocol.h"
+#define ML307_MGMT_MAGIC 0xC7U
+#define ML307_MGMT_VERSION 1U
+#define ML307_MGMT_RESULT 4U
+#define ML307_MGMT_CONTROL 10U
+''' + context + r'''
+static ml307_context_t modem;
+static uint8_t management_frame[251],field,result;
+static uint16_t value;
+uint8_t SplitAcControl_Execute(uint8_t f,uint16_t v){field=f;value=v;return result;}
+uint8_t ExecuteGatewayControl(uint8_t o,uint16_t t,uint32_t p){(void)o;(void)t;(void)p;return 2;}
+static uint8_t GatewayLora_Checksum(const uint8_t*p,uint16_t n){uint8_t s=0xEC;while(n--)s+=*p++;return s;}
+''' + ''.join(function(source,n) for n in ('frame_put16','queue_management_frame','queue_management_result','execute_cloud_control','Ml307_ControlCompleted')) + r'''
+int main(void){
+ assert(execute_cloud_control(21,0,0)==0&&field==CONTROL_FIELD_POWER&&value==1);
+ assert(execute_cloud_control(23,0,26)==0&&field==CONTROL_FIELD_TEMPERATURE&&value==260);
+ assert(execute_cloud_control(23,1,26)==2&&execute_cloud_control(23,0,999)==2);
+ result=DEVICE_STATUS_BUSY;assert(execute_cloud_control(22,0,0)==1);
+ modem.control_reply=2;modem.control_transaction=123;
+ queue_management_result(10,99,0);assert(!modem.management_pending); /* slot reserved */
+ Ml307_ControlCompleted(DEVICE_STATUS_IO_ERROR);
+ assert(!modem.control_reply&&modem.management_pending&&modem.status.command_rejected_count==1);
+ assert(management_frame[4]==123&&management_frame[8]==10&&management_frame[9]==6);
+ modem.management_pending=0;modem.control_reply=1;
+ Ml307_ControlCompleted(0);
+ assert(modem.pending_command_valid&&!modem.pending_command_result&&modem.status.command_executed_count==1);
+ assert(!modem.management_pending&&modem.report_requested);
+ Ml307_ControlCompleted(0);assert(modem.status.command_executed_count==1); /* no duplicate completion */
+ return 0;
+}
+''')
+
+    def test_failed_ota_activation_stays_ready_after_power_cycle(self):
+        store = (APP/'config_store.c').read_text(encoding='utf-8')
+        ota = no_includes((APP/'ota_update.c').read_text(encoding='utf-8'))
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include "CH58x_common.h"
+#include "config_store.h"
+#include "device_protocol.h"
+#include "ota_update.h"
+static uint8_t df[32768],cf[480*1024];
+static unsigned reads,failed_read;
+uint32_t Test_EepromRead(uint32_t a,void *p,uint32_t n){if(++reads==failed_read)return 1;memcpy(p,df+a,n);return 0;}
+uint32_t Test_EepromWrite(uint32_t a,const void *p,uint32_t n){memcpy(df+a,p,n);return 0;}
+uint32_t Test_EepromErase(uint32_t a,uint32_t n){memset(df+a,255,n);return 0;}
+uint32_t Test_FlashErase(uint32_t a,uint32_t n){memset(cf+a,255,n);return 0;}
+uint32_t Test_FlashWrite(uint32_t a,const void *p,uint32_t n){memcpy(cf+a,p,n);return 0;}
+uint32_t Test_FlashVerify(uint32_t a,const void *p,uint32_t n){return memcmp(cf+a,p,n)!=0;}
+void Test_FlashRead(uint32_t a,void *p,uint32_t n){memcpy(p,cf+a,n);}
+void Storage_ReportFault(uint8_t s,uint8_t f){(void)s;(void)f;}
+''' + function(store,'Storage_WriteVerified') + ota + r'''
+uint32_t Config_Crc32(const uint8_t *p,uint16_t n){return crc32_update(0xFFFFFFFFU,p,n)^0xFFFFFFFFU;}
+int main(void){
+ uint8_t image[64];memset(image,0xA5,sizeof(image));
+ for(unsigned phase=1;phase<=5;phase++){
+  memset(df,255,sizeof(df));memset(cf,255,sizeof(cf));reads=failed_read=0;
+  Ota_Init();
+  assert(!Ota_BeginLocal(FIRMWARE_BUILD_VERSION+1,sizeof(image),Config_Crc32(image,sizeof(image))));
+  assert(!Ota_Write(0,image,sizeof(image))&&!Ota_FinishLocal());
+  while(Ota_VerifyStep()==DEVICE_STATUS_BUSY){}
+  assert(Ota_Get()->state==OTA_STATE_READY);
+  failed_read=reads+phase;
+  assert(Ota_MarkInstall()==DEVICE_STATUS_IO_ERROR&&Ota_Get()->state==OTA_STATE_READY);
+  failed_read=0;
+  Ota_Init();assert(Ota_Get()->state==OTA_STATE_READY); /* reset must not install */
+  assert(!Ota_MarkInstall()&&Ota_Get()->state==OTA_STATE_INSTALLING);
+ }
+ return 0;
+}
+''')
+
     def compile_run(self, source):
         gcc = os.environ.get('CC') or shutil.which('gcc')
         if not gcc and Path('D:/w64devkit/w64devkit/bin/gcc.exe').exists():
@@ -550,7 +800,8 @@ int main(void){
             cfile.write_text(source, encoding='utf-8')
             build = subprocess.run([gcc, '-std=c11', '-Wall', '-Wextra', '-Werror',
                                     '-Wno-unused-function', '-Wno-unused-variable',
-                                    '-DFIRMWARE_BUILD_VERSION=0x21613', '-I' + str(ROOT),
+                                    f'-DFIRMWARE_BUILD_VERSION={FIRMWARE_BUILD_VERSION}',
+                                    '-I' + str(ROOT),
                                     '-I' + str(ROOT / 'tests/stubs'),
                                     '-I' + str(APP / 'include'), str(cfile), '-o', str(exe)],
                                    capture_output=True, text=True)
@@ -989,7 +1240,6 @@ int main(void) {
     assert(modem.publishing_management && modem.management_pending);
     assert(start_publish() && declared_length==21);
     assert(send_publish_payload() && (uint8_t)tx_buffer[4]==1);
-    modem.ota_activate_after_publish=1; /* 另一在途状态上报不能触发重启 */
     complete_publish();
     assert(!resets && modem.management_pending);
     assert(start_publish() && declared_length==11);
@@ -999,7 +1249,7 @@ int main(void) {
     payload[0]=6;payload[1]=0;
     queue_management_frame(4,4,payload,2);
     assert(start_publish());complete_publish();
-    assert(resets==1);
+    assert(!resets); /* PUBACK never owns the already-scheduled OTA reset. */
     modem.pending_command_valid=1;modem.pending_command_result=1;
     assert(start_publish() && modem.periodic_report_pending);
     complete_publish();assert(modem.periodic_report_pending && modem.next_report_ms==62002);
@@ -1126,6 +1376,7 @@ static uint8_t management_frame[251];
 const ota_metadata_t *Ota_Get(void) {return &ota;}
 uint8_t Ota_BeginRemote(uint32_t v,uint32_t n,uint32_t c,const char *u,uint8_t l) {(void)v;(void)n;(void)c;(void)u;(void)l;return 0;}
 uint8_t Ota_MarkInstall(void) {return 0;}
+static void Peripheral_RequestReset(void) {}
 uint8_t Ota_Cancel(void) {cancellations++;return 0;}
 static void handle_downlink(const uint8_t *p,uint16_t n) {(void)p;(void)n;controls++;}
 static uint8_t GatewayLora_Checksum(const uint8_t *p,uint16_t n) {uint8_t c=0xec;while(n--)c+=*p++;return c;}
@@ -1134,7 +1385,7 @@ static void queue_ota_status(uint16_t t,uint8_t s) {assert(t==3 && s==0);statuse
 static void queue_management_result(uint8_t type,uint16_t t,uint8_t s) {(void)type;(void)t;(void)s;results++;}
 static void queue_management_frame(uint8_t type,uint16_t t,const uint8_t *p,uint8_t n) {(void)type;(void)t;(void)p;(void)n;}
 static uint8_t Lora_BuildNodeReportRssi(uint8_t *p,uint8_t t,uint8_t e,int8_t r) {(void)t;(void)e;(void)r;memset(p,0,38);return 38;}
-static uint8_t ExecuteGatewayControl(uint8_t o,uint16_t t,uint32_t p) {(void)o;(void)t;(void)p;return 0;}
+static uint8_t execute_cloud_control(uint8_t o,uint16_t t,uint32_t p) {(void)o;(void)t;(void)p;return 0;}
 static uint8_t DeviceService_HandleRemote(uint8_t o,const uint8_t*p,uint16_t n,uint8_t*r,uint16_t*l,uint8_t*a){(void)o;(void)p;(void)n;(void)r;*l=0;*a=0;return 0;}
 ''' + '\n'.join(function(source,n) for n in ('frame_u16','frame_u32','handle_management','handle_mqtt_payload')) + r'''
 static void request(uint8_t *f,uint8_t type,uint8_t flags) {
@@ -1158,6 +1409,31 @@ int main(void) {
     modem.management_pending=1;request(frame,7,0);handle_mqtt_payload(frame,9);assert(cancellations==1);
     modem.management_pending=0;frame[8]++;handle_mqtt_payload(frame,9);assert(cancellations==1);
     return 0;
+}
+''')
+
+    def test_activation_uses_existing_bounded_reset_event(self):
+        source = (APP / 'peripheral.c').read_text(encoding='utf-8')
+        reset_event = source[source.index('    if(events & SBP_DEVICE_RESET_EVT)'):source.index('    if(events & SBP_TX_FRAME_EVT)')]
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+#define SBP_DEVICE_RESET_EVT 1U
+#define MS1_TO_SYSTEM_TIME(ms) (ms)
+static uint8_t Peripheral_TaskID=7;
+static unsigned scheduled,delay,resets,disabled;
+static void tmos_start_task(uint8_t task,uint16_t event,uint32_t ms) {
+ assert(task==7 && event==SBP_DEVICE_RESET_EVT);scheduled++;delay=ms;
+}
+static void DisableAllIRQ(void) {disabled++;}
+static void SYS_ResetExecute(void) {resets++;}
+''' + function(source, 'Peripheral_RequestReset') +
+            'static uint16_t event_step(uint16_t events){\n' + reset_event + 'return events;\n}\n' + r'''
+int main(void) {
+ Peripheral_RequestReset();assert(scheduled==1 && delay==600 && !resets);
+ /* TMOS dispatch requires no modem state, connection or publish completion. */
+ assert(event_step(SBP_DEVICE_RESET_EVT)==0 && resets==1 && disabled==1);
+ return 0;
 }
 ''')
 
@@ -1208,7 +1484,7 @@ int main(void) {
 static ml307_context_t modem;
 static uint32_t CurTick;
 static uint16_t device_jitter_ms;
-static unsigned http_calls, registrations;
+static unsigned http_calls, registrations, publish_completions;
 typedef struct {uint8_t mqtt_qos; const char *subscribe_topic,*management_topic;} connectivity_config_t;
 static connectivity_config_t config={1,"sub/ac/test","mag/ac/test"};
 static const connectivity_config_t *Connectivity_Get(void) {return &config;}
@@ -1227,7 +1503,7 @@ static uint8_t at_process_line(const char *l,uint16_t n) {(void)l;(void)n;return
 static uint8_t http_process_line(char *l,uint16_t n) {(void)l;(void)n;if(!modem.http_step)return 0;http_calls++;return 1;}
 static void complete_mqtt_connection(void) {}
 static void queue_registration(uint16_t t) {(void)t;registrations++;}
-static void complete_publish(void) {}
+static void complete_publish(void) {publish_completions++;modem.waiting=0;modem.status.phase=ML307_PHASE_ONLINE;}
 static uint8_t copy_numeric_identity(char *o,uint8_t c,const char *l,uint8_t n,uint8_t m) {(void)o;(void)c;(void)l;(void)n;(void)m;return 1;}
 static void parse_network_clock(const char *l,uint16_t n) {(void)l;(void)n;}
 static uint8_t tx_command(const char *l) {(void)l;return 1;}
@@ -1239,7 +1515,7 @@ static uint8_t tx_start(uint16_t n) {(void)n;assert(!strcmp(subscription,modem.m
 ''' + '\n'.join(function(source,n) for n in (
     'mqtt_urc_is','mqtt_urc_number','parse_cereg','parse_signal','parse_extended_signal',
     'status_phase','transition_wait','send_mqtt_subscribe','enter_backoff','complete_mqtt_subscription',
-    'record_at_response','sim_probe_result','process_line')) + r'''
+    'record_at_response','sim_probe_result','mqtt_check_ack','process_line')) + r'''
 static void online_http(void) {
     memset(&modem,0,sizeof(modem));http_calls=0;
     modem.status.phase=ML307_PHASE_ONLINE;modem.status.mqtt_online=1;
@@ -1268,14 +1544,39 @@ int main(void) {
     parse_extended_signal(cesq);assert(modem.status.signal_rssi==-85 && modem.status.rsrp_dbm==-100);
     process_line(error,5);assert(modem.status.phase==ML307_PHASE_ONLINE && modem.status.signal_rssi==-85);
     memset(&modem,0,sizeof(modem));assert(send_mqtt_subscribe());
-    char first_ack[]="+MQTTURC: \"suback\",0,1,0", second_ack[]="+MQTTURC: \"suback\",0,1,1";
+    char first_ack[]="+MQTTURC: \"suback\",0,1,0", second_ack[]="+MQTTURC: \"suback\",0,2,1";
+    char first_id[]="+MQTTSUB: 0,1",second_id[]="+MQTTSUB: 0,2";
+    process_line(first_id,strlen(first_id));
     process_line(ok,2);assert(!modem.status.mqtt_online && modem.waiting);
     process_line(first_ack,strlen(first_ack));assert(modem.mqtt_subscribe_step==1 && !modem.waiting && !registrations);
     process_line(first_ack,strlen(first_ack));assert(!modem.status.mqtt_online);
     assert(send_mqtt_subscribe());
+    process_line(second_id,strlen(second_id));
+    process_line(first_ack,strlen(first_ack));assert(!modem.status.mqtt_online);
     process_line(second_ack,strlen(second_ack));assert(!modem.status.mqtt_online && modem.waiting);
     process_line(ok,2);assert(modem.status.mqtt_online && registrations==1);
     process_line(second_ack,strlen(second_ack));assert(registrations==1);
+    /* Old/foreign ACKs cannot satisfy a new command or reject it. */
+    memset(&modem,0,sizeof(modem));assert(send_mqtt_subscribe());
+    process_line(first_ack,strlen(first_ack));process_line(ok,2);
+    assert(!modem.mqtt_subscribe_step); /* still missing command's assigned ID */
+    process_line(first_id,strlen(first_id));assert(modem.mqtt_subscribe_step==1);
+    assert(send_mqtt_subscribe());process_line(second_id,strlen(second_id));process_line(ok,2);
+    char stale_denied[]="+MQTTURC: \"suback\",0,1,128";
+    process_line(stale_denied,strlen(stale_denied));assert(modem.waiting&&!modem.status.mqtt_online);
+    char denied[]="+MQTTURC: \"suback\",0,2,128";
+    process_line(denied,strlen(denied));assert(modem.status.phase==ML307_PHASE_BACKOFF);
+    memset(&modem,0,sizeof(modem));
+    transition_wait(ML307_PHASE_PUBLISH,5000);modem.prompt_seen=1;
+    char pub_id[]="+MQTTPUB: 0,72,38",pub_ack[]="+MQTTURC: \"puback\",0,72,0";
+    char old_pub[]="+MQTTURC: \"puback\",0,71,0",foreign_pub[]="+MQTTURC: \"puback\",1,72,0";
+    process_line(pub_ack,strlen(pub_ack));process_line(ok,2);assert(!publish_completions);
+    process_line(pub_id,strlen(pub_id));assert(publish_completions==1);
+    transition_wait(ML307_PHASE_PUBLISH,5000);modem.prompt_seen=1;
+    process_line(pub_id,strlen(pub_id));process_line(ok,2);
+    process_line(old_pub,strlen(old_pub));process_line(foreign_pub,strlen(foreign_pub));
+    assert(publish_completions==1&&modem.waiting);
+    process_line(pub_ack,strlen(pub_ack));assert(publish_completions==2);
     /* ATE0 must not add a fixed delay before the first CPIN request. */
     memset(&modem,0,sizeof(modem));CurTick=4000;modem.status.phase=ML307_PHASE_SIM;modem.waiting=1;
     process_line(ok,2);assert(modem.next_action_ms==CurTick && !modem.waiting);
@@ -1336,6 +1637,7 @@ static unsigned init_calls;
 static unsigned completed, failed;
 static void LED_NotifyIrTx(void) {}
 static void Rule_IrCompleted(uint8_t ok) {if(ok) completed++; else failed++;}
+static uint8_t SplitAcControl_IrCompleted(uint8_t ok) {(void)ok;return 0;}
 static void UART3_INTCfg(uint8_t e,uint8_t m) {(void)e;(void)m;}
 static void PFIC_DisableIRQ(uint8_t irq) {(void)irq;}
 static void IR_Init(void);
@@ -1403,8 +1705,10 @@ static uint8_t *GATT_bm_alloc(uint16_t c,uint8_t t,uint16_t l,void *p,uint8_t f)
 static uint8_t simpleProfile_Notify(uint16_t c,uint8_t i,attHandleValueNoti_t *n) {(void)c;(void)i;memcpy(last_fragment,n->pValue,n->len);return notify_ok?0:4;}
 static void GATT_bm_free(gattMsg_t *p,uint8_t t) {(void)p;(void)t;freed++;}
 static void tmos_start_task(uint8_t t,uint16_t e,uint32_t d) {(void)t;(void)e;(void)d;}
+static void tmos_set_event(uint8_t t,uint16_t e) {(void)t;(void)e;}
+uint16_t DeviceProtocol_Crc16(const uint8_t *p,uint16_t n){uint16_t s=0;while(n--)s+=*p++;return s;}
 static void GAPRole_TerminateLink(uint16_t h) {(void)h;terminated++;}
-''' + fields + '\n'.join(function(source, n) for n in ('peripheralCharNotify', 'SendDeviceFrame', 'DeviceTxStep')) + r'''
+''' + fields + '\n'.join(function(source, n) for n in ('peripheralCharNotify', 'SendDeviceFrame', 'Peripheral_ControlCompleted', 'DeviceTxStep')) + r'''
 int main(void) {
     uint8_t frame[32]={0xA5,2,2,7};
     SendDeviceFrame(frame,32);
@@ -1418,6 +1722,12 @@ int main(void) {
     CurTick=UINT32_MAX-1499U;SendDeviceFrame(frame,32);
     CurTick=UINT32_MAX;DeviceTxStep();assert(deviceTxActive && terminated==1);
     CurTick=0;DeviceTxStep();assert(!deviceTxActive && terminated==2);
+    notify_ok=1;SendDeviceFrame(frame,32);deviceControlPending=1;
+    DeviceTxStep();assert(deviceTxOffset==0);
+    Peripheral_ControlCompleted(6);assert(!deviceControlPending&&deviceTxFrame[6]==6);
+    assert(deviceTxFrame[30]==(uint8_t)DeviceProtocol_Crc16(deviceTxFrame,30));
+    DeviceTxStep();DeviceTxStep();DeviceTxStep();assert(!deviceTxActive);
+    deviceControlPending=0;Peripheral_ControlCompleted(0);assert(!deviceTxActive);
     return 0;
 }
 ''')

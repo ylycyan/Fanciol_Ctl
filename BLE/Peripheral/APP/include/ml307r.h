@@ -87,6 +87,7 @@ void Ml307_EarlyPowerOff(void);
 void Ml307_Process(void);
 void Ml307_ApplyConfiguration(void);
 void Ml307_RequestReport(void);
+void Ml307_ControlCompleted(uint8_t status);
 /* Local execution result: RAM only, discarded when MQTT is offline. */
 void Ml307_RecordRule(uint8_t index, uint8_t trigger, uint8_t action, uint8_t success);
 void Ml307_Restart(void);

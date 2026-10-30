@@ -2,6 +2,7 @@
 #define SPLITAC_OTA_UPDATE_H
 
 #include <stdint.h>
+#include "product_version.h"
 
 /* The linker and flash partition remain unchanged.  The second application
  * region is staging storage only; it is never executed directly. */
@@ -19,7 +20,7 @@
 #define OTA_UPDATER_SCHEMA        1U
 
 #ifndef FIRMWARE_BUILD_VERSION
-#error "FIRMWARE_BUILD_VERSION must come from production.csv"
+#error "FIRMWARE_BUILD_VERSION must be derived from product_version.h by the build script"
 #endif
 
 typedef enum {

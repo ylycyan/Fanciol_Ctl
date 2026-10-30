@@ -13,6 +13,10 @@
 #include "flash.h"
 #include "ir_tab.h"
 #include "gateway_lora_codec.h"
+
+#define FIRMWARE_VERSION "1.0.0"
+#define HARDWARE_VERSION "1.0.0"
+
 #define Default_DevId 0xBB01 //默认的设备编号
 #define Default_Channel 5 
 /* Lora */

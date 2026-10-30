@@ -44,7 +44,6 @@ static uint8_t metadata_valid(const ota_metadata_t *record)
 
 static uint8_t metadata_save(void)
 {
-    ota_metadata_t readback;
     uint32_t previous_generation = metadata.generation;
     uint32_t target = metadata_slot == OTA_METADATA_A ? OTA_METADATA_B : OTA_METADATA_A;
 
@@ -54,20 +53,20 @@ static uint8_t metadata_save(void)
     metadata.crc32 = Config_Crc32((const uint8_t *)&metadata,
                                     (uint16_t)offsetof(ota_metadata_t, crc32));
     if(EEPROM_ERASE(target, EEPROM_PAGE_SIZE) != 0U ||
-       EEPROM_WRITE(target, &metadata, sizeof(metadata)) != 0U ||
-       EEPROM_READ(target, &readback, sizeof(readback)) != 0U ||
-       !metadata_valid(&readback) || memcmp(&readback, &metadata, sizeof(metadata)) != 0) {
+       Storage_WriteVerified(target, &metadata, sizeof(metadata)) != DEVICE_STATUS_OK) {
         metadata = committed_metadata;
         write_offset = metadata.downloaded_bytes;
         verify_offset = 0U;
         verify_crc = 0xFFFFFFFFUL;
         resume_erase_required = metadata.url_length != 0U &&
                                 metadata.state == OTA_STATE_DOWNLOADING;
+        Storage_ReportFault(STORAGE_FAULT_OTA_METADATA, 1U);
         return DEVICE_STATUS_IO_ERROR;
     }
 
     metadata_slot = target;
     committed_metadata = metadata;
+    Storage_ReportFault(STORAGE_FAULT_OTA_METADATA, 0U);
     return DEVICE_STATUS_OK;
 }
 
@@ -244,8 +243,11 @@ uint8_t Ota_EraseStep(void)
     remaining = metadata.image_size - metadata.erased_bytes;
     if(remaining != 0U) {
         if(FLASH_ROM_ERASE(OTA_STAGING_ADDRESS + metadata.erased_bytes,
-                           EEPROM_BLOCK_SIZE) != 0U)
+                           EEPROM_BLOCK_SIZE) != 0U) {
+            Storage_ReportFault(STORAGE_FAULT_OTA_IMAGE, 1U);
             return DEVICE_STATUS_IO_ERROR;
+        }
+        Storage_ReportFault(STORAGE_FAULT_OTA_IMAGE, 0U);
         metadata.erased_bytes += remaining > EEPROM_BLOCK_SIZE ? EEPROM_BLOCK_SIZE : remaining;
         return metadata_save();
     }
@@ -279,8 +281,10 @@ uint8_t Ota_Write(uint32_t offset, const uint8_t *data, uint16_t length)
        FLASH_ROM_VERIFY(OTA_STAGING_ADDRESS + offset, write_buffer, program_length) != 0U) {
         PRINT("OTA write verify failed offset=%lu len=%u\r\n",
               (unsigned long)offset, program_length);
+        Storage_ReportFault(STORAGE_FAULT_OTA_IMAGE, 1U);
         return DEVICE_STATUS_IO_ERROR;
     }
+    Storage_ReportFault(STORAGE_FAULT_OTA_IMAGE, 0U);
 
     write_offset = end;
     if(write_offset == metadata.image_size ||
@@ -301,8 +305,11 @@ uint8_t Ota_RewindDownload(void)
        (metadata.downloaded_bytes % EEPROM_BLOCK_SIZE) != 0U)
         return DEVICE_STATUS_CONFLICT;
     if(FLASH_ROM_ERASE(OTA_STAGING_ADDRESS + metadata.downloaded_bytes,
-                       EEPROM_BLOCK_SIZE) != 0U)
+                       EEPROM_BLOCK_SIZE) != 0U) {
+        Storage_ReportFault(STORAGE_FAULT_OTA_IMAGE, 1U);
         return DEVICE_STATUS_IO_ERROR;
+    }
+    Storage_ReportFault(STORAGE_FAULT_OTA_IMAGE, 0U);
     write_offset = metadata.downloaded_bytes;
     resume_erase_required = 0U;
     return DEVICE_STATUS_OK;

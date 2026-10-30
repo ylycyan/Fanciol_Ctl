@@ -2,9 +2,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "CH58x_common.h"
 #include "../BLE/Peripheral/APP/include/ota_guard.h"
 #include "../BLE/Peripheral/APP/include/ota_update.h"
 #include "../BLE/Peripheral/APP/include/device_protocol.h"
+#include "../BLE/Peripheral/APP/include/config_store.h"
 
 #define APP_B_START 0x00037000UL
 #define IAP_START   0x0006D000UL
@@ -13,6 +15,13 @@
 static uint8_t dataflash[0x8000];
 static uint8_t codeflash[480 * 1024];
 static uint8_t fail_metadata;
+static uint8_t fail_image;
+static uint8_t storage_faults;
+void Storage_ReportFault(uint8_t source, uint8_t failed)
+{
+    if(failed) storage_faults |= source;
+    else storage_faults &= (uint8_t)~source;
+}
 
 static uint32_t crc32(const uint8_t *data, uint16_t length)
 {
@@ -27,12 +36,28 @@ static uint32_t crc32(const uint8_t *data, uint16_t length)
 }
 
 uint32_t Config_Crc32(const uint8_t *data, uint16_t length) { return crc32(data, length); }
+/* Storage is mocked in this OTA-only fixture. The real shared writer is
+ * independently compiled and fault-injected by test_runtime_recovery.py. */
+uint8_t Storage_WriteVerified(uint32_t address, const void *record, uint16_t length)
+{
+    uint8_t readback[256];
+    uint32_t magic;
+    if(Test_EepromRead(address,&magic,4) || magic!=0xFFFFFFFFU) return DEVICE_STATUS_IO_ERROR;
+    if(Test_EepromWrite(address+4,(const uint8_t*)record+4,length-4) ||
+       Test_EepromRead(address+4,readback,length-4) ||
+       memcmp(readback,(const uint8_t*)record+4,length-4)) return DEVICE_STATUS_IO_ERROR;
+    if(Test_EepromWrite(address,record,4) || Test_EepromRead(address,&magic,4) ||
+       memcmp(&magic,record,4)) {
+        magic=0;Test_EepromWrite(address,&magic,4);return DEVICE_STATUS_IO_ERROR;
+    }
+    return DEVICE_STATUS_OK;
+}
 uint32_t Test_EepromRead(uint32_t address, void *buffer, uint32_t length) { if(fail_metadata==3)return 1; memcpy(buffer, dataflash + address, length); return 0; }
 uint32_t Test_EepromErase(uint32_t address, uint32_t length) { if(fail_metadata==1)return 1; memset(dataflash + address, 0xFF, length); return 0; }
 uint32_t Test_EepromWrite(uint32_t address, const void *buffer, uint32_t length) { if(fail_metadata==2)return 1; memcpy(dataflash + address, buffer, length); return 0; }
-uint32_t Test_FlashErase(uint32_t address, uint32_t length) { memset(codeflash + address, 0xFF, length); return 0; }
-uint32_t Test_FlashWrite(uint32_t address, const void *buffer, uint32_t length) { memcpy(codeflash + address, buffer, length); return 0; }
-uint32_t Test_FlashVerify(uint32_t address, const void *buffer, uint32_t length) { return memcmp(codeflash + address, buffer, length) != 0; }
+uint32_t Test_FlashErase(uint32_t address, uint32_t length) { if(fail_image==1)return 1; memset(codeflash + address, 0xFF, length); return 0; }
+uint32_t Test_FlashWrite(uint32_t address, const void *buffer, uint32_t length) { if(fail_image==2)return 1; memcpy(codeflash + address, buffer, length); return 0; }
+uint32_t Test_FlashVerify(uint32_t address, const void *buffer, uint32_t length) { return fail_image==3 || memcmp(codeflash + address, buffer, length) != 0; }
 void Test_FlashRead(uint32_t address, void *buffer, uint32_t length) { memcpy(buffer, codeflash + address, length); }
 uint32_t SYS_GetLastResetSta(void) { return 0; }
 
@@ -208,6 +233,33 @@ static void test_remote_progress_uses_live_offset_and_aligned_checkpoint(void)
     assert(Ota_GetWriteOffset() == 4U * BLOCK_SIZE);
 }
 
+static void test_image_io_faults_clear_only_after_image_io_recovers(void)
+{
+    uint8_t image[16] = {1, 2, 3};
+    memset(dataflash, 0xFF, sizeof(dataflash));
+    Ota_Init();
+    assert(Ota_BeginRemote(1, sizeof(image), 0, "http://fw/bin", 13) == DEVICE_STATUS_OK);
+    fail_image = 1;
+    assert(Ota_EraseStep() == DEVICE_STATUS_IO_ERROR);
+    assert(storage_faults & STORAGE_FAULT_OTA_IMAGE);
+    assert(Ota_Cancel() == DEVICE_STATUS_OK); /* Metadata success is not image recovery. */
+    assert(storage_faults & STORAGE_FAULT_OTA_IMAGE);
+    fail_image = 0;
+    assert(Ota_BeginRemote(1, sizeof(image), 0, "http://fw/bin", 13) == DEVICE_STATUS_OK);
+    assert(Ota_EraseStep() == DEVICE_STATUS_OK);
+    assert(!(storage_faults & STORAGE_FAULT_OTA_IMAGE));
+    assert(Ota_EraseStep() == DEVICE_STATUS_OK);
+    for(fail_image = 2; fail_image <= 3; fail_image++) {
+        assert(Ota_Write(0, image, sizeof(image)) == DEVICE_STATUS_IO_ERROR);
+        assert(storage_faults & STORAGE_FAULT_OTA_IMAGE);
+        assert(Ota_GetWriteOffset() == 0);
+    }
+    fail_image = 0;
+    assert(Ota_Write(0, image, sizeof(image)) == DEVICE_STATUS_OK);
+    assert(!(storage_faults & STORAGE_FAULT_OTA_IMAGE));
+    assert(Ota_Cancel() == DEVICE_STATUS_OK);
+}
+
 int main(void)
 {
     test_partition_bounds();
@@ -218,6 +270,7 @@ int main(void)
     test_same_or_older_version_is_allowed();
     test_local_update_accepts_a_partial_final_dword();
     test_remote_progress_uses_live_offset_and_aligned_checkpoint();
+    test_image_io_faults_clear_only_after_image_io_recovers();
     /* 每个元数据 IO 阶段失败都应恢复完整状态，取消和重试不需要重启。 */
     for(uint8_t stage=1;stage<=3;stage++) {
         uint8_t image[16]={1,2,3};
@@ -230,15 +283,19 @@ int main(void)
         ota_metadata_t before=*Ota_Get();
         fail_metadata=stage;
         assert(Ota_MarkInstall()==DEVICE_STATUS_IO_ERROR);
+        assert(storage_faults & STORAGE_FAULT_OTA_METADATA);
         assert(!memcmp(&before,Ota_Get(),sizeof(before)));
         fail_metadata=0;
         assert(Ota_Cancel()==DEVICE_STATUS_OK);
+        assert(!(storage_faults & STORAGE_FAULT_OTA_METADATA));
         assert(Ota_BeginLocal(2,sizeof(image),0)==DEVICE_STATUS_OK);
         fail_metadata=stage;
         assert(Ota_Cancel()==DEVICE_STATUS_IO_ERROR);
+        assert(storage_faults & STORAGE_FAULT_OTA_METADATA);
         assert(Ota_Get()->state==OTA_STATE_DOWNLOADING);
         fail_metadata=0;
         assert(Ota_Cancel()==DEVICE_STATUS_OK);
+        assert(!(storage_faults & STORAGE_FAULT_OTA_METADATA));
     }
     /* 错误本地请求不能先取消一个有效远程会话。 */
     assert(Ota_BeginRemote(1,4096,0,"http://fw/bin",13)==DEVICE_STATUS_OK);

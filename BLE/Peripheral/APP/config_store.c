@@ -10,6 +10,8 @@
 #define IR_MAGIC        0x32524953UL
 #define CONNECTIVITY_MAGIC 0x3154454EUL
 #define RUNTIME_SLOTS   64u
+#define RUNTIME_BACKUP_CURRENT 1U
+#define RUNTIME_BACKUP_STALE   2U
 
 typedef struct __attribute__((packed)) {
     uint16_t node_id;
@@ -147,9 +149,18 @@ static uint32_t ir_slot;
 static uint8_t ir_write_locked;
 static uint8_t lora_params_write_locked;
 static uint8_t storage_startup_flags;
+static uint8_t storage_faults;
 static connectivity_config_t connectivity_config;
 static uint32_t connectivity_generation;
 static uint32_t connectivity_slot;
+
+void Storage_ReportFault(uint8_t source, uint8_t failed)
+{
+    if(failed) storage_faults |= source;
+    else storage_faults &= (uint8_t)~source;
+    Dev.errorCode.bit.flash = storage_faults != 0U ||
+        (Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED) != 0U;
+}
 
 /*
  * DataFlash 擦除/写入是同步阻塞调用。看门狗窗口约 0.56 s 且仅在 100 ms
@@ -163,15 +174,15 @@ static void storage_kick_watchdog(void)
 
 /* 复用记录首字 magic 作为提交点，不改变落盘格式。候选数据先核对，
  * 最后写有效 magic；回读失败或中途掉电均不会发布未经确认的新记录。 */
-static uint8_t storage_write_verified(uint32_t address, void *record, uint16_t length)
+uint8_t Storage_WriteVerified(uint32_t address, const void *record, uint16_t length)
 {
-    uint8_t *bytes = (uint8_t *)record;
+    const uint8_t *bytes = (const uint8_t *)record;
     uint8_t readback[64] __attribute__((aligned(4)));
     uint32_t marker;
     uint16_t offset, chunk;
     if(EEPROM_READ(address, &marker, sizeof(marker)) || marker != 0xFFFFFFFFUL)
         return DEVICE_STATUS_VERIFY_FAILED;
-    if(EEPROM_WRITE(address + 4U, bytes + 4U, length - 4U))
+    if(EEPROM_WRITE(address + 4U, (void *)(bytes + 4U), length - 4U))
         return DEVICE_STATUS_IO_ERROR;
     for(offset = 4U; offset < length; offset = (uint16_t)(offset + chunk)) {
         chunk = (uint16_t)(length - offset);
@@ -179,10 +190,15 @@ static uint8_t storage_write_verified(uint32_t address, void *record, uint16_t l
         if(EEPROM_READ(address + offset, readback, chunk) ||
            memcmp(readback, bytes + offset, chunk)) return DEVICE_STATUS_VERIFY_FAILED;
     }
-    if(EEPROM_WRITE(address, record, 4U)) {
+    if(EEPROM_WRITE(address, (void *)record, 4U)) {
         marker = 0U;
         (void)EEPROM_WRITE(address, &marker, sizeof(marker));
         return DEVICE_STATUS_IO_ERROR;
+    }
+    if(EEPROM_READ(address, &marker, sizeof(marker)) || memcmp(&marker, record, sizeof(marker))) {
+        marker = 0U; /* Do not publish a record whose final commit was not verified. */
+        (void)EEPROM_WRITE(address, &marker, sizeof(marker));
+        return DEVICE_STATUS_VERIFY_FAILED;
     }
     return DEVICE_STATUS_OK;
 }
@@ -305,6 +321,7 @@ uint8_t Config_Load(void)
 
     config_load_state = CONFIG_LOAD_HEALTHY;
     storage_startup_flags = 0U;
+    storage_faults = 0U;
     memset(&record, 0xFF, sizeof(record));
     read_a = EEPROM_READ(CONFIG_SLOT_A, &record, sizeof(record)) == 0U;
     valid_a = read_a && valid_config_record(&record);
@@ -389,11 +406,10 @@ uint8_t Config_Commit(void)
     target = (config_slot == CONFIG_SLOT_A) ? CONFIG_SLOT_B : CONFIG_SLOT_A;
     storage_kick_watchdog();
     status = EEPROM_ERASE(target, CONFIG_ERASE_BYTES) ? DEVICE_STATUS_IO_ERROR :
-             storage_write_verified(target, &r, sizeof(r));
+             Storage_WriteVerified(target, &r, sizeof(r));
     if(status != DEVICE_STATUS_OK) {
         config_load_state = CONFIG_LOAD_DEGRADED;
-        storage_startup_flags |= STORAGE_STARTUP_DEGRADED;
-        Dev.errorCode.bit.flash = 1U;
+        Storage_ReportFault(STORAGE_FAULT_CONFIG, 1U);
         return status;
     }
     config_revision = r.generation;
@@ -401,6 +417,7 @@ uint8_t Config_Commit(void)
     config_fingerprint = Config_Crc32((const uint8_t *)&r.payload,
                                         sizeof(r.payload));
     config_load_state = CONFIG_LOAD_HEALTHY;
+    Storage_ReportFault(STORAGE_FAULT_CONFIG, 0U);
     return DEVICE_STATUS_OK;
 }
 
@@ -501,7 +518,8 @@ uint8_t Runtime_Load(void)
         read_error = 1U;
     } else if(r.magic != 0xFFFFFFFFUL) {
         if(valid_runtime_record(&r)) {
-            runtime_backup_active = 1;
+            runtime_backup_active = !found || (int32_t)(r.generation - best.generation) >= 0 ?
+                RUNTIME_BACKUP_CURRENT : RUNTIME_BACKUP_STALE;
             if(!found || (int32_t)(r.generation - best.generation) > 0) {
                 best = r;
                 found = 1;
@@ -536,10 +554,10 @@ uint8_t Runtime_Load(void)
 static uint8_t runtime_write_backup(runtime_record_t *record)
 {
     if(EEPROM_ERASE(RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE) ||
-       storage_write_verified(RUNTIME_BACKUP_PAGE, record, sizeof(*record)) != DEVICE_STATUS_OK) {
+       Storage_WriteVerified(RUNTIME_BACKUP_PAGE, record, sizeof(*record)) != DEVICE_STATUS_OK) {
         return DEVICE_STATUS_VERIFY_FAILED;
     }
-    runtime_backup_active = 1;
+    runtime_backup_active = RUNTIME_BACKUP_CURRENT;
     return DEVICE_STATUS_OK;
 }
 
@@ -567,7 +585,9 @@ uint8_t Runtime_Append(void)
         (uint16_t)offsetof(runtime_record_t, crc32));
 
     rolling_over = runtime_next_slot >= RUNTIME_SLOTS;
-    if(rolling_over && !runtime_backup_active) {
+    /* A stale backup is safe to replace only while the latest main log exists.
+     * A current/sole backup must survive a retry after interrupted main erasure. */
+    if(rolling_over && runtime_backup_active != RUNTIME_BACKUP_CURRENT) {
         storage_kick_watchdog();
         if(runtime_write_backup(&r) != DEVICE_STATUS_OK) {
             status = DEVICE_STATUS_VERIFY_FAILED;
@@ -586,19 +606,22 @@ uint8_t Runtime_Append(void)
         runtime_next_slot = 0;
     }
     address = RUNTIME_PAGE + (uint32_t)runtime_next_slot * sizeof(r);
-    status = storage_write_verified(address, &r, sizeof(r));
+    status = Storage_WriteVerified(address, &r, sizeof(r));
     runtime_next_slot++;
     if(status != DEVICE_STATUS_OK) goto failed;
     runtime_generation = r.generation;
     runtime_maintenance_failed = 0U;
-    if(runtime_backup_active &&
-       EEPROM_ERASE(RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE) == 0) {
-        runtime_backup_active = 0;
+    if(runtime_backup_active) {
+        runtime_backup_active = RUNTIME_BACKUP_STALE; /* Main record is verified now. */
+        if(EEPROM_ERASE(RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE) == 0)
+            runtime_backup_active = 0U;
+        else runtime_maintenance_failed = 1U;
     }
+    Storage_ReportFault(STORAGE_FAULT_RUNTIME, runtime_maintenance_failed);
     return DEVICE_STATUS_OK;
 failed:
     runtime_maintenance_failed = 1U;
-    Dev.errorCode.bit.flash = 1U;
+    Storage_ReportFault(STORAGE_FAULT_RUNTIME, 1U);
     return backup_committed ? DEVICE_STATUS_OK : status;
 }
 
@@ -780,6 +803,7 @@ uint8_t IrStore_SaveIfChanged(void)
        EEPROM_WRITE(target, &header, sizeof(header)) ||
        EEPROM_WRITE(target + sizeof(header), Dev.learnCode, IR_CODE_BYTES) ||
        EEPROM_WRITE(target + IR_CRC_OFFSET, &crc, sizeof(crc))) {
+        Storage_ReportFault(STORAGE_FAULT_IR, 1U);
         return DEVICE_STATUS_IO_ERROR;
     }
     storage_kick_watchdog();
@@ -787,12 +811,14 @@ uint8_t IrStore_SaveIfChanged(void)
        verify.generation != header.generation ||
        verify.crc32 != crc ||
        verify.learn_num != header.learn_num) {
+        Storage_ReportFault(STORAGE_FAULT_IR, 1U);
         return DEVICE_STATUS_VERIFY_FAILED;
     }
 
     ir_fingerprint = fingerprint;
     ir_generation = header.generation;
     ir_slot = target;
+    Storage_ReportFault(STORAGE_FAULT_IR, 0U);
     return DEVICE_STATUS_OK;
 }
 
@@ -1015,7 +1041,7 @@ static uint8_t connectivity_write_record(uint32_t target, uint8_t state,
     record.crc32 = connectivity_crc(&record);
     if(EEPROM_ERASE(target, CONNECTIVITY_ERASE_BYTES) != 0U)
         return DEVICE_STATUS_IO_ERROR;
-    return storage_write_verified(target, &record, sizeof(record));
+    return Storage_WriteVerified(target, &record, sizeof(record));
 }
 
 uint8_t Connectivity_Load(void)
@@ -1075,7 +1101,7 @@ uint8_t Connectivity_Load(void)
             record->crc32 = connectivity_crc(record);
             expected_crc = record->crc32;
             if(EEPROM_ERASE(target, CONNECTIVITY_ERASE_BYTES) != 0U ||
-               storage_write_verified(target, record, sizeof(*record)) != DEVICE_STATUS_OK ||
+               Storage_WriteVerified(target, record, sizeof(*record)) != DEVICE_STATUS_OK ||
                EEPROM_READ(target, record, sizeof(*record)) != 0U ||
                !connectivity_record_valid(record) || record->crc32 != expected_crc) {
                 lora_params_write_locked = 1U;
@@ -1161,6 +1187,7 @@ uint8_t Connectivity_Save(const connectivity_config_t *config)
              CONNECTIVITY_SLOT_B : CONNECTIVITY_SLOT_A;
     status = connectivity_write_record(target, CONNECTIVITY_RECORD_ACTIVE,
                                        connectivity_generation + 1U, config);
+    Storage_ReportFault(STORAGE_FAULT_CONNECTIVITY, status != DEVICE_STATUS_OK);
     if(status != DEVICE_STATUS_OK) return status;
     connectivity_generation++;
     connectivity_slot = target;
@@ -1312,16 +1339,19 @@ uint8_t Storage_FactoryReset(void)
     if(EEPROM_ERASE(STORAGE_RESERVED_PAGE, EEPROM_BLOCK_SIZE) ||
        EEPROM_ERASE(RUNTIME_PAGE, EEPROM_BLOCK_SIZE) ||
        EEPROM_ERASE(RUNTIME_BACKUP_PAGE, EEPROM_PAGE_SIZE)) {
+        Storage_ReportFault(STORAGE_FAULT_RUNTIME, 1U);
         return DEVICE_STATUS_IO_ERROR;
     }
     storage_kick_watchdog();
     if(EEPROM_ERASE(IR_STORAGE_PAGE, EEPROM_BLOCK_SIZE) ||
        EEPROM_ERASE(IR_STORAGE_SLOT_B, EEPROM_BLOCK_SIZE)) {
+        Storage_ReportFault(STORAGE_FAULT_IR, 1U);
         return DEVICE_STATUS_IO_ERROR;
     }
     storage_kick_watchdog();
     if(EEPROM_ERASE(CONFIG_SLOT_A, EEPROM_BLOCK_SIZE) ||
        EEPROM_ERASE(CONFIG_SLOT_B, EEPROM_BLOCK_SIZE)) {
+        Storage_ReportFault(STORAGE_FAULT_CONFIG, 1U);
         return DEVICE_STATUS_IO_ERROR;
     }
     storage_kick_watchdog();
@@ -1343,6 +1373,7 @@ uint8_t Storage_FactoryReset(void)
     storage_startup_flags = 0U;
     if(Connectivity_Save(&connectivity_config) != DEVICE_STATUS_OK)
         return DEVICE_STATUS_IO_ERROR;
+    storage_faults &= (uint8_t)~(STORAGE_FAULT_CONFIG | STORAGE_FAULT_RUNTIME | STORAGE_FAULT_IR);
     return Config_InitializeDefaults(0U);
 }
 
