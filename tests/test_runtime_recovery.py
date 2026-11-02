@@ -33,6 +33,329 @@ def no_includes(source):
 
 
 class RuntimeRecoveryTests(unittest.TestCase):
+    def test_updater_boot_does_not_enter_a_partial_app_on_metadata_read_error(self):
+        source = (ROOT / 'BLE/BackupUpgrade_IAP/APP/peripheral_main.c').read_text(encoding='utf-8')
+        boot = no_includes(source).replace(function(source, 'jump_to_app'),
+                                           'static void jump_to_app(void) {test_jump();}')
+        boot = boot.replace('int main(void)', 'static void updater_entry(void)')
+        self.compile_run(r'''
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <assert.h>
+#include <setjmp.h>
+#include "CH58x_common.h"
+#include "ota_update.h"
+#define CLK_SOURCE_PLL_60MHz 0U
+static uint8_t dataflash[0x8000], flash[480*1024], image[512];
+static uint32_t read_error_address, expected_boot_crc;
+static unsigned read_errors, app_erases, app_writes, metadata_writes;
+static int fail_app_write=-1;
+static int fail_metadata_write=-1;
+static uint8_t cut_active;
+static uint32_t cut_at,cut_steps;
+static jmp_buf stopped;
+static void cut_step(void) {
+    if(cut_active && cut_steps++==cut_at)longjmp(stopped,3);
+}
+static void test_jump(void);
+static uint8_t metadata_valid(const ota_metadata_t *record);
+static void SetSysClock(unsigned c) {(void)c;}
+static void mDelaymS(unsigned ms) {(void)ms;}
+static void SYS_ResetExecute(void) {longjmp(stopped,2);}
+uint32_t Test_EepromRead(uint32_t a,void *p,uint32_t n) {
+    assert(a+n<=sizeof(dataflash));
+    if(a==read_error_address && read_errors){read_errors--;return 1;}
+    memcpy(p,dataflash+a,n);return 0;
+}
+uint32_t Test_EepromErase(uint32_t a,uint32_t n) {
+    assert(a+n<=sizeof(dataflash));
+    for(unsigned i=0;i<n;i++){cut_step();dataflash[a+i]=0xFF;}
+    return 0;
+}
+uint32_t Test_EepromWrite(uint32_t a,const void *p,uint32_t n) {
+    assert(a+n<=sizeof(dataflash));
+    if((int)metadata_writes++==fail_metadata_write)return 1;
+    for(unsigned i=0;i<n;i++){cut_step();dataflash[a+i]&=((const uint8_t*)p)[i];}
+    return 0;
+}
+uint32_t Test_FlashErase(uint32_t a,uint32_t n) {
+    ota_metadata_t first, second;
+    memcpy(&first,dataflash+OTA_METADATA_A,sizeof(first));
+    memcpy(&second,dataflash+OTA_METADATA_B,sizeof(second));
+    assert(metadata_valid(&first) && metadata_valid(&second));
+    assert(first.reserved==1 && second.reserved==1);
+    assert(first.state==OTA_STATE_INSTALLING && second.state==OTA_STATE_INSTALLING);
+    assert(a>=OTA_APP_ADDRESS && a+n<=OTA_STAGING_ADDRESS);
+    app_erases++;
+    for(unsigned i=0;i<n;i++){cut_step();flash[a+i]=0xFF;}
+    return 0;
+}
+uint32_t Test_FlashWrite(uint32_t a,const void *p,uint32_t n) {
+    assert(a>=OTA_APP_ADDRESS && a+n<=OTA_STAGING_ADDRESS);
+    if((int)app_writes++==fail_app_write)return 1;
+    for(unsigned i=0;i<n;i++){cut_step();flash[a+i]&=((const uint8_t*)p)[i];}
+    return 0;
+}
+void Test_FlashRead(uint32_t a,void *p,uint32_t n) {
+    assert(a+n<=sizeof(flash));memcpy(p,flash+a,n);
+}
+''' + boot + r'''
+static void test_jump(void) {
+    assert(image_crc(OTA_APP_ADDRESS,sizeof(image))==expected_boot_crc);
+    longjmp(stopped,1);
+}
+static void prepare(void) {
+    const uint32_t header[]={0x0300006FU,0,0,0x20000090U,0x20000094U,0xF3F9BDA9U};
+    memset(dataflash,0xFF,sizeof(dataflash));memset(flash,0xFF,sizeof(flash));
+    for(unsigned i=0;i<sizeof(image);i++)image[i]=(uint8_t)(i*7U);
+    memcpy(image,header,sizeof(header));memcpy(flash+OTA_STAGING_ADDRESS,image,sizeof(image));
+    memset(flash+OTA_APP_ADDRESS,0x11,sizeof(image));
+    memcpy(flash+OTA_APP_ADDRESS,header,sizeof(header));
+    expected_boot_crc=image_crc(OTA_STAGING_ADDRESS,sizeof(image));
+    metadata=(ota_metadata_t){.magic=OTA_METADATA_MAGIC,.schema=1,.state=OTA_STATE_READY,
+                             .generation=10,.current_version=65536,.update_version=65538,
+                             .image_size=sizeof(image),.image_crc32=expected_boot_crc};
+    metadata.crc32=metadata_crc(&metadata);memcpy(dataflash+OTA_METADATA_A,&metadata,sizeof(metadata));
+    metadata.state=OTA_STATE_INSTALLING;metadata.generation++;
+    metadata.crc32=metadata_crc(&metadata);memcpy(dataflash+OTA_METADATA_B,&metadata,sizeof(metadata));
+    read_errors=app_erases=app_writes=metadata_writes=0;
+    fail_app_write=fail_metadata_write=-1;
+}
+static int run_boot(void) {
+    int result=setjmp(stopped);
+    if(!result){updater_entry();assert(0);}
+    return result;
+}
+int main(void) {
+    /* A newer INSTALLING record must not disappear behind one failed read.
+     * The app is deliberately half copied before this simulated restart. */
+    prepare();memcpy(flash+OTA_APP_ADDRESS,image,128);
+    read_error_address=OTA_METADATA_B;read_errors=1;
+    assert(run_boot()==1 && !memcmp(flash+OTA_APP_ADDRESS,image,sizeof(image)));
+    /* Persistent inability to determine the latest record must not boot or erase. */
+    prepare();memcpy(flash+OTA_APP_ADDRESS,image,128);
+    read_errors=100;assert(run_boot()==2 && !app_erases && !app_writes && !metadata_writes);
+    /* Interrupted preparation must not erase any app byte before both markers commit. */
+    for(int failure=0;failure<4;failure++) {
+        prepare();fail_metadata_write=failure;
+        assert(run_boot()==2 && !app_erases && !app_writes);
+        fail_metadata_write=-1;assert(run_boot()==1);
+    }
+    /* A copy interruption followed by staging corruption is not an intact old app. */
+    prepare();fail_app_write=1;assert(run_boot()==2 && app_writes==2);
+    unsigned saved_writes=metadata_writes;
+    app_writes=0;assert(run_boot()==2 && app_writes==2 && metadata_writes==saved_writes);
+    flash[OTA_STAGING_ADDRESS+100]^=1;
+    assert(run_boot()==2);
+    /* Either one of the two start markers can be lost without hiding the copy. */
+    for(unsigned slot=0;slot<2;slot++) {
+        uint32_t a=slot?OTA_METADATA_B:OTA_METADATA_A;
+        dataflash[a+offsetof(ota_metadata_t,crc32)]^=1;
+        assert(run_boot()==2);
+        dataflash[a+offsetof(ota_metadata_t,crc32)]^=1;
+    }
+    fail_app_write=-1;flash[OTA_STAGING_ADDRESS+100]^=1;
+    assert(run_boot()==1 && !memcmp(flash+OTA_APP_ADDRESS,image,sizeof(image)));
+    /* Before copying starts, a bad staging file still leaves the old app runnable. */
+    prepare();expected_boot_crc=image_crc(OTA_APP_ADDRESS,sizeof(image));
+    flash[OTA_STAGING_ADDRESS+100]^=1;
+    assert(run_boot()==1 && !app_erases && !app_writes);
+    /* A completed copy remains bootable even if the final journal commit failed
+     * and staging later fails CRC. The complete APP CRC is authoritative then. */
+    prepare();fail_metadata_write=4;assert(run_boot()==2 && app_writes==2);
+    flash[OTA_STAGING_ADDRESS+100]^=1;fail_metadata_write=-1;
+    assert(run_boot()==1);
+    /* An interrupted first metadata creation is not an interrupted app copy. */
+    prepare();expected_boot_crc=image_crc(OTA_APP_ADDRESS,sizeof(image));
+    memset(dataflash,0xFF,sizeof(dataflash));memcpy(dataflash+OTA_METADATA_A,&metadata,16);
+    assert(run_boot()==1 && !app_erases && !app_writes);
+    /* Two non-empty corrupted metadata records do not justify booting a partial APP. */
+    prepare();memcpy(flash+OTA_APP_ADDRESS,image,128);
+    dataflash[OTA_METADATA_A+offsetof(ota_metadata_t,crc32)]^=1;
+    dataflash[OTA_METADATA_B+offsetof(ota_metadata_t,crc32)]^=1;
+    assert(run_boot()==2 && !app_erases && !app_writes);
+    /* Abrupt cuts, not API error returns: no cleanup after a partial mutation.
+     * Exercise two start commits, each APP erase/write byte and final commit. */
+    unsigned point;
+    for(point=0;point<7000;point++) {
+        prepare();cut_at=point;cut_steps=0;cut_active=1;
+        int result=run_boot();cut_active=0;
+        assert(result==1 || result==3);
+        if(result==1)break;
+        assert(run_boot()==1 && !memcmp(flash+OTA_APP_ADDRESS,image,sizeof(image)));
+    }
+    assert(point==3U*(EEPROM_PAGE_SIZE+sizeof(ota_metadata_t))+EEPROM_BLOCK_SIZE+sizeof(image));
+    return 0;
+}
+''')
+
+    def test_ble_service_rejects_nonrequest_frames_before_confirming_session(self):
+        source = (APP / 'device_service.c').read_text(encoding='utf-8')
+        protocol = no_includes((APP / 'device_protocol.c').read_text(encoding='utf-8'))
+        self.compile_run(r'''
+#include <assert.h>
+#include <string.h>
+#include "device_protocol.h"
+static unsigned calls;
+static uint8_t dispatch(const device_frame_t *r,uint8_t *p,uint16_t *n,uint8_t *a) {
+    (void)a;assert(r->type==DEVICE_FRAME_REQUEST);calls++;
+    p[0]=0x42;*n=1;return DEVICE_STATUS_OK;
+}
+''' + protocol + function(source, 'DeviceService_HandleFrame') + r'''
+int main(void) {
+    uint8_t request[251],response[251],saved[251];uint16_t n,length;
+    device_frame_t frame={.seq=7,.opcode=DEVICE_OP_GET_STATE};
+    memset(response,0xCC,sizeof(response));memcpy(saved,response,sizeof(saved));
+    for(unsigned type=0;type<256;type++) {
+        if(type==DEVICE_FRAME_REQUEST)continue;
+        frame.type=(uint8_t)type;
+        assert(DeviceProtocol_Encode(&frame,request,sizeof(request),&n)==0);
+        length=123;
+        assert(DeviceService_HandleFrame(request,n,response,sizeof(response),&length)==DEVICE_STATUS_INVALID_ARG);
+        assert(length==0 && !calls && !memcmp(response,saved,sizeof(response)));
+    }
+    frame.type=DEVICE_FRAME_REQUEST;
+    assert(DeviceProtocol_Encode(&frame,request,sizeof(request),&n)==0);
+    assert(DeviceService_HandleFrame(request,n,0,sizeof(response),&length)==DEVICE_STATUS_INVALID_ARG && !calls);
+    assert(DeviceService_HandleFrame(request,n,response,10,&length)==DEVICE_STATUS_INVALID_ARG && !calls);
+    assert(DeviceService_HandleFrame(request,n,response,sizeof(response),0)==DEVICE_STATUS_INVALID_ARG && !calls);
+    assert(DeviceService_HandleFrame(request,n,response,sizeof(response),&length)==0 && calls==1);
+    assert(DeviceProtocol_Decode(response,length,&frame)==0);
+    assert(frame.type==DEVICE_FRAME_RESPONSE && frame.seq==7 && frame.payload[0]==0x42);
+    request[n-1]^=1;length=99;
+    assert(DeviceService_HandleFrame(request,n,response,sizeof(response),&length)==DEVICE_STATUS_VERIFY_FAILED);
+    assert(!length && calls==1);
+    request[n-1]^=1;
+    assert(DeviceService_HandleFrame(request,n,request,sizeof(request),&length)==0 && calls==2);
+    return 0;
+}
+''')
+
+    def test_ble_temperature_callback_is_bounded_without_timer_interrupts(self):
+        source = (ROOT / 'BLE/HAL/MCU.c').read_text(encoding='utf-8', errors='replace')
+        self.compile_run(r'''
+#include <assert.h>
+#include <stdint.h>
+typedef volatile uint32_t *PUINT32;
+#define ROM_CFG_TMP_25C ((uintptr_t)&factory)
+#define FREQ_SYS 60000000U
+#define RB_ADC_START 1U
+#define RB_ADC_DATA 4095U
+static uint32_t factory=(25U<<16)|2300U, cycles;
+static uint8_t R8_TKEY_CFG=1, R8_TEM_SENSOR=2, R8_ADC_CHANNEL=3, R8_ADC_CFG=4;
+static uint16_t R16_ADC_DATA=2400;
+static uint8_t conversion, stuck;
+static unsigned polls;
+static uint8_t *conversion_register(void) {
+    assert(++polls<1000); /* Old unbounded code fails instead of hanging the test. */
+    if(!stuck) conversion=0;
+    return &conversion;
+}
+#define R8_ADC_CONVERT (*conversion_register())
+static uint32_t SYS_GetSysTickCnt(void) {cycles+=6000;return cycles;}
+static void ADC_InterTSSampInit(void) {
+    R8_TKEY_CFG=10;R8_TEM_SENSOR=20;R8_ADC_CHANNEL=30;R8_ADC_CFG=40;
+}
+static void check_restored(void) {
+    assert(R8_TKEY_CFG==1 && R8_TEM_SENSOR==2 && R8_ADC_CHANNEL==3 && R8_ADC_CFG==4);
+}
+''' + function(source, 'HAL_GetInterTempValue') + r'''
+int main(void) {
+    /* No CurTick/IRQ advancement is available to this callback. */
+    stuck=1;cycles=UINT32_MAX-30000U;
+    uint32_t before=cycles;
+    assert(HAL_GetInterTempValue()==2300);check_restored();
+    assert(!conversion && (uint32_t)(cycles-before)<=66000U && polls<20);
+    stuck=0;polls=0;assert(HAL_GetInterTempValue()==2400);check_restored();
+    stuck=1;polls=0;R16_ADC_DATA=4000;
+    assert(HAL_GetInterTempValue()==2400);check_restored();
+    assert(!conversion && polls<20);
+    stuck=0;polls=0;R16_ADC_DATA=2500;
+    assert(HAL_GetInterTempValue()==2500);check_restored();
+    return 0;
+}
+''')
+
+    def test_ble_handshake_release_retries_rejected_disconnect(self):
+        source = (APP / 'peripheral.c').read_text(encoding='utf-8')
+        event = re.search(r'if\(events & SBP_HANDSHAKE_TIMEOUT_EVT\)\s*\{[\s\S]*?'
+                          r'return \(events \^ SBP_HANDSHAKE_TIMEOUT_EVT\);\s*\}', source).group()
+        self.compile_run(r'''
+#include <stdint.h>
+#include <assert.h>
+#define SUCCESS 0U
+#define GAP_CONNHANDLE_INIT 0xFFFFU
+#define SBP_HANDSHAKE_TIMEOUT_EVT 8U
+#define MS1_TO_SYSTEM_TIME(ms) (ms)
+#define PRINT(...) ((void)0)
+static struct {uint16_t connHandle;} peripheralConnList={1};
+static uint8_t deviceSessionReady, Peripheral_TaskID, reject_disconnect=1;
+static unsigned attempts, retries;
+static uint8_t GAPRole_TerminateLink(uint16_t h) {
+    assert(h==1);attempts++;return reject_disconnect;
+}
+static void tmos_start_task(uint8_t t,uint16_t e,uint32_t d) {
+    (void)t;assert(e==SBP_HANDSHAKE_TIMEOUT_EVT && d==250);retries++;
+}
+static uint16_t process(uint16_t events) {
+''' + event + r'''
+    return events;
+}
+int main(void) {
+    assert(process(9)==1 && attempts==1 && retries==1);
+    assert(process(8)==0 && attempts==2 && retries==2);
+    reject_disconnect=0;process(8);assert(attempts==3 && retries==2);
+    deviceSessionReady=1;process(8);assert(attempts==3);
+    deviceSessionReady=0;peripheralConnList.connHandle=GAP_CONNHANDLE_INIT;
+    process(8);assert(attempts==3);
+    return 0;
+}
+''')
+
+    def test_subscribe_success_cannot_hide_repeated_publish_failures(self):
+        source = (APP / 'ml307r.c').read_text(encoding='utf-8')
+        context = re.search(r'typedef struct \{.*?\} ml307_context_t;', source, re.S).group()
+        self.compile_run(r'''
+#include <assert.h>
+#include "ml307r.h"
+#include "device_protocol.h"
+#define ML307_HTTP_IDLE 0U
+#define ML307_HTTP_TERM 7U
+#define ML307_SIGNAL_INTERVAL_MS 60000U
+#define ML307_MGMT_PARAMETERS 12U
+''' + context + r'''
+static ml307_context_t modem;
+static uint16_t device_jitter_ms;
+static uint32_t CurTick;
+static unsigned uart_disable_count;
+static uint8_t publishing_management_frame[251];
+static void uart_disable(void) {uart_disable_count++;}
+static void status_phase(ml307_phase_t phase) {modem.status.phase=phase;}
+static void queue_registration(uint16_t transaction) {(void)transaction;}
+void Peripheral_RequestReset(void) {}
+void Ml307_ApplyConfiguration(void) {}
+''' + '\n'.join(function(source, name) for name in (
+            'complete_mqtt_subscription', 'complete_publish', 'enter_backoff')) + r'''
+int main(void) {
+    for(unsigned cycle=0;cycle<10;cycle++) {
+        modem.mqtt_subscribe_step=1;complete_mqtt_subscription();
+        assert(modem.status.mqtt_online);
+        enter_backoff(ML307_ERROR_PUBLISH);
+        assert(modem.recovery_level==(cycle<2?cycle+1:3));
+        assert(modem.status.consecutive_failures==cycle+1);
+        CurTick=modem.next_action_ms;
+    }
+    assert(uart_disable_count==8);
+    modem.publishing_management=1;complete_publish();
+    assert(modem.recovery_level==3 && modem.status.consecutive_failures==10);
+    complete_publish();
+    assert(modem.recovery_level==0 && modem.status.consecutive_failures==0);
+    assert(modem.status.last_error==ML307_ERROR_NONE);
+    return 0;
+}
+''')
+
     def test_local_rule_records_are_bounded_fifo_and_never_replayed_offline(self):
         source = (APP / 'ml307r.c').read_text(encoding='utf-8')
         context = re.search(r'typedef struct \{.*?\} ml307_context_t;', source, re.S).group()
@@ -590,6 +913,8 @@ int main(void){
 
     def test_manual_control_updates_only_after_uart_completion(self):
         source = (APP / 'device_service.c').read_text(encoding='utf-8')
+        flash = no_includes((APP / 'flash.c').read_text(encoding='utf-8'))
+        flash = flash[:flash.index('void LoadDevInfo')]
         constants = ''.join('#define '+n+' '+v+'\n' for n,v in re.findall(
             r'\b(IR_CMD_[A-Z0-9_]+)\s*=\s*(0x[0-9a-fA-F]+)',
             (APP / 'include/ir_tab.h').read_text(encoding='utf-8')))
@@ -599,21 +924,27 @@ int main(void){
 #include "board.h"
 #include "device_protocol.h"
 #include "device_service.h"
+#include "config_store.h"
 t_dev Dev;uint32_t LocalTimestamp;
 static uint8_t control_pending,control_field;
 static uint16_t control_value;
 static unsigned saved,reports,ble_replies,mqtt_replies,transmitted;
 static uint8_t accepted=1,last_status;
+static t_dev snapshot;
 uint8_t Ir_ConfiguredCommandSupported(IR_CMD_t c){(void)c;return 1;}
 uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t c){(void)c;transmitted++;return accepted;}
 uint8_t Ir_SendLearnedVerified(uint8_t c){(void)c;transmitted++;return accepted;}
 void Rule_ManualOverride(void){}
 void Rule_RecordPowerChange(void){}
-void SaveDevInfo(uint16_t n){assert(n==50);saved++;}
+uint8_t Config_CommitIfChanged(void){return 0;}
+uint8_t Runtime_Append(void){saved++;snapshot=Dev;return 0;}
+uint8_t IrStore_SaveIfChanged(void){return 0;}
+uint32_t Config_GetRevision(void){return 1;}
+void Storage_ReportFault(uint8_t source,uint8_t failed){(void)source;(void)failed;}
 void Ml307_RequestReport(void){reports++;}
 void Peripheral_ControlCompleted(uint8_t s){last_status=s;ble_replies++;}
 void Ml307_ControlCompleted(uint8_t s){last_status=s;mqtt_replies++;}
-''' + constants + ''.join(function(source,n) for n in (
+''' + flash + constants + ''.join(function(source,n) for n in (
             'update_power_state','update_learned_state','SplitAcControl_Execute',
             'SplitAcControl_IsPending','SplitAcControl_IrCompleted')) + r'''
 int main(void){
@@ -626,14 +957,72 @@ int main(void){
  assert(!SplitAcControl_IsPending()&&!SplitAcControl_IrCompleted(1));
  assert(ble_replies==1&&mqtt_replies==1);
  assert(SplitAcControl_Execute(CONTROL_FIELD_POWER,1)==0);
- assert(SplitAcControl_IrCompleted(1)&&Dev.onOff==PowerOn&&saved==1&&!last_status);
+ assert(SplitAcControl_IrCompleted(1)&&Dev.onOff==PowerOn&&!saved&&!last_status);
  assert(Dev.meter.onoff_count==1);
  Dev.irActType=ACT_TYPE_LEARN;Dev.learnCode[6].enable=1;Dev.temSet=25;
  assert(SplitAcControl_Execute(CONTROL_FIELD_LEARNED_CHANNEL,6)==0&&Dev.temSet==25);
- assert(SplitAcControl_IrCompleted(1)&&Dev.temSet==26&&saved==2);
+ assert(SplitAcControl_IrCompleted(1)&&Dev.temSet==26&&!saved);
  accepted=0;
  assert(SplitAcControl_Execute(CONTROL_FIELD_POWER,0)==DEVICE_STATUS_BUSY);
- assert(!SplitAcControl_IsPending()&&saved==2&&reports==3);
+ assert(!SplitAcControl_IsPending()&&!saved&&reports==3);
+ /* All ordinary control fields, including repeated absolute commands, stay in RAM. */
+ Dev.irActType=ACT_TYPE_IR;accepted=1;
+ const uint16_t controls[][2]={
+  {CONTROL_FIELD_POWER,0},{CONTROL_FIELD_POWER,1},
+  {CONTROL_FIELD_MODE,Mode_Cool},{CONTROL_FIELD_TEMPERATURE,270},
+  {CONTROL_FIELD_FAN,Wind_High},{CONTROL_FIELD_TEMP_STEP,0},
+  {CONTROL_FIELD_FAST_MODE,0}
+ };
+ for(unsigned repeat=0;repeat<100;repeat++){
+  for(unsigned i=0;i<sizeof(controls)/sizeof(controls[0]);i++){
+   assert(SplitAcControl_Execute(controls[i][0],controls[i][1])==0);
+   assert(SplitAcControl_IrCompleted(1)&&!last_status);
+   for(unsigned poll=0;poll<4;poll++)Flash_Poll();
+   assert(!saved);
+  }
+ }
+ /* The periodic save path persists the latest state and meter in one snapshot. */
+ Dev.meter.energy_wh=123;SaveDevInfo(0);Flash_Poll();
+ assert(saved==1 && snapshot.meter.energy_wh==123);
+ assert(snapshot.onOff==Dev.onOff && snapshot.ctlMode==Dev.ctlMode);
+ assert(snapshot.temSet==Dev.temSet && snapshot.wind==Dev.wind);
+ for(unsigned poll=0;poll<600;poll++)Flash_Poll();
+ assert(saved==1);
+ return 0;
+}
+''')
+
+    def test_business_controls_do_not_save_but_ir_configuration_still_does(self):
+        source = (APP / 'util.c').read_text(encoding='utf-8')
+        self.compile_run(r'''
+#include <assert.h>
+#include "board.h"
+t_dev Dev;IRBUF_t IrBuf;uint32_t LocalTimestamp;
+static unsigned saved,transmitted,reports;
+static uint8_t accepted=1;
+uint8_t Ir_PrepareConfigurationChange(void){return 1;}
+uint8_t Ir_ConfiguredCommandSupported(IR_CMD_t c){(void)c;return 1;}
+uint8_t Ir_ExecuteConfiguredVerified(IR_CMD_t c){(void)c;transmitted++;return accepted;}
+void Rule_ManualOverride(void){}
+void Rule_RecordPowerChange(void){}
+void SaveDevInfo(uint16_t delay){assert(delay==50);saved++;}
+void Ml307_RequestReport(void){reports++;}
+uint8_t Meter_ClearEnergy(void){return 0;}
+''' + function(source, 'ExecuteGatewayControl') + r'''
+int main(void){
+ Dev.irActType=ACT_TYPE_IR;Dev.irType=1;
+ for(unsigned repeat=0;repeat<100;repeat++){
+  assert(ExecuteGatewayControl(21,0,0)==0 && Dev.onOff==PowerOn);
+  assert(ExecuteGatewayControl(22,0,0)==0 && Dev.onOff==PowerOff);
+  assert(ExecuteGatewayControl(23,0,27)==0 && Dev.temSet==27);
+  assert(ExecuteGatewayControl(24,Mode_Heat,0)==0 && Dev.ctlMode==Mode_Heat);
+  assert(ExecuteGatewayControl(25,Wind_High,0)==0 && Dev.wind==Wind_High);
+  assert(!saved);
+ }
+ assert(transmitted==500 && reports==500);
+ accepted=0;
+ assert(ExecuteGatewayControl(21,0,0)==1 && !saved && Dev.onOff==PowerOff);
+ assert(ExecuteGatewayControl(26,0,11)==0 && saved==1 && Dev.irType==11);
  return 0;
 }
 ''')
@@ -772,6 +1161,8 @@ void Storage_ReportFault(uint8_t s,uint8_t f){(void)s;(void)f;}
 uint32_t Config_Crc32(const uint8_t *p,uint16_t n){return crc32_update(0xFFFFFFFFU,p,n)^0xFFFFFFFFU;}
 int main(void){
  uint8_t image[64];memset(image,0xA5,sizeof(image));
+ const uint32_t header[]={0x0300006FU,0,0,0x20000090U,0x20000094U,0xF3F9BDA9U};
+ memcpy(image,header,sizeof(header));
  for(unsigned phase=1;phase<=5;phase++){
   memset(df,255,sizeof(df));memset(cf,255,sizeof(cf));reads=failed_read=0;
   Ota_Init();
@@ -1130,20 +1521,20 @@ static uint32_t CurTick;
 static uint16_t rx_head,rx_tail;
 static uint8_t rx_ring[512],http_raw_data[240];
 static char rx_line[512];
-static unsigned commands,writes,statuses;
+static unsigned commands,writes,statuses,prompts;
 static ota_metadata_t ota={.state=OTA_STATE_DOWNLOADING,.url_length=1};
 static uint8_t command[18]={0,13,10,',','>',0xFF,1,2,3,4,5,6,7,8,9,0,0,0};
 static uint8_t body[8]={0,13,10,',','>',0xFF,9,0};
 const ota_metadata_t *Ota_Get(void) {return &ota;}
 uint8_t Ota_Write(uint32_t o,const uint8_t *d,uint16_t n) {assert(o==0 && n==8 && !memcmp(d,body,8));writes++;return 0;}
 typedef struct {const char *subscribe_topic,*management_topic;} connectivity_config_t;
-static connectivity_config_t config={"sub","manage"};
+static connectivity_config_t config={"sub","mag"};
 static const connectivity_config_t *Connectivity_Get(void) {return &config;}
 static uint8_t topic_matches(const char *p,const char *t,uint8_t n) {return !strcmp(p,"sub") && n==11 && !memcmp(t,"sub/ac/1234",11);}
 static void queue_ota_status(uint16_t t,uint8_t s) {(void)t;(void)s;statuses++;}
 static uint32_t http_retry_delay(uint8_t n) {(void)n;return 2000;}
 static void handle_mqtt_payload(const uint8_t *p,uint16_t n) {assert(n==18 && !memcmp(p,command,18));commands++;}
-static uint8_t send_publish_payload(void) {return 1;}
+static uint8_t send_publish_payload(void) {prompts++;return 1;}
 static void enter_backoff(uint8_t e) {(void)e;assert(0);}
 static void process_line(char *l,uint16_t n) {(void)n;if(!strcmp(l,"OK"))modem.http_raw_state=0;}
 ''' + codec + '\n'.join(function(source,n) for n in (
@@ -1158,6 +1549,17 @@ static void mqtt(void) {
     const char *header="+MQTTURC: \"publish\",0,0,\"sub/ac/1234\",18,18,";
     feed((const uint8_t *)header,strlen(header));feed(command,sizeof(command));
     feed((const uint8_t *)"\r\n",2);
+}
+static void burst(const uint8_t *p,unsigned n,unsigned chunk) {
+    for(unsigned offset=0;offset<n;) {
+        unsigned count=n-offset;if(count>chunk)count=chunk;
+        for(unsigned i=0;i<count;i++) {
+            unsigned next=(rx_head+1U)%512U;assert(next!=rx_tail);
+            rx_ring[rx_head]=p[offset++];rx_head=(uint16_t)next;
+        }
+        consume_uart();
+    }
+    while(rx_tail!=rx_head)consume_uart();
 }
 int main(void) {
     const char *header="+MHTTPREAD: 0,1,0,8,";
@@ -1175,6 +1577,39 @@ int main(void) {
     rx_tail=0;rx_head=(uint16_t)(strlen(bad)+18);consume_uart();
     assert(commands==3 && modem.status.last_error==ML307_ERROR_OTA);
     assert(modem.http_step==ML307_HTTP_TERM && !modem.http_raw_state);
+    /* Every binary byte value, all payload positions, varied UART batching,
+     * ring wrap, and MQTT received while an HTTP read is pending. */
+    for(unsigned sample=0;sample<256;sample++) {
+        const char *mqtt_header="+MQTTURC: \"publish\",0,0,\"sub/ac/1234\",18,18,";
+        unsigned chunk=sample%191U+1U;
+        for(unsigned i=0;i<sizeof(command);i++)command[i]=(uint8_t)(sample+i*31U);
+        for(unsigned i=0;i<sizeof(body);i++)body[i]=(uint8_t)(sample+i*17U);
+        modem.status.phase=ML307_PHASE_PUBLISH;modem.prompt_seen=0;
+        modem.http_step=ML307_HTTP_READ;modem.http_raw_state=1;
+        modem.http_read_type=1;modem.http_range_size=4096;
+        modem.http_range_received=0;modem.http_raw_comma_count=0;
+        burst((const uint8_t*)mqtt_header,strlen(mqtt_header),chunk);
+        burst(command,sizeof(command),chunk);burst((const uint8_t*)"\r\n",2,chunk);
+        assert(commands==sample+4U && writes==sample+1U && !prompts);
+        burst((const uint8_t*)header,strlen(header),chunk);burst(body,sizeof(body),chunk);
+        assert(writes==sample+2U && modem.http_raw_state==3 && !prompts);
+        burst((const uint8_t*)"\r\nOK\r\n",6,chunk);
+        assert(!modem.http_raw_state && !modem.mqtt_raw_state && !modem.line_length);
+    }
+    /* Oversized but fully received MQTT data is discarded by length, then
+     * a new valid command must still be accepted without restarting UART. */
+    const char *oversized="+MQTTURC: \"publish\",0,0,\"sub/ac/1234\",161,161,";
+    uint8_t ignored[161];memset(ignored,'X',sizeof(ignored));
+    burst((const uint8_t*)oversized,strlen(oversized),3);
+    burst(ignored,sizeof(ignored),37);burst((const uint8_t*)"\r\n",2,1);
+    assert(commands==259 && !modem.mqtt_raw_state);
+    /* Text overflow must saturate diagnostics and resynchronise at newline. */
+    modem.status.phase=ML307_PHASE_ONLINE;
+    uint8_t noise[700];memset(noise,'Z',sizeof(noise));
+    modem.status.rx_overflow_count=0xFFFF;
+    burst(noise,sizeof(noise),191);burst((const uint8_t*)"\r\n",2,1);
+    assert(!modem.discard_line && !modem.line_length && modem.status.rx_overflow_count==0xFFFF);
+    mqtt();assert(commands==260 && !modem.mqtt_raw_state && !prompts);
     return 0;
 }
 ''')
@@ -1701,13 +2136,14 @@ static uint32_t CurTick;
 static uint8_t buffer[256],last_fragment[256];
 static uint8_t allocate_ok,notify_ok;
 static unsigned freed,terminated;
+static uint8_t reject_disconnect;
 static uint8_t *GATT_bm_alloc(uint16_t c,uint8_t t,uint16_t l,void *p,uint8_t f) {(void)c;(void)t;(void)l;(void)p;(void)f;return allocate_ok?buffer:0;}
 static uint8_t simpleProfile_Notify(uint16_t c,uint8_t i,attHandleValueNoti_t *n) {(void)c;(void)i;memcpy(last_fragment,n->pValue,n->len);return notify_ok?0:4;}
 static void GATT_bm_free(gattMsg_t *p,uint8_t t) {(void)p;(void)t;freed++;}
 static void tmos_start_task(uint8_t t,uint16_t e,uint32_t d) {(void)t;(void)e;(void)d;}
 static void tmos_set_event(uint8_t t,uint16_t e) {(void)t;(void)e;}
 uint16_t DeviceProtocol_Crc16(const uint8_t *p,uint16_t n){uint16_t s=0;while(n--)s+=*p++;return s;}
-static void GAPRole_TerminateLink(uint16_t h) {(void)h;terminated++;}
+static uint8_t GAPRole_TerminateLink(uint16_t h) {(void)h;terminated++;return reject_disconnect;}
 ''' + fields + '\n'.join(function(source, n) for n in ('peripheralCharNotify', 'SendDeviceFrame', 'Peripheral_ControlCompleted', 'DeviceTxStep')) + r'''
 int main(void) {
     uint8_t frame[32]={0xA5,2,2,7};
@@ -1722,7 +2158,17 @@ int main(void) {
     CurTick=UINT32_MAX-1499U;SendDeviceFrame(frame,32);
     CurTick=UINT32_MAX;DeviceTxStep();assert(deviceTxActive && terminated==1);
     CurTick=0;DeviceTxStep();assert(!deviceTxActive && terminated==2);
-    notify_ok=1;SendDeviceFrame(frame,32);deviceControlPending=1;
+    /* A rejected disconnect must not discard the only recovery event. */
+    SendDeviceFrame(frame,32);reject_disconnect=1;CurTick=1500;
+    DeviceTxStep();assert(deviceTxActive && terminated==3);
+    DeviceTxStep();assert(deviceTxActive && terminated==4);
+    reject_disconnect=0;DeviceTxStep();assert(!deviceTxActive && terminated==5);
+    /* Notification recovery may finish the same response instead. */
+    SendDeviceFrame(frame,32);reject_disconnect=1;CurTick=3000;
+    DeviceTxStep();assert(deviceTxActive && terminated==6);
+    notify_ok=1;DeviceTxStep();DeviceTxStep();DeviceTxStep();
+    assert(!deviceTxActive && terminated==6);
+    SendDeviceFrame(frame,32);deviceControlPending=1;
     DeviceTxStep();assert(deviceTxOffset==0);
     Peripheral_ControlCompleted(6);assert(!deviceControlPending&&deviceTxFrame[6]==6);
     assert(deviceTxFrame[30]==(uint8_t)DeviceProtocol_Crc16(deviceTxFrame,30));
@@ -1745,6 +2191,9 @@ static ota_metadata_t metadata;
 static uint8_t copy_buffer[256] __attribute__((aligned(4)));
 static uint8_t flash[480*1024];
 static int fail_at=-1,write_count;
+static uint8_t copy_markers_ready;
+/* Full boot-level tests above use the real dual-slot metadata writer. */
+static uint8_t metadata_save(void) {return 1U;}
 uint32_t Test_FlashErase(uint32_t a,uint32_t l) {memset(flash+a,0xFF,l);return 0;}
 uint32_t Test_FlashWrite(uint32_t a,const void *b,uint32_t l) {
     assert(!(a&3) && !(l&3) && !((uintptr_t)b&3));
@@ -1752,13 +2201,15 @@ uint32_t Test_FlashWrite(uint32_t a,const void *b,uint32_t l) {
     memcpy(flash+a,b,l);return 0;
 }
 void Test_FlashRead(uint32_t a,void *b,uint32_t l) {memcpy(b,flash+a,l);}
-''' + '\n'.join(function(source, n) for n in ('crc32_update', 'image_crc', 'install_image')) + r'''
+''' + '\n'.join(function(source, n) for n in ('crc32_update', 'image_crc', 'staging_image_valid', 'install_image')) + r'''
 int main(void) {
     const uint32_t sizes[]={64,65,67,255,256,257,4095,4097,OTA_MAX_IMAGE_SIZE};
     for(unsigned i=0;i<sizeof(sizes)/sizeof(sizes[0]);i++) {
         metadata.image_size=sizes[i];
         memset(flash,0xFF,sizeof(flash));
         for(uint32_t n=0;n<sizes[i];n++)flash[OTA_STAGING_ADDRESS+n]=(uint8_t)n;
+        const uint32_t header[]={0x0300006FU,0,0,0x20000090U,0x20000094U,0xF3F9BDA9U};
+        memcpy(flash+OTA_STAGING_ADDRESS,header,sizeof(header));
         metadata.image_crc32=image_crc(OTA_STAGING_ADDRESS,sizes[i]);
         write_count=0;fail_at=0;
         assert(!install_image());
@@ -1770,8 +2221,13 @@ int main(void) {
         for(uint32_t n=sizes[i];n<((sizes[i]+3)&~3U);n++)assert(flash[OTA_APP_ADDRESS+n]==0xFF);
         flash[OTA_STAGING_ADDRESS]^=1;
         assert(!install_image());
-        assert(flash[OTA_APP_ADDRESS]==0);
+        assert(flash[OTA_APP_ADDRESS]==0x6F);
     }
+    memset(flash,0,sizeof(flash));
+    flash[OTA_APP_ADDRESS]=0x5A;metadata.image_size=64;
+    metadata.image_crc32=image_crc(OTA_STAGING_ADDRESS,64);
+    write_count=0;
+    assert(!install_image() && !write_count && flash[OTA_APP_ADDRESS]==0x5A);
     return 0;
 }
 ''')

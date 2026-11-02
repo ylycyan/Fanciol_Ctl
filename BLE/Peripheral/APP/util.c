@@ -578,8 +578,7 @@ uint8_t ExecuteGatewayControl(uint8_t op, uint16_t operateTag, uint32_t paramete
         default:
             return 2;
     }
-    /* 延迟并合并运行状态写入，不改变固定网关报文和 LoRa 轮询热路径。 */
-    SaveDevInfo(50u);
+    /* 控制状态留在 RAM，随十分钟计量快照保存，不因每次指令擦写 Flash。 */
     Ml307_RequestReport();
     return 0;
 }

@@ -1314,6 +1314,11 @@ static void complete_publish(void)
         return;
     }
     modem.status.last_report_ms = CurTick;
+    /* A subscription alone does not prove the publish path recovered.
+     * Management PUBACKs must not conceal repeated business publish failures. */
+    modem.status.consecutive_failures = 0U;
+    modem.recovery_level = 0U;
+    modem.status.last_error = ML307_ERROR_NONE;
     modem.publishing_command_valid = 0U;
     modem.waiting = 0U;
     status_phase(ML307_PHASE_ONLINE);
@@ -1611,9 +1616,6 @@ static void complete_mqtt_subscription(void)
     }
     modem.status.mqtt_online = 1U;
     modem.status.last_connected_ms = CurTick;
-    modem.status.consecutive_failures = 0U;
-    modem.status.last_error = ML307_ERROR_NONE;
-    modem.recovery_level = 0U;
     modem.alarm_reported_valid = 0U;
     queue_registration(0U);
     modem.report_requested = 1U;

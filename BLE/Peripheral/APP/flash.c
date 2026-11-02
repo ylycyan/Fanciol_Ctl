@@ -8,9 +8,9 @@ static volatile uint8_t Ir_Save_Pending;
 
 /*
  * Callers express delay in 10 ms ticks; Flash_Poll runs once per second.
- * Ordinary controls are coalesced for at least three seconds so a burst of
- * button presses writes only the final runtime state.  A zero delay remains
- * the explicit next-poll/critical-save path.
+ * Only configuration changes and periodic meter snapshots schedule a save;
+ * ordinary controls remain in RAM.  A zero delay requests the next poll.
+ * Deferred configuration saves are coalesced for at least three seconds.
  */
 void SaveDevInfo(uint16_t delay)
 {

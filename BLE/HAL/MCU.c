@@ -253,17 +253,32 @@ void HAL_Init()
  */
 uint16_t HAL_GetInterTempValue(void)
 {
+    static uint16_t last_sample;
     uint8_t  sensor, channel, config, tkey_cfg;
-    uint16_t adc_data;
+    uint16_t adc_data = last_sample;
+    uint32_t started;
+
+    /* Keep calibration stable on a failed conversion, including the first one.
+     * The low 16 bits of the WCH factory word are its reference ADC sample. */
+    if(!adc_data) adc_data = (uint16_t)(*((PUINT32)ROM_CFG_TMP_25C)) & RB_ADC_DATA;
 
     tkey_cfg = R8_TKEY_CFG;
     sensor = R8_TEM_SENSOR;
     channel = R8_ADC_CHANNEL;
     config = R8_ADC_CFG;
     ADC_InterTSSampInit();
+    started = SYS_GetSysTickCnt();
     R8_ADC_CONVERT |= RB_ADC_START;
-    while(R8_ADC_CONVERT & RB_ADC_START);
+    /* SysTick keeps counting even if this BLE callback masks timer IRQs. */
+    while(R8_ADC_CONVERT & RB_ADC_START) {
+        if((uint32_t)(SYS_GetSysTickCnt() - started) >= FREQ_SYS / 1000U) {
+            R8_ADC_CONVERT = 0U;
+            goto restore;
+        }
+    }
     adc_data = R16_ADC_DATA;
+    last_sample = adc_data;
+restore:
     R8_TEM_SENSOR = sensor;
     R8_ADC_CHANNEL = channel;
     R8_ADC_CFG = config;

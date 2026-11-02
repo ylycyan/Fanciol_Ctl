@@ -1052,6 +1052,7 @@ uint8_t Connectivity_Load(void)
     uint8_t second_valid;
     uint8_t first_erased;
     uint8_t second_erased;
+    uint8_t first_read_error, second_read_error;
     uint8_t selected_valid = 0U;
     uint8_t legacy_valid = 0U;
     uint8_t index;
@@ -1060,11 +1061,10 @@ uint8_t Connectivity_Load(void)
 
     lora_params_write_locked = 0U;
     memset(record, 0xFF, sizeof(*record));
-    if(EEPROM_READ(CONNECTIVITY_SLOT_A, record, sizeof(*record)) != 0U)
-        goto connectivity_read_error;
-    first_valid = connectivity_record_valid(record) &&
+    first_read_error = EEPROM_READ(CONNECTIVITY_SLOT_A, record, sizeof(*record)) != 0U;
+    first_valid = !first_read_error && connectivity_record_valid(record) &&
                   record->state == CONNECTIVITY_RECORD_ACTIVE;
-    first_erased = connectivity_record_erased(record);
+    first_erased = !first_read_error && connectivity_record_erased(record);
     if(first_valid) {
         connectivity_generation = record->generation;
         connectivity_slot = CONNECTIVITY_SLOT_A;
@@ -1074,11 +1074,10 @@ uint8_t Connectivity_Load(void)
 
     /* Reuse one page-sized scratch record to keep the boot task stack bounded. */
     memset(record, 0xFF, sizeof(*record));
-    if(EEPROM_READ(CONNECTIVITY_SLOT_B, record, sizeof(*record)) != 0U)
-        goto connectivity_read_error;
-    second_valid = connectivity_record_valid(record) &&
+    second_read_error = EEPROM_READ(CONNECTIVITY_SLOT_B, record, sizeof(*record)) != 0U;
+    second_valid = !second_read_error && connectivity_record_valid(record) &&
                    record->state == CONNECTIVITY_RECORD_ACTIVE;
-    second_erased = connectivity_record_erased(record);
+    second_erased = !second_read_error && connectivity_record_erased(record);
     if(second_valid && (!selected_valid ||
        (int32_t)(record->generation - connectivity_generation) > 0)) {
         connectivity_generation = record->generation;
@@ -1087,6 +1086,12 @@ uint8_t Connectivity_Load(void)
         selected_valid = 1U;
     }
     if(selected_valid) {
+        if(first_read_error || second_read_error) {
+            /* Keep the verified route alive; never repair an unread peer slot. */
+            lora_params_write_locked = 1U;
+            storage_startup_flags |= STORAGE_STARTUP_DEGRADED;
+            return DEVICE_STATUS_IO_ERROR;
+        }
         if(first_valid != second_valid) {
             uint32_t target = connectivity_slot == CONNECTIVITY_SLOT_A ?
                               CONNECTIVITY_SLOT_B : CONNECTIVITY_SLOT_A;
@@ -1118,6 +1123,8 @@ uint8_t Connectivity_Load(void)
         }
         return DEVICE_STATUS_OK;
     }
+
+    if(first_read_error || second_read_error) goto connectivity_read_error;
 
     /* Old 4/5 slots are 0x2000 and 0x2100. Write new 0x2200 first,
      * leaving both old pages intact through every migration failure. */
@@ -1161,8 +1168,12 @@ connectivity_defaults_recovered:
     connectivity_generation = 0U;
     connectivity_slot = CONNECTIVITY_SLOT_B;
     connectivity_apply(&connectivity_config);
-    if(!first_erased || !second_erased)
+    if(!first_erased || !second_erased) {
         storage_startup_flags |= STORAGE_STARTUP_RECOVERED;
+        /* Defaults are not a repaired communication record. Keep this source
+         * fault visible until a valid configuration is actually committed. */
+        Storage_ReportFault(STORAGE_FAULT_CONNECTIVITY, 1U);
+    }
     return DEVICE_STATUS_VERIFY_FAILED;
 
 connectivity_read_error:

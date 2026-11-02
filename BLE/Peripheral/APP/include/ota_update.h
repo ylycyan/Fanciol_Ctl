@@ -10,6 +10,7 @@
 #define OTA_STAGING_ADDRESS       0x00037000UL
 #define OTA_APP_SIZE              (216UL * 1024UL)
 #define OTA_MAX_IMAGE_SIZE        (208UL * 1024UL)
+#define OTA_MIN_IMAGE_SIZE        64UL
 #define OTA_METADATA_A            0x00007000UL
 #define OTA_METADATA_B            0x00007100UL
 #define OTA_URL_SIZE              128U
@@ -18,6 +19,29 @@
 #define OTA_UPDATER_INFO_ADDRESS  0x0006FFF0UL
 #define OTA_UPDATER_MAGIC         0x31504455UL
 #define OTA_UPDATER_SCHEMA        1U
+#define OTA_COPY_STARTED          1U /* Existing metadata.reserved: app may be partial. */
+
+/* Existing CH583 startup layout; no new package header or version restriction.
+ * This rejects obvious non-APP data, not arbitrary faulty application logic. */
+static inline uint8_t Ota_ImageHeaderValid(const uint32_t *header, uint32_t size)
+{
+    uint32_t entry = header[0], offset;
+    uint8_t i;
+    if(size < OTA_MIN_IMAGE_SIZE || size > OTA_MAX_IMAGE_SIZE ||
+       (entry & 0xFFFU) != 0x06FU || (entry & 0x80000000UL) ||
+       header[1] != 0U || header[2] != 0U || header[5] != 0xF3F9BDA9UL) return 0U;
+    offset = ((entry >> 21) & 0x3FFU) << 1;
+    offset |= ((entry >> 20) & 1U) << 11;
+    offset |= ((entry >> 12) & 0xFFU) << 12;
+    if(offset < 24U || offset > size - 4U) return 0U;
+    for(i = 3U; i <= 4U; i++) {
+        uint32_t handler = header[i];
+        if((handler & 1U) ||
+           !((handler >= 0x20000000UL && handler < 0x20008000UL) ||
+             (handler >= OTA_APP_ADDRESS + 24U && handler < OTA_APP_ADDRESS + size))) return 0U;
+    }
+    return 1U;
+}
 
 #ifndef FIRMWARE_BUILD_VERSION
 #error "FIRMWARE_BUILD_VERSION must be derived from product_version.h by the build script"

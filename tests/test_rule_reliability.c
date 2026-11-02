@@ -69,7 +69,7 @@ uint8_t Ir_SendLearnedVerified(uint8_t channel)
 
 void SaveDevInfo(uint16_t delay)
 {
-    assert(delay == 0u || delay == 50u);
+    assert(delay == 0u); /* Only the periodic meter snapshot schedules a save. */
     save_calls++;
 }
 
@@ -216,7 +216,7 @@ int main(void)
     assert(Dev.meter.onoff_count == 1u);
     assert(Dev.lastOnTime == LocalTimestamp);
     assert(Dev.lastPowerChange == LocalTimestamp);
-    assert(save_calls == 1u);
+    assert(save_calls == 0u);
 
     /* 仅远程模式与链路状态无关，始终禁止本地规则。 */
     setup_policy(0u, 0u, 0u, 0u, RULE_ACTION_POWER_OFF, RULE_ACTION_COOL);
@@ -395,6 +395,19 @@ int main(void)
     assert(save_calls == 1u);
     assert(Dev.meter.last_save_ts == LocalTimestamp);
 
+    /* A full day without RTC still schedules exactly 144 snapshots. */
+    rtc_valid = 0u;
+    LocalTimestamp = 0u;
+    for(uint16_t snapshot = 1u; snapshot < 144u; snapshot++) {
+        CurTick += 599999u;
+        Meter_Update(0u);
+        assert(save_calls == snapshot);
+        CurTick++;
+        Meter_Update(0u);
+        assert(save_calls == snapshot + 1u);
+    }
+    rtc_valid = 1u;
+
     /* 清累计只影响电量，运行时长、次数等寿命统计必须保留。 */
     Dev.meter.energy_wh = 1234U;
     Dev.meter.energy_watt_tenth_seconds = 5678U;
@@ -432,7 +445,7 @@ int main(void)
     CurTick++;Rule_Pro();assert(ir_calls==2 && Dev.onOff==PowerOff);
     Rule_IrCompleted(1);
     assert(record_calls==2 && record_success);
-    assert(Dev.onOff==PowerOn && save_calls==1 && Dev.meter.onoff_count==1);
+    assert(Dev.onOff==PowerOn && save_calls==0 && Dev.meter.onoff_count==1);
     assert(Dev.rules[0].ctrl.reserved & POLICY_LATCH_HIGH);
     Rule_Pro();assert(ir_calls==2);
     /* 配置重置后的迟到完成不能修改新的策略或设备状态。 */
@@ -566,6 +579,18 @@ int main(void)
     CurTick=0;Rule_RecordPowerChange();ir_calls=0;
     for(uint8_t day=0;day<49;day++) {CurTick+=86400000UL;Rule_Pro();}
     CurTick=60000;Dev.roomTempX10=300;Rule_Pro();assert(ir_calls==1);
+    /* Correcting a future calendar re-arms subsequent dates, not same-day replay. */
+    setup_policy(1080U,1080U,RULE_ACTION_POWER_ON,0U,0U,0U);
+    Dev.rules[0].ctrl.trig_type=TRIG_TIME;
+    ir_accept=ir_complete=1U;ir_calls=0U;rtc_year=2027U;rtc_month=7U;rtc_day=31U;
+    rtc_hour=17U;rtc_minute=59U;Rule_Pro();
+    CurTick+=1000U;rtc_hour=18U;rtc_minute=0U;Rule_Pro();assert(ir_calls==1U);
+    rtc_year=2026U;rtc_day=30U;rtc_hour=17U;rtc_minute=59U;Rule_ClockChanged();Rule_Pro();
+    CurTick+=1000U;rtc_hour=18U;rtc_minute=0U;Rule_Pro();assert(ir_calls==2U);
+    rtc_hour=17U;rtc_minute=59U;Rule_ClockChanged();Rule_Pro();
+    CurTick+=1000U;rtc_hour=18U;rtc_minute=0U;Rule_Pro();assert(ir_calls==2U);
+    rtc_day=31U;rtc_hour=17U;rtc_minute=59U;Rule_ClockChanged();Rule_Pro();
+    CurTick+=1000U;rtc_hour=18U;rtc_minute=0U;Rule_Pro();assert(ir_calls==3U);
     puts("rule IR submission/calendar/timer reliability: PASS");
     return 0;
 }

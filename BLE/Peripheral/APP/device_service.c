@@ -238,7 +238,6 @@ uint8_t SplitAcControl_IrCompleted(uint8_t success)
         } else if(control==CONTROL_FIELD_FAST_MODE){
             update_power_state(1);Dev.ctlMode=value?Mode_Heat:Mode_Cool;
         }
-        SaveDevInfo(50u);
     }
     Ml307_RequestReport();
     Peripheral_ControlCompleted(success?DEVICE_STATUS_OK:DEVICE_STATUS_IO_ERROR);
@@ -541,7 +540,11 @@ static __attribute__((noinline)) uint8_t dispatch(const device_frame_t *req,uint
 uint8_t DeviceService_HandleFrame(const uint8_t *request,uint16_t request_len,uint8_t *response,uint16_t capacity,uint16_t *response_len)
 {
     device_frame_t req,rsp;uint8_t payload[DEVICE_MAX_PAYLOAD];uint16_t payload_len=0;uint8_t status;
-    status=DeviceProtocol_Decode(request,request_len,&req);if(status!=DEVICE_STATUS_OK||req.type!=DEVICE_FRAME_REQUEST)return status;
+    if(!response_len)return DEVICE_STATUS_INVALID_ARG;
+    *response_len=0;
+    if(!response||capacity<DEVICE_FRAME_OVERHEAD)return DEVICE_STATUS_INVALID_ARG;
+    status=DeviceProtocol_Decode(request,request_len,&req);if(status!=DEVICE_STATUS_OK)return status;
+    if(req.type!=DEVICE_FRAME_REQUEST)return DEVICE_STATUS_INVALID_ARG;
     status=dispatch(&req,payload,&payload_len,0);rsp.type=DEVICE_FRAME_RESPONSE;rsp.seq=req.seq;rsp.opcode=req.opcode;rsp.status=status;rsp.payload_len=payload_len;rsp.payload=payload;
     return DeviceProtocol_Encode(&rsp,response,capacity,response_len);
 }

@@ -67,6 +67,11 @@ class ProductVersionTest(unittest.TestCase):
             runpy.run_path(str(SCRIPT), init_globals={'env': env, 'Import': lambda _: None})
         self.assertEqual(set(dict(env.defines)), {'FIRMWARE_BUILD_VERSION'})
 
+    def test_board_uses_the_single_product_version_header(self):
+        board = (ROOT / 'BLE/Peripheral/APP/include/board.h').read_text(encoding='utf-8')
+        self.assertIn('#include "product_version.h"', board)
+        self.assertNotRegex(board, r'(?m)^\s*#define\s+(FIRMWARE_VERSION|HARDWARE_VERSION)\b')
+
 
 if __name__ == '__main__':
     unittest.main()

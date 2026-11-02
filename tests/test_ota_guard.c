@@ -61,6 +61,12 @@ uint32_t Test_FlashVerify(uint32_t address, const void *buffer, uint32_t length)
 void Test_FlashRead(uint32_t address, void *buffer, uint32_t length) { memcpy(buffer, codeflash + address, length); }
 uint32_t SYS_GetLastResetSta(void) { return 0; }
 
+static void set_app_header(uint8_t *image)
+{
+    const uint32_t header[6] = {0x0300006FU, 0U, 0U, 0x20000090UL, 0x20000094UL, 0xF3F9BDA9UL};
+    memcpy(image, header, sizeof(header));
+}
+
 static void test_partition_bounds(void)
 {
     ota_guard_t guard;
@@ -131,6 +137,7 @@ static void test_remote_download_install_and_cancel(void)
     memset(dataflash, 0xFF, sizeof(dataflash));
     memset(codeflash, 0xFF, sizeof(codeflash));
     for(index = 0; index < sizeof(image); index++) image[index] = (uint8_t)(index + 1U);
+    set_app_header(image);
 
     Ota_Init();
     assert(Ota_BeginRemote(FIRMWARE_BUILD_VERSION + 1U, sizeof(image), crc32(image, sizeof(image)),
@@ -180,6 +187,7 @@ static void test_local_update_accepts_a_partial_final_dword(void)
     memset(dataflash, 0xFF, sizeof(dataflash));
     memset(codeflash, 0xFF, sizeof(codeflash));
     for(index = 0U; index < sizeof(image); index++) image[index] = (uint8_t)(index ^ 0xA5U);
+    set_app_header(image);
 
     Ota_Init();
     assert(Ota_BeginLocal(FIRMWARE_BUILD_VERSION + 1U, sizeof(image), crc32(image, sizeof(image))) == DEVICE_STATUS_OK);
@@ -235,7 +243,7 @@ static void test_remote_progress_uses_live_offset_and_aligned_checkpoint(void)
 
 static void test_image_io_faults_clear_only_after_image_io_recovers(void)
 {
-    uint8_t image[16] = {1, 2, 3};
+    uint8_t image[64] = {1, 2, 3};
     memset(dataflash, 0xFF, sizeof(dataflash));
     Ota_Init();
     assert(Ota_BeginRemote(1, sizeof(image), 0, "http://fw/bin", 13) == DEVICE_STATUS_OK);
@@ -260,8 +268,39 @@ static void test_image_io_faults_clear_only_after_image_io_recovers(void)
     assert(Ota_Cancel() == DEVICE_STATUS_OK);
 }
 
+static void test_invalid_app_header_cannot_be_activated(void)
+{
+    uint8_t image[64] = {0};
+    uint8_t status;
+    memset(dataflash, 0xFF, sizeof(dataflash));
+    memset(codeflash, 0x5A, sizeof(codeflash));
+    Ota_Init();
+    assert(Ota_BeginLocal(1U, 4U, 0U) == DEVICE_STATUS_INVALID_ARG);
+    assert(Ota_BeginRemote(1U, 4U, 0U, "http://fw/bin", 13U) == DEVICE_STATUS_INVALID_ARG);
+    assert(Ota_BeginLocal(1U, sizeof(image), crc32(image, sizeof(image))) == DEVICE_STATUS_OK);
+    assert(Ota_Write(0U, image, sizeof(image)) == DEVICE_STATUS_OK);
+    assert(Ota_FinishLocal() == DEVICE_STATUS_OK);
+    do { status = Ota_VerifyStep(); } while(status == DEVICE_STATUS_BUSY);
+    assert(status == DEVICE_STATUS_VERIFY_FAILED && Ota_Get()->state == OTA_STATE_IDLE);
+    assert(Ota_MarkInstall() == DEVICE_STATUS_CONFLICT);
+    assert(codeflash[OTA_APP_ADDRESS] == 0x5A);
+
+    uint32_t header[6];
+    set_app_header((uint8_t *)header);
+    assert(Ota_ImageHeaderValid(header, 64U));
+    assert(!Ota_ImageHeaderValid(header, 63U));
+    header[0] = 0x8000006FU;assert(!Ota_ImageHeaderValid(header, 64U));
+    set_app_header((uint8_t *)header);
+    header[3] = OTA_STAGING_ADDRESS;assert(!Ota_ImageHeaderValid(header, 64U));
+    set_app_header((uint8_t *)header);
+    header[0] = 0x2000006FU;assert(!Ota_ImageHeaderValid(header, 64U));
+    set_app_header((uint8_t *)header);
+    header[5] ^= 1U;assert(!Ota_ImageHeaderValid(header, 64U));
+}
+
 int main(void)
 {
+    test_invalid_app_header_cannot_be_activated();
     test_partition_bounds();
     test_order_and_contiguous_ranges();
     test_failed_operations_do_not_advance();
@@ -273,7 +312,7 @@ int main(void)
     test_image_io_faults_clear_only_after_image_io_recovers();
     /* 每个元数据 IO 阶段失败都应恢复完整状态，取消和重试不需要重启。 */
     for(uint8_t stage=1;stage<=3;stage++) {
-        uint8_t image[16]={1,2,3};
+        uint8_t image[64]={1,2,3};set_app_header(image);
         memset(dataflash,0xFF,sizeof(dataflash)); Ota_Init();
         assert(Ota_BeginLocal(1,sizeof(image),crc32(image,sizeof(image)))==DEVICE_STATUS_OK);
         assert(Ota_Write(0,image,sizeof(image))==DEVICE_STATUS_OK);

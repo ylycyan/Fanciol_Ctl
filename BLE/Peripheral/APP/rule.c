@@ -10,7 +10,7 @@
  * 计量流程:
  *   1. 每秒调用 Meter_Update(1) 汇总芯片累计电量
  *   2. 取出 HLW8110 Energy_PA 寄存器累计的新增电量
- *   3. SaveDevInfo() 自动保存 meter 到 Flash
+ *   3. 每 10 分钟保存计量与当前控制状态，规则动作本身不写 Flash
  */
 
 #include "board.h"
@@ -138,7 +138,6 @@ void Rule_IrCompleted(uint8_t success)
     if(pending_latch < POLICY_EXIT_ACTION) r->ctrl.reserved |= pending_latch;
     if(previous != Dev.onOff || action >= RULE_ACTION_COOL) {
         Rule_RecordPowerChange();
-        SaveDevInfo(50u);
     }
     Ml307_RequestReport();
 }
@@ -318,6 +317,10 @@ void Rule_Pro(void)
         if(clock_known && now == last_minute + 1u && (uint32_t)(CurTick - last_clock_tick) < 90000u) {
             for(i = 0u; i < MAX_POLICY_GROUPS; i++) {
                 r = &Dev.rules[i];
+                /* Keep same-day replay protection, but discard a remembered
+                 * future date after the calendar has been corrected backwards. */
+                if(timer_last_day[i] != 0xFFFFu && day < timer_last_day[i])
+                    timer_last_day[i] = 0xFFFFu;
                 if(r->ctrl.enable && r->ctrl.trig_type == TRIG_TIME &&
                    (timer_last_day[i] == 0xFFFFu || day > timer_last_day[i]) &&
                    r->trig_val == hour * 60u + minute && policy_date_matches(r, &Dev.ruleSchedules[i], day))

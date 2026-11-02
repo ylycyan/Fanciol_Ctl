@@ -552,7 +552,10 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
     {
         if(peripheralConnList.connHandle != GAP_CONNHANDLE_INIT && !deviceSessionReady) {
             PRINT("BLE handshake timeout, release connection\r\n");
-            GAPRole_TerminateLink(peripheralConnList.connHandle);
+            if(GAPRole_TerminateLink(peripheralConnList.connHandle) != SUCCESS) {
+                tmos_start_task(Peripheral_TaskID, SBP_HANDSHAKE_TIMEOUT_EVT,
+                                MS1_TO_SYSTEM_TIME(250));
+            }
         }
         return (events ^ SBP_HANDSHAKE_TIMEOUT_EVT);
     }
@@ -978,8 +981,11 @@ static void DeviceTxStep(void)
     tmos_memcpy(fragment + 5, deviceTxFrame + deviceTxOffset, length);
     if(peripheralCharNotify(SIMPLEPROFILE_CHAR1, fragment, (uint16_t)(length + 5u)) != SUCCESS) {
         if((int32_t)(CurTick - deviceTxDeadline) >= 0) {
-            deviceTxActive = 0u;
-            GAPRole_TerminateLink(peripheralConnList.connHandle);
+            if(GAPRole_TerminateLink(peripheralConnList.connHandle) == SUCCESS) {
+                deviceTxActive = 0u;
+            } else {
+                tmos_start_task(Peripheral_TaskID, SBP_TX_FRAME_EVT, MS1_TO_SYSTEM_TIME(250));
+            }
         } else {
             tmos_start_task(Peripheral_TaskID, SBP_TX_FRAME_EVT, MS1_TO_SYSTEM_TIME(10));
         }

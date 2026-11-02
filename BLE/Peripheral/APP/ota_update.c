@@ -170,7 +170,7 @@ uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_cr
                         const char *url, uint8_t url_length)
 {
     if(!url || url_length == 0U || url_length >= OTA_URL_SIZE ||
-       image_size == 0U || image_size > OTA_MAX_IMAGE_SIZE)
+       image_size < OTA_MIN_IMAGE_SIZE || image_size > OTA_MAX_IMAGE_SIZE)
         return DEVICE_STATUS_INVALID_ARG;
 
     if(metadata.state != OTA_STATE_IDLE) {
@@ -202,7 +202,7 @@ uint8_t Ota_BeginRemote(uint32_t version, uint32_t image_size, uint32_t image_cr
 
 uint8_t Ota_BeginLocal(uint32_t version, uint32_t image_size, uint32_t image_crc32)
 {
-    if(image_size == 0U || image_size > OTA_MAX_IMAGE_SIZE)
+    if(image_size < OTA_MIN_IMAGE_SIZE || image_size > OTA_MAX_IMAGE_SIZE)
         return DEVICE_STATUS_INVALID_ARG;
     if(metadata.state != OTA_STATE_IDLE) {
         /*
@@ -335,6 +335,13 @@ uint8_t Ota_VerifyStep(void)
         length = (uint16_t)((metadata.image_size - verify_offset) > sizeof(verify_buffer) ?
                            sizeof(verify_buffer) : metadata.image_size - verify_offset);
         FLASH_ROM_READ(OTA_STAGING_ADDRESS + verify_offset, verify_buffer, length);
+        if(verify_offset == 0U &&
+           !Ota_ImageHeaderValid((const uint32_t *)verify_buffer, metadata.image_size)) {
+            metadata.state = OTA_STATE_IDLE;
+            metadata.url_length = 0U;
+            (void)metadata_save();
+            return DEVICE_STATUS_VERIFY_FAILED;
+        }
         verify_crc = crc32_update(verify_crc, verify_buffer, length);
         verify_offset += length;
         return DEVICE_STATUS_BUSY;
@@ -360,6 +367,7 @@ uint8_t Ota_VerifyStep(void)
 uint8_t Ota_MarkInstall(void)
 {
     if(metadata.state != OTA_STATE_READY) return DEVICE_STATUS_CONFLICT;
+    metadata.reserved = 0U; /* Only the updater may mark the application as touched. */
     metadata.state = OTA_STATE_INSTALLING;
     return metadata_save();
 }

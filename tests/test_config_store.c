@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <setjmp.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,6 +30,15 @@ static uint8_t dataflash[DATAFLASH_SIZE];
 static failure_t failure;
 static uint8_t silent_commit_marker, fail_backup_cleanup;
 static uint32_t backup_erase_calls;
+/* Abrupt cuts bypass all error-return cleanup, unlike fail_on(). Test-only. */
+static jmp_buf power_cut;
+static uint8_t cut_enabled;
+static uint32_t cut_target, cut_steps;
+
+static void mutation_step(void)
+{
+    if(cut_enabled && cut_steps++ == cut_target) longjmp(power_cut, 1);
+}
 
 typedef struct __attribute__((packed)) {
     uint8_t transport_mask;
@@ -101,7 +111,12 @@ uint32_t Test_EepromErase(uint32_t address, uint32_t length)
         if(failure.partial) memset(dataflash + address, 0xFF, length / 2u);
         return 1;
     }
-    memset(dataflash + address, 0xFF, length);
+    if(cut_enabled) {
+        for(uint32_t i = 0U; i < length; i++) {
+            mutation_step();
+            dataflash[address + i] = 0xFF;
+        }
+    } else memset(dataflash + address, 0xFF, length);
     return 0;
 }
 
@@ -118,7 +133,10 @@ uint32_t Test_EepromWrite(uint32_t address, const void *buffer, uint32_t length)
         if(!failure.partial) return 1;
         written = length / 2u;
     }
-    for(i = 0; i < written; ++i) dataflash[address + i] &= source[i];
+    for(i = 0; i < written; ++i) {
+        mutation_step();
+        dataflash[address + i] &= source[i];
+    }
     return written == length ? 0u : 1u;
 }
 
@@ -813,8 +831,142 @@ static void test_connectivity_flash_fault_is_owned_until_its_recovery(void)
     assert(Connectivity_Save(&next) == DEVICE_STATUS_INVALID_ARG && !Dev.errorCode.bit.flash);
 }
 
+static void test_valid_cellular_slot_survives_peer_read_error(void)
+{
+    connectivity_config_t saved;
+    uint8_t snapshot[DATAFLASH_SIZE];
+    reset_flash(); create_initial_config();
+    assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    saved = *Connectivity_Get();
+    saved.transport_mask = CONNECTIVITY_CELLULAR;
+    strcpy(saved.device_id, "0002");
+    assert(Connectivity_Save(&saved) == DEVICE_STATUS_OK);
+    assert(Connectivity_Load() == DEVICE_STATUS_OK);
+    memcpy(snapshot, dataflash, sizeof(snapshot));
+    for(uint8_t peer = 1U; peer <= 2U; peer++) {
+        fail_on(FAIL_READ, peer, 0U);
+        assert(Connectivity_Load() == DEVICE_STATUS_IO_ERROR);
+        assert(Connectivity_CellularEnabled() && !Connectivity_LoraEnabled());
+        assert(!memcmp(Connectivity_Get(), &saved, sizeof(saved)));
+        assert(Storage_GetStartupFlags() & STORAGE_STARTUP_DEGRADED);
+        assert(!memcmp(snapshot, dataflash, sizeof(snapshot)));
+        assert(Connectivity_Save(&saved) == DEVICE_STATUS_IO_ERROR);
+        clear_failure();
+        assert(Connectivity_Load() == DEVICE_STATUS_OK);
+    }
+}
+
+static void test_corrupt_connectivity_defaults_do_not_clear_flash_fault(void)
+{
+    connectivity_config_t saved;
+    reset_flash(); create_initial_config();
+    assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    saved = *Connectivity_Get();saved.transport_mask = CONNECTIVITY_CELLULAR;
+    strcpy(saved.device_id, "0002");
+    assert(Connectivity_Save(&saved) == DEVICE_STATUS_OK);
+    dataflash[CONNECTIVITY_SLOT_A + 12U] ^= 1U;
+    assert(Connectivity_Load() == DEVICE_STATUS_VERIFY_FAILED);
+    Storage_ReportFault(0U, 0U); /* Same startup recovery notification as main. */
+    assert(Dev.errorCode.bit.flash);
+    assert(Connectivity_Save(&saved) == DEVICE_STATUS_OK);
+    assert(!Dev.errorCode.bit.flash);
+}
+
+static void test_abrupt_power_cut_at_every_mutated_byte(uint8_t kind)
+{
+    uint8_t snapshot[DATAFLASH_SIZE];
+    connectivity_config_t old_link, new_link;
+    IR_LEARNING_t old_ir[MAX_IR_LEARNNUM], new_ir[MAX_IR_LEARNNUM];
+    volatile uint32_t cut;
+    volatile uint8_t completed;
+    uint16_t old_node, old_channel;
+    uint8_t old_mode;
+
+    reset_flash();
+    create_initial_config();
+    old_node=Dev.nodeId;old_channel=Dev.channel;old_mode=Dev.mode;
+    if(kind==1U) {
+        assert(Connectivity_Load()==DEVICE_STATUS_VERIFY_FAILED);
+        old_link=*Connectivity_Get();
+        old_link.transport_mask=CONNECTIVITY_CELLULAR;
+        strcpy(old_link.device_id,"A26099410");
+        strcpy(old_link.mqtt_host,"old.example.com");
+        assert(Connectivity_Save(&old_link)==DEVICE_STATUS_OK);
+        new_link=old_link;new_link.mqtt_port=1884U;
+        strcpy(new_link.mqtt_host,"new.example.com");
+        strcpy(new_link.mqtt_username,"new-user");
+    } else if(kind==2U) {
+        assert(IrStore_Load()==DEVICE_STATUS_VERIFY_FAILED);
+        Dev.learnNum=1U;Dev.learnCode[0].enable=1U;Dev.learnCode[0].cmd[0]=0x30U;
+        assert(IrStore_SaveIfChanged()==DEVICE_STATUS_OK);
+        memcpy(old_ir,Dev.learnCode,sizeof(old_ir));
+        memcpy(new_ir,old_ir,sizeof(new_ir));
+        new_ir[0].cmd[0]=0x31U;new_ir[1].enable=1U;new_ir[1].cmd[0]=0x77U;
+    } else if(kind==3U) {
+        /* Full runtime page: exercise checkpoint, main erase, copy and cleanup. */
+        fill_runtime_page(snapshot);
+    }
+    memcpy(snapshot,dataflash,sizeof(snapshot));
+    for(cut=0U;cut<16000U;cut++) {
+        memcpy(dataflash,snapshot,sizeof(snapshot));
+        clear_failure();
+        if(kind==0U) {
+            assert(Config_Load()==DEVICE_STATUS_OK);
+            Dev.nodeId=0x2345U;Dev.channel=9U;Dev.mode=(uint8_t)!old_mode;
+        } else if(kind==1U) assert(Connectivity_Load()==DEVICE_STATUS_OK);
+        else if(kind==2U) {
+            assert(IrStore_Load()==DEVICE_STATUS_OK);
+            Dev.learnNum=2U;memcpy(Dev.learnCode,new_ir,sizeof(new_ir));
+        } else {
+            assert(Runtime_Load()==DEVICE_STATUS_OK);
+            Dev.meter.fault_count=65U;Dev.meter.energy_wh=123450U;
+            Dev.temSet=26U;
+        }
+        cut_target=cut;cut_steps=0U;cut_enabled=1U;completed=0U;
+        if(setjmp(power_cut)==0) {
+            uint8_t status;
+            if(kind==0U)status=Config_Commit();
+            else if(kind==1U)status=Connectivity_Save(&new_link);
+            else if(kind==2U)status=IrStore_SaveIfChanged();
+            else status=Runtime_Append();
+            assert(status==DEVICE_STATUS_OK);
+            completed=1U;
+        }
+        cut_enabled=0U; /* Simulated restart: no interrupted caller cleanup runs. */
+        if(kind==0U) {
+            assert(Config_Load()==DEVICE_STATUS_OK);
+            assert((Dev.nodeId==old_node && Dev.channel==old_channel && Dev.mode==old_mode)||
+                   (Dev.nodeId==0x2345U && Dev.channel==9U && Dev.mode==(uint8_t)!old_mode));
+        } else if(kind==1U) {
+            assert(Connectivity_Load()==DEVICE_STATUS_OK);
+            assert(!memcmp(Connectivity_Get(),&old_link,sizeof(old_link))||
+                   !memcmp(Connectivity_Get(),&new_link,sizeof(new_link)));
+            assert(Connectivity_CellularEnabled());
+        } else if(kind==2U) {
+            memset(Dev.learnCode,0,sizeof(Dev.learnCode));
+            assert(IrStore_Load()==DEVICE_STATUS_OK);
+            assert((Dev.learnNum==1U && !memcmp(Dev.learnCode,old_ir,sizeof(old_ir)))||
+                   (Dev.learnNum==2U && !memcmp(Dev.learnCode,new_ir,sizeof(new_ir))));
+        } else {
+            memset(&Dev.meter,0,sizeof(Dev.meter));Dev.temSet=0U;
+            assert(Runtime_Load()==DEVICE_STATUS_OK);
+            assert((Dev.meter.fault_count==64U && Dev.meter.energy_wh==0U && Dev.temSet==16U)||
+                   (Dev.meter.fault_count==65U && Dev.meter.energy_wh==123450U && Dev.temSet==26U));
+        }
+        if(completed) {
+            printf("Abrupt power cuts: kind=%u, byte boundaries=%lu, PASS\n",
+                   kind,(unsigned long)cut);
+            return;
+        }
+    }
+    assert(!"power-cut enumeration did not reach a completed operation");
+}
+
 int main(void)
 {
+    for(uint8_t kind=0U;kind<4U;kind++)test_abrupt_power_cut_at_every_mutated_byte(kind);
+    test_corrupt_connectivity_defaults_do_not_clear_flash_fault();
+    test_valid_cellular_slot_survives_peer_read_error();
     test_final_commit_marker_is_read_back();
     test_stale_runtime_backup_never_replaces_newer_main_log();
     test_connectivity_flash_fault_is_owned_until_its_recovery();
